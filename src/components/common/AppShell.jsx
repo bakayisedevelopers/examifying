@@ -79,7 +79,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   };
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-transparent text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:bg-slate-950 lg:static lg:h-screen">
+    <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">
       <div className="mx-auto flex h-[100dvh] max-h-[100dvh] max-w-7xl flex-col gap-4 px-4 py-4 lg:grid lg:h-screen lg:max-h-none lg:grid-cols-[260px_1fr] lg:gap-6 lg:px-6">
         
         {/* Mobile Header */}

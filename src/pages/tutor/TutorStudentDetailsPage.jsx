@@ -716,7 +716,7 @@ export const TutorStudentDetailsPage = () => {
                 <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}</p>
                 <ExerciseStatusBadges exercise={exercise} className="mt-2" />
               </button>
-              {canManage && canDeleteExercise(exercise) ? <button type="button" className="btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
+              {canManage && canDeleteExercise(exercise) ? <button type="button" className="hidden btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
                 <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
               </button> : null}
             </div>

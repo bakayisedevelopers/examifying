@@ -12,6 +12,13 @@ import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/ex
 import { useEffectiveRole } from '../../utils/effectiveRole';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds, uniqueTopicNames } from '../../utils/exerciseTopicRows';
 
+const markingBelongsToExercise = (assignment, exercise) => {
+  if (!assignment || !exercise) return false;
+  if (exercise.documentPath && assignment.reviewerExercisePath === exercise.documentPath) return true;
+  return assignment.reviewerExerciseId === exercise.id
+    && assignment.reviewerSubjectInstanceId === exercise.subjectInstanceId;
+};
+
 export const TutorExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
   const { profile, logout } = useAuth();
@@ -66,10 +73,11 @@ export const TutorExerciseDetailsPage = () => {
         setExercise(result);
         setStatus('');
         if (profile?.uid) {
-          const [contexts, markingAssignments] = await Promise.all([
+          const [contexts, allMarkingAssignments] = await Promise.all([
             getTutorAssignedStudentContexts(profile.uid, result.studentId),
             getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }).catch(() => []),
           ]);
+          const markingAssignments = allMarkingAssignments.filter((item) => markingBelongsToExercise(item, result));
           const selectedContext = contexts.find((context) => context.subject === result.subject) ?? null;
           const scores = await getStudentTopicScoresForTutor({
             tutorId: profile.uid,
@@ -92,7 +100,7 @@ export const TutorExerciseDetailsPage = () => {
               ...getQuestionTopicIds(result),
               ...markingAssignments.flatMap(getQuestionTopicIds),
             ])],
-            sourceIds: [result.id, ...markingAssignments.map((item) => item.id)],
+            sourceIds: [result.id, ...markingAssignments.flatMap((item) => [item.id, item.assignmentPath])],
           }).catch(() => []));
         }
       })

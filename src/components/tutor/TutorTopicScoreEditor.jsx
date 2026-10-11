@@ -20,6 +20,8 @@ export const TutorTopicScoreEditor = forwardRef(({
   topicId,
   exerciseId,
   peerAssignmentId,
+  peerAssignmentPath,
+  reviewerExerciseId,
   questions = [],
   value,
   initialQuestionScores = [],
@@ -45,7 +47,7 @@ export const TutorTopicScoreEditor = forwardRef(({
       return [index, saved ? { earnedMarks: String(saved.earnedMarks) } : {}];
     })));
     setMessage('');
-  }, [topic, exerciseId, peerAssignmentId, normalizedQuestions, initialScoresKey]);
+  }, [topic, exerciseId, peerAssignmentId, peerAssignmentPath, reviewerExerciseId, normalizedQuestions, initialScoresKey]);
 
   const questionMarks = normalizedQuestions.map((question, index) => ({
     questionReference: question.questionReference,
@@ -86,6 +88,8 @@ export const TutorTopicScoreEditor = forwardRef(({
         topicId: topicId || normalizedQuestions[0]?.topicId || '',
         exerciseId,
         peerAssignmentId,
+        peerAssignmentPath,
+        reviewerExerciseId,
         questionMarks,
       }));
       onSaved?.(result.topic, result.understandingLevel, questionMarks, result);
@@ -96,7 +100,7 @@ export const TutorTopicScoreEditor = forwardRef(({
     } finally {
       setSaving(false);
     }
-  }, [allMarksValid, calculatedScore, exerciseId, normalizedQuestions, onSaved, peerAssignmentId, questionMarks, runOperation, studentId, subject, topic, topicId, tutorId]);
+  }, [allMarksValid, calculatedScore, exerciseId, normalizedQuestions, onSaved, peerAssignmentId, peerAssignmentPath, questionMarks, reviewerExerciseId, runOperation, studentId, subject, topic, topicId, tutorId]);
 
   const saveDisabled = saving || !tutorId || !allMarksValid;
   useImperativeHandle(ref, () => ({ save }), [save]);

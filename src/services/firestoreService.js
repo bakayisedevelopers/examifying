@@ -1558,9 +1558,9 @@ export const removeCompletedTopicFromLesson = async ({ studentId, subjectInstanc
   return response.data;
 };
 
-export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, topicId = '', exerciseId, peerAssignmentId, questionMarks = [] }) => {
+export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, topicId = '', exerciseId, peerAssignmentId, peerAssignmentPath, reviewerExerciseId, questionMarks = [] }) => {
   const topicName = String(topic || '').trim();
-  if (!tutorId || !studentId || !topicName || (!exerciseId && !peerAssignmentId)) throw new Error('Tutor, student, topic, and exercise or marking assignment are required.');
+  if (!tutorId || !studentId || !topicName || (!exerciseId && !peerAssignmentId && !peerAssignmentPath)) throw new Error('Tutor, student, topic, and exercise or marking assignment are required.');
   if (!Array.isArray(questionMarks) || !questionMarks.length || questionMarks.some((item) => {
     const earned = Number(item.earnedMarks);
     const total = Number(item.totalMarks);
@@ -1576,11 +1576,13 @@ export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subj
   if (!isFirebaseConfigured) {
     return { topic: topicName, understandingLevel: score, exerciseId };
   }
-  if (peerAssignmentId) {
+  if (peerAssignmentId || peerAssignmentPath) {
     return saveTutorPeerMarkingReview({
       tutorId,
       studentId,
       peerAssignmentId,
+      peerAssignmentPath,
+      reviewerExerciseId,
       topicMarks: [{ topic: topicName, topicId, questionMarks }],
     });
   }
@@ -2800,14 +2802,16 @@ export const completePeerMarkingAssignment = async ({ assignmentId, assignmentPa
   return { id: assignmentId, ...response.data };
 };
 
-export const saveTutorPeerMarkingReview = async ({ tutorId, studentId, peerAssignmentId, topicMarks = [] }) => {
-  if (!tutorId || !studentId || !peerAssignmentId || !Array.isArray(topicMarks) || !topicMarks.length) {
+export const saveTutorPeerMarkingReview = async ({ tutorId, studentId, peerAssignmentId, peerAssignmentPath, reviewerExerciseId, topicMarks = [] }) => {
+  if (!tutorId || !studentId || (!peerAssignmentId && !peerAssignmentPath) || !Array.isArray(topicMarks) || !topicMarks.length) {
     throw new Error('Tutor, student, assignment, and marks for every topic are required.');
   }
   if (!isFirebaseConfigured) return { peerAssignmentId, topicScores: topicMarks.map((entry) => ({ topic: entry.topic, understandingLevel: 0 })), reviewed: true };
   const callable = httpsCallable(functions, 'reviewTutorPeerMarkingAssignment');
   return (await callable({
     peerAssignmentId,
+    peerAssignmentPath,
+    reviewerExerciseId,
     studentId,
     topicMarks,
     scoreEventId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,

@@ -38,7 +38,8 @@ export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, on
         <section key={topic} className={compact ? 'space-y-2 border-b border-slate-200 pb-2 last:border-0' : 'space-y-2 rounded-md border border-slate-200 bg-white p-3'}>
           <h4 className="text-sm font-semibold text-slate-800">{topic}</h4>
           {questionsByTopic[topic].map((question, index) => {
-            const savedTopic = assignment.tutorTopicScores?.find((entry) => normalizeKey(entry.topic) === normalizeKey(topic));
+            const savedTopic = assignment.tutorTopicScores?.find((entry) => normalizeKey(entry.topic) === normalizeKey(topic)
+              && String(entry.reviewerExerciseId || '') === String(assignment.reviewerExerciseId || ''));
             const saved = savedTopic?.questionScores?.find((entry) => normalizeKey(entry.questionReference) === normalizeKey(question.questionReference)
               && (!entry.paperId || !question.paperId || entry.paperId === question.paperId));
             return (
@@ -50,6 +51,8 @@ export const TutorPeerMarkingScoreEditor = ({ tutorId, studentId, assignment, on
                   topic={topic}
                   topicId={question.topicId}
                   peerAssignmentId={assignment.id}
+                  peerAssignmentPath={assignment.assignmentPath}
+                  reviewerExerciseId={assignment.reviewerExerciseId}
                   questions={[question]}
                   initialQuestionScores={saved ? [saved] : []}
                   compact

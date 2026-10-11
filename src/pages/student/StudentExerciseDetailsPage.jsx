@@ -61,7 +61,7 @@ export const StudentExerciseDetailsPage = () => {
             ...getQuestionTopicIds(assignment),
             ...markingAssignments.flatMap(getQuestionTopicIds),
           ])],
-          sourceIds: [assignment.id, ...markingAssignments.map((item) => item.id)],
+          sourceIds: [assignment.id, ...markingAssignments.flatMap((item) => [item.id, item.assignmentPath])],
         }).catch(() => []);
         if (!active) return;
         setCompletedMarkingAssignments(markingAssignments);

@@ -200,20 +200,50 @@ const resolveTopicDocument = async (transaction, episodeRef, { topic, topicName:
   return { topicRef, topicSnapshot: null, canonicalTopicKey: normalizedName };
 };
 
-const matchingScoreRecords = ({ sourceScoreSnapshot, sourceType, sourceId, questionMark }) => sourceScoreSnapshot.docs.filter((item) => {
+const matchingScoreRecords = ({
+  sourceScoreSnapshot,
+  sourceType,
+  sourceId,
+  questionMark,
+  peerAssignmentPath = '',
+  markedExerciseId = '',
+  reviewerExerciseId = '',
+}) => sourceScoreSnapshot.docs.filter((item) => {
   const data = item.data();
   const recordSourceId = String(data.sourceId || data.exerciseId || data.peerAssignmentId || '');
   const sameReference = String(data.questionReference || '').trim().toLocaleLowerCase()
     === String(questionMark.questionReference || '').trim().toLocaleLowerCase();
   const recordPaperId = String(data.paperId || '').trim();
   const questionPaperId = String(questionMark.paperId || '').trim();
-  return data.sourceType === sourceType && recordSourceId === sourceId && sameReference
+  const sameSource = sourceType === 'Marking'
+    ? Boolean(reviewerExerciseId)
+      && String(data.exerciseId || '') === markedExerciseId
+      && String(data.reviewerExerciseId || '') === reviewerExerciseId
+      && (data.peerAssignmentPath === peerAssignmentPath
+        || recordSourceId === peerAssignmentPath
+        || recordSourceId === sourceId)
+    : recordSourceId === sourceId;
+  return data.sourceType === sourceType && sameSource && sameReference
     && (!recordPaperId || !questionPaperId || recordPaperId === questionPaperId);
 });
 
-const findAssignment = async (db, assignmentId) => {
+const findAssignment = async (db, { assignmentId, assignmentPath }) => {
+  if (assignmentPath) {
+    if (!/^users\/[^/]+\/subjects\/[^/]+\/exercises\/[^/]+\/peerMarkingAssignments\/[^/]+$/.test(assignmentPath)) {
+      throw new HttpsError('invalid-argument', 'A valid peer-marking assignment path is required.');
+    }
+    const assignmentSnapshot = await db.doc(assignmentPath).get();
+    if (assignmentSnapshot.exists && assignmentId && assignmentSnapshot.id !== assignmentId) {
+      throw new HttpsError('failed-precondition', 'The peer-marking assignment ID and path do not match. Refresh the exercise and try again.');
+    }
+    return assignmentSnapshot.exists ? assignmentSnapshot : null;
+  }
+
   const snapshot = await db.collectionGroup('peerMarkingAssignments')
-    .where('assignmentId', '==', assignmentId).limit(1).get();
+    .where('assignmentId', '==', assignmentId).limit(2).get();
+  if (snapshot.docs.length > 1) {
+    throw new HttpsError('failed-precondition', 'This assignment ID is shared by multiple exercises. Refresh the page and retry using its assignment path.');
+  }
   return snapshot.docs[0] ?? null;
 };
 
@@ -237,21 +267,36 @@ export const getCompletedPeerMarkingWorkForTutor = onCall({ cpu: 'gcf_gen1' }, a
 
 export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = request.auth?.uid;
-  const { peerAssignmentId, studentId, topicMarks, scoreEventId } = request.data ?? {};
-  if (!peerAssignmentId || !studentId || !Array.isArray(topicMarks) || !topicMarks.length
+  const { peerAssignmentId, peerAssignmentPath, reviewerExerciseId: requestedReviewerExerciseId, studentId, topicMarks, scoreEventId } = request.data ?? {};
+  if ((!peerAssignmentId && !peerAssignmentPath) || !studentId || !Array.isArray(topicMarks) || !topicMarks.length
     || !/^[a-zA-Z0-9_-]{1,100}$/.test(String(scoreEventId ?? ''))) {
     throw new HttpsError('invalid-argument', 'A peer assignment, student, per-topic question marks, and score event ID are required.');
   }
   const db = getDb();
   const actor = await requireActor(db, uid);
-  const assignmentSnapshot = await findAssignment(db, peerAssignmentId);
+  const assignmentSnapshot = await findAssignment(db, { assignmentId: peerAssignmentId, assignmentPath: peerAssignmentPath });
   if (!assignmentSnapshot) throw new HttpsError('not-found', 'Peer-marking assignment not found.');
   const assignment = assignmentSnapshot.data();
+  if (peerAssignmentId && assignmentSnapshot.id !== String(peerAssignmentId)) {
+    throw new HttpsError('failed-precondition', 'The peer-marking assignment ID does not match its record. Refresh the page and try again.');
+  }
   if (assignment.status !== 'completed' || assignment.reviewerId !== studentId) {
     throw new HttpsError('failed-precondition', 'Only this student’s completed peer marking can be reviewed.');
   }
-  const subjectInstanceId = assignment.reviewerSubjectInstanceId;
+  const resolvedPeerAssignmentId = assignmentSnapshot.id;
+  const resolvedPeerAssignmentPath = assignmentSnapshot.ref.path;
+  const markedExerciseId = String(assignment.exerciseId ?? assignment.markedExerciseId ?? '');
+  const reviewerExerciseId = String(assignment.reviewerExerciseId ?? requestedReviewerExerciseId ?? '');
+  const subjectInstanceId = String(assignment.reviewerSubjectInstanceId ?? '');
+  if (!markedExerciseId || !reviewerExerciseId || !subjectInstanceId) {
+    throw new HttpsError('failed-precondition', 'The marking assignment is missing its source exercise, reviewer exercise, or subject episode.');
+  }
   const episodeRef = db.collection('users').doc(studentId).collection('subjects').doc(subjectInstanceId);
+  const markedExercisePath = assignmentSnapshot.ref.parent.parent.path;
+  const reviewerExercisePath = episodeRef.collection('exercises').doc(reviewerExerciseId).path;
+  if (requestedReviewerExerciseId && reviewerExerciseId !== String(requestedReviewerExerciseId)) {
+    throw new HttpsError('failed-precondition', 'This marking assignment belongs to a different student exercise. Refresh the exercise and try again.');
+  }
   const episodeSnapshot = await episodeRef.get();
   const episode = episodeSnapshot.exists ? episodeSnapshot.data() : null;
   requireEpisodeAccess({ episode, uid, isAdmin: actor.role === 'admin' });
@@ -302,7 +347,7 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
       ...topicResolutions.map(({ topicRef }) => Promise.all([
         transaction.get(topicRef),
         transaction.get(recentTopicScoresQuery(topicRef, now)),
-        transaction.get(topicRef.collection('understandingScores').where('sourceId', '==', peerAssignmentId)),
+        transaction.get(topicRef.collection('understandingScores').where('sourceId', 'in', [...new Set([resolvedPeerAssignmentId, resolvedPeerAssignmentPath])])),
       ])),
     ]);
     const current = currentAssignment.data();
@@ -315,8 +360,22 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
       const { topicRef, canonicalTopicKey } = topicResolutions[index];
       const replacedIds = new Set();
       const questionScores = entry.questionMarks.map((mark) => {
-        const matches = matchingScoreRecords({ sourceScoreSnapshot: sourceScores, sourceType: 'Marking', sourceId: peerAssignmentId, questionMark: mark });
-        const stableRef = questionScoreRef({ topicRef, sourceType: 'Marking', sourceId: peerAssignmentId, questionReference: mark.questionReference, paperId: mark.paperId });
+        const matches = matchingScoreRecords({
+          sourceScoreSnapshot: sourceScores,
+          sourceType: 'Marking',
+          sourceId: resolvedPeerAssignmentId,
+          questionMark: mark,
+          peerAssignmentPath: resolvedPeerAssignmentPath,
+          markedExerciseId,
+          reviewerExerciseId,
+        });
+        const stableRef = questionScoreRef({
+          topicRef,
+          sourceType: 'Marking',
+          sourceId: `${resolvedPeerAssignmentPath}::reviewer:${reviewerExerciseId}`,
+          questionReference: mark.questionReference,
+          paperId: mark.paperId,
+        });
         const existing = matches.find((item) => item.id === stableRef.id) || matches
           .sort((left, right) => (right.data().createdAt?.toMillis?.() ?? 0) - (left.data().createdAt?.toMillis?.() ?? 0))[0];
         const scoreRef = existing?.ref || stableRef;
@@ -326,13 +385,23 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
         });
         const score = scoreForQuestion(mark);
         transaction.set(scoreRef, {
-          sourceType: 'Marking', sourceId: peerAssignmentId, peerAssignmentId,
-          exerciseId: assignment.exerciseId ?? assignment.markedExerciseId ?? null,
+          sourceType: 'Marking', sourceId: resolvedPeerAssignmentPath,
+          studentId,
+          subjectInstanceId,
+          topicId: topicRef.id,
+          topicName: entry.topicName,
+          peerAssignmentId: resolvedPeerAssignmentId,
+          peerAssignmentPath: resolvedPeerAssignmentPath,
+          exerciseId: markedExerciseId,
+          exercisePath: markedExercisePath,
+          markedExercisePath,
+          reviewerExerciseId,
+          reviewerExercisePath,
           scoreEventId,
           questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
           earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks,
           score, scoreScale: 'ratio-0-to-1', tutorId: uid,
-          notes: `Tutor evaluation of peer marking ${peerAssignmentId} for exercise ${assignment.exerciseId ?? 'unknown'}; question ${mark.questionReference}`,
+          notes: `Tutor evaluation of peer marking ${resolvedPeerAssignmentPath} for marked exercise ${markedExerciseId} and reviewer exercise ${reviewerExerciseId}; question ${mark.questionReference}`,
           createdAt: now, updatedAt: now,
         }, { merge: true });
         return { questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber, score, earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks };
@@ -354,13 +423,14 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
         ...rollup,
         tutorReport: 'Tutor evaluation of peer marking', updatedAt: now,
       }, { merge: true });
-      return { topic: entry.topicName, understandingLevel: entry.score, averageUnderstandingLevel: rollup.understandingLevel, questionScores };
+      return { topic: entry.topicName, topicId: topicRef.id, understandingLevel: entry.score, averageUnderstandingLevel: rollup.understandingLevel, questionScores };
     });
 
     const mergedTopicScores = Array.isArray(current.tutorTopicScores) ? [...current.tutorTopicScores] : [];
     scoreResults.forEach((result) => {
       const key = normalizeTopicKey(result.topic);
-      const index = mergedTopicScores.findIndex((item) => normalizeTopicKey(item.topic) === key);
+      const index = mergedTopicScores.findIndex((item) => normalizeTopicKey(item.topic) === key
+        && String(item.reviewerExerciseId || '') === reviewerExerciseId);
       const prior = index >= 0 ? mergedTopicScores[index] : {};
       const questionsByKey = new Map((prior.questionScores ?? []).map((item) => [`${String(item.paperId || '')}::${String(item.questionReference || '').toLocaleLowerCase()}`, item]));
       result.questionScores.forEach((item) => questionsByKey.set(`${String(item.paperId || '')}::${String(item.questionReference || '').toLocaleLowerCase()}`, item));
@@ -368,6 +438,16 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
       const topicResult = {
         ...prior,
         topic: result.topic,
+        studentId,
+        subjectInstanceId,
+        topicId: result.topicId,
+        exerciseId: markedExerciseId,
+        exercisePath: markedExercisePath,
+        markedExercisePath,
+        reviewerExerciseId,
+        reviewerExercisePath,
+        peerAssignmentId: resolvedPeerAssignmentId,
+        peerAssignmentPath: resolvedPeerAssignmentPath,
         understandingLevel: scoreFromQuestionMarks(questionScores.map((item) => ({ earnedMarks: item.earnedMarks, totalMarks: item.totalMarks }))),
         averageUnderstandingLevel: result.averageUnderstandingLevel,
         questionScores,
@@ -376,19 +456,20 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
       else mergedTopicScores.push(topicResult);
     });
     const expectedQuestions = questionLinksWithTopics(current);
-    const savedQuestionKeys = new Set(mergedTopicScores.flatMap((item) => (item.questionScores ?? []).map((question) =>
+    const currentActivityScores = mergedTopicScores.filter((item) => String(item.reviewerExerciseId || '') === reviewerExerciseId);
+    const savedQuestionKeys = new Set(currentActivityScores.flatMap((item) => (item.questionScores ?? []).map((question) =>
       `${normalizeTopicKey(item.topic)}::${String(question.paperId || '')}::${String(question.questionReference || '').toLocaleLowerCase()}`)));
     isFullyReviewed = expectedQuestions.length
       ? expectedQuestions.every((question) => savedQuestionKeys.has(`${normalizeTopicKey(question.topic)}::${String(question.paperId || '')}::${String(question.questionReference || '').toLocaleLowerCase()}`))
-      : assignmentTopics.every((topic) => mergedTopicScores.some((item) => normalizeTopicKey(item.topic) === normalizeTopicKey(topic)));
+      : assignmentTopics.every((topic) => currentActivityScores.some((item) => normalizeTopicKey(item.topic) === normalizeTopicKey(topic)));
     transaction.update(assignmentSnapshot.ref, {
       ...(isFullyReviewed ? { tutorReviewStatus: 'reviewed', tutorReviewed: true, tutorReviewedBy: uid, tutorReviewedAt: now } : {}),
       tutorTopicScores: mergedTopicScores,
-      tutorUnderstandingLevel: mergedTopicScores.length ? mergedTopicScores.reduce((total, item) => total + Number(item.understandingLevel || 0), 0) / mergedTopicScores.length : null,
+      tutorUnderstandingLevel: currentActivityScores.length ? currentActivityScores.reduce((total, item) => total + Number(item.understandingLevel || 0), 0) / currentActivityScores.length : null,
       tutorReviewTopic: assignmentTopics.join(' | '), updatedAt: now,
     });
   });
-  return { peerAssignmentId, topicScores: scoreResults, reviewed: isFullyReviewed };
+  return { peerAssignmentId: resolvedPeerAssignmentId, peerAssignmentPath: resolvedPeerAssignmentPath, topicScores: scoreResults, reviewed: isFullyReviewed };
 });
 
 export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request) => {

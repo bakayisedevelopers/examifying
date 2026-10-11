@@ -11,7 +11,12 @@ const latestScoreFor = (entries, row, question) => entries
   .filter((entry) => {
     const matchesSource = row.activity === 'Exercise'
       ? entry.sourceType === 'Exercise' && (entry.sourceId === row.sourceId || entry.exerciseId === row.sourceId)
-      : entry.sourceType === 'Marking' && (entry.sourceId === row.sourceId || entry.peerAssignmentId === row.sourceId);
+      : entry.sourceType === 'Marking'
+        && String(entry.reviewerExerciseId || '') === String(row.assignment?.reviewerExerciseId || '')
+        && String(entry.exerciseId || '') === String(row.assignment?.exerciseId || '')
+        && (entry.peerAssignmentPath === row.sourceId
+          || entry.sourceId === row.sourceId
+          || entry.peerAssignmentId === row.assignment?.id);
     const sameQuestion = normalized(entry.questionReference) === normalized(question.questionReference);
     const samePaper = !entry.paperId || !question.paperId || entry.paperId === question.paperId;
     return matchesSource && sameQuestion && samePaper
@@ -87,7 +92,9 @@ const TutorQuestionScoreCells = ({ tutorId, studentId, exercise, row, topicScore
         topic={row.topic}
         topicId={row.question.topicId}
         exerciseId={row.activity === 'Exercise' ? row.sourceId : undefined}
-        peerAssignmentId={row.activity === 'Marking' ? row.sourceId : undefined}
+        peerAssignmentId={row.activity === 'Marking' ? row.assignment.id : undefined}
+        peerAssignmentPath={row.activity === 'Marking' ? row.assignment.assignmentPath : undefined}
+        reviewerExerciseId={row.activity === 'Marking' ? row.assignment.reviewerExerciseId : undefined}
         questions={[row.question]}
         initialQuestionScores={saved ? [saved] : []}
         value={topicScores[row.topic]}
@@ -136,11 +143,11 @@ export const ExerciseTopicScoresTable = ({
     }));
 
     const markingRows = (completedMarkingAssignments ?? []).flatMap((assignment) => questionRowsFor(assignment).map((question) => ({
-      key: `marking:${assignment.id}:${scoreKey(question)}:${question.questionIndex}`,
+      key: `marking:${assignment.assignmentPath || assignment.id}:${assignment.reviewerExerciseId || ''}:${scoreKey(question)}:${question.questionIndex}`,
       question,
       topic: question.topic || '—',
       activity: 'Marking',
-      sourceId: assignment.id,
+      sourceId: assignment.assignmentPath || assignment.id,
       assignment,
     })));
     return [...exerciseRows, ...markingRows];
@@ -154,14 +161,22 @@ export const ExerciseTopicScoresTable = ({
         topic,
         sourceType: row.activity,
         sourceId: row.sourceId,
-        ...(row.activity === 'Exercise' ? { exerciseId: row.sourceId } : { peerAssignmentId: row.sourceId }),
+        ...(row.activity === 'Exercise' ? { exerciseId: row.sourceId } : {
+          peerAssignmentId: row.assignment.id,
+          peerAssignmentPath: row.assignment.assignmentPath,
+          exerciseId: row.assignment.exerciseId,
+          reviewerExerciseId: row.assignment.reviewerExerciseId,
+        }),
         score: Number(mark.earnedMarks) / Number(mark.totalMarks),
         scoreScale: 'ratio-0-to-1',
         createdAt: new Date(),
       };
       setVisibleScoreEntries((current) => [
         ...current.filter((entry) => !(entry.sourceType === savedEntry.sourceType
-          && entry.sourceId === savedEntry.sourceId
+          && (savedEntry.sourceType === 'Exercise'
+            ? entry.exerciseId === savedEntry.exerciseId
+            : entry.peerAssignmentPath === savedEntry.peerAssignmentPath
+              && String(entry.reviewerExerciseId || '') === String(savedEntry.reviewerExerciseId || ''))
           && scoreKey(entry) === scoreKey(savedEntry))),
         savedEntry,
       ]);

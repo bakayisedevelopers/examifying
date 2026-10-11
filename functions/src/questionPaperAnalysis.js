@@ -302,7 +302,22 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
   if (!subject || !grade || subject.includes('/') || grade.includes('/')) {
     throw new HttpsError('invalid-argument', 'Provide a valid subject and grade.');
   }
+  const hasRequestedPaperIds = request.data?.paperIds !== undefined;
+  if (hasRequestedPaperIds && !Array.isArray(request.data.paperIds)) {
+    throw new HttpsError('invalid-argument', 'paperIds must be a list of question-paper IDs.');
+  }
+  const requestedPaperIds = hasRequestedPaperIds
+    ? [...new Set(request.data.paperIds.map((paperId) => String(paperId ?? '').trim()).filter(Boolean))]
+    : null;
+  if (requestedPaperIds && (!requestedPaperIds.length || requestedPaperIds.length > 50)) {
+    throw new HttpsError('invalid-argument', 'Provide between 1 and 50 question-paper IDs per request.');
+  }
+  const onlyWaiting = request.data?.onlyWaiting === true;
+  if (onlyWaiting && !requestedPaperIds) {
+    throw new HttpsError('invalid-argument', 'A specific list of waiting papers is required.');
+  }
   const maxPapers = Math.max(1, Math.min(50, Math.floor(Number(request.data?.maxPapers) || 50)));
+  const requestedPaperIdSet = requestedPaperIds ? new Set(requestedPaperIds) : null;
   const db = getDb();
   const folder = await findDrivePastPaperGradeFolder({ subject, grade });
   if (!folder) throw new HttpsError('failed-precondition', `No ${grade} Drive folder for ${subject} exists under the configured past-papers root.`);
@@ -328,6 +343,8 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
       const paper = snapshot.data();
       return paper.grade === grade && paper.paperUrl && paper.analysisStatus !== ANALYZED
         && paper.analysisStatus !== ANALYZING && !paper.activeAnalysisRunId && !paper.queuedAnalysisRunId
+        && (!requestedPaperIdSet || requestedPaperIdSet.has(snapshot.id))
+        && (!onlyWaiting || paper.analysisStatus === WAITING_FOR_DRIVE_JSON)
         && /\.pdf$/i.test(String(paper.paperFileName ?? ''));
     });
   let checkedCount = 0;
@@ -401,6 +418,15 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
           analysisError: '',
           analysisRequestedAt: new Date(),
           analysisRevision: Number(current.analysisRevision ?? 0) + 1,
+          questions: [],
+          topics: [],
+          questionCount: 0,
+          paperMetadata: {},
+          paperAnalysisSummary: '',
+          paperDocumentAnalysis: '',
+          paperDocumentAnalysisModel: '',
+          analysisVisionModels: [],
+          analysisBatchOutputs: [],
           driveAnalysisJsonStatus: 'available',
           driveAnalysisJsonReviewReason: '',
           updatedAt: new Date(),
@@ -425,6 +451,7 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
     subject,
     grade,
     checkedCount,
+    requestedPaperCount: requestedPaperIds?.length ?? null,
     queuedCount,
     reviewCount,
     skippedCount,

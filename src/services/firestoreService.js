@@ -2241,11 +2241,11 @@ export const getDriveTopicCatalogAllSyncStatus = async ({ jobId = '' } = {}) => 
   return response.data;
 };
 
-export const queueLegacyDriveJsonAnalyses = async ({ subject, grade, maxPapers = 50 } = {}) => {
+export const queueLegacyDriveJsonAnalyses = async ({ subject, grade, maxPapers = 50, paperIds, onlyWaiting = false } = {}) => {
   if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
   if (!subject || !grade) throw new Error('Choose a subject and grade before checking legacy Drive analysis JSON files.');
   const callable = httpsCallable(functions, 'queueLegacyDriveJsonAnalyses', { timeout: 540000 });
-  const response = await callable({ subject, grade, maxPapers });
+  const response = await callable({ subject, grade, maxPapers, ...(Array.isArray(paperIds) ? { paperIds } : {}), ...(onlyWaiting ? { onlyWaiting: true } : {}) });
   return response.data;
 };
 

@@ -6,6 +6,7 @@ import { LoadingState } from '../components/common/LoadingState';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
+import { useStudentExercisePaperAccess } from '../hooks/useStudentExercisePaperAccess';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
 import { cancelQuestionPaperAnalysis, getDriveTopicCatalogAllSyncStatus, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, previewDriveTopicCatalogSync, queueLegacyDriveJsonAnalyses, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startDriveTopicCatalogAllSync, startGoogleDrivePastPaperImport, subscribeQuestionPapers, syncDriveTopicCatalog, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
@@ -365,6 +366,7 @@ export const PastExamPapersPage = () => {
   }, [topicResolverOpen]);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
+  const memoAccess = useStudentExercisePaperAccess(profile?.uid ?? user?.uid, role === ROLES.STUDENT);
   useEffect(() => {
     if (role !== ROLES.ADMIN) return undefined;
     let active = true;
@@ -829,36 +831,65 @@ export const PastExamPapersPage = () => {
   const resumeAllWaitingPapers = async (waitingPapers) => {
     if (waitingRetryAllLoading || !waitingPapers.length) return;
     setWaitingRetryAllLoading(true);
-    setStatus('Rechecking waiting papers against their Google Drive analysis JSON files one at a time...');
-    const queuedPatches = new Map();
+    setStatus('Checking Google Drive for valid analysis JSON files before queueing waiting papers...');
+    const summary = { queuedCount: 0, skippedCount: 0, reviewCount: 0, errorCount: 0, invalidMetadataCount: 0 };
+    const groupedPapers = new Map();
+    waitingPapers.forEach((paper) => {
+      const subject = String(paper.subject ?? '').trim();
+      const grade = String(paper.grade ?? '').trim();
+      if (!paper.id || !subject || !grade) {
+        summary.invalidMetadataCount += 1;
+        return;
+      }
+      const key = JSON.stringify([subject, grade]);
+      const group = groupedPapers.get(key) ?? { subject, grade, papers: [] };
+      group.papers.push(paper);
+      groupedPapers.set(key, group);
+    });
+    const errors = [];
     try {
       await runOperation({
-        operationName: 'Resuming papers waiting for Drive JSON',
-        successMessage: 'All waiting papers were added to the normal analysis queue.',
-        failureMessage: 'Some waiting papers could not be added to the analysis queue.',
+        operationName: 'Checking Drive JSON and resuming paper analysis',
+        successMessage: 'Drive JSON checks finished for the waiting papers.',
+        failureMessage: 'Drive JSON checks could not finish for some waiting papers.',
       }, async () => {
-        for (const paper of waitingPapers) {
-          const patch = makeAnalysisRetryPatch();
-          await updateQuestionPaper(paper.id, patch);
-          queuedPatches.set(paper.id, patch);
+        for (const group of groupedPapers.values()) {
+          for (let index = 0; index < group.papers.length; index += 50) {
+            const batch = group.papers.slice(index, index + 50);
+            try {
+              const result = await queueLegacyDriveJsonAnalyses({
+                subject: group.subject,
+                grade: group.grade,
+                maxPapers: batch.length,
+                paperIds: batch.map((paper) => paper.id),
+                onlyWaiting: true,
+              });
+              summary.queuedCount += Number(result?.queuedCount) || 0;
+              summary.skippedCount += Number(result?.skippedCount) || 0;
+              summary.reviewCount += Number(result?.reviewCount) || 0;
+              summary.errorCount += Number(result?.errorCount) || 0;
+            } catch (error) {
+              summary.errorCount += batch.length;
+              errors.push(`${group.subject}, ${group.grade}: ${error.message || 'Drive JSON check failed'}`);
+            }
+          }
         }
       });
-      setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
-        ? { ...paper, ...queuedPatches.get(paper.id) }
-        : paper));
-      setStatus(`${queuedPatches.size} waiting paper${queuedPatches.size === 1 ? '' : 's'} added to the analysis queue in order.${analysisQueuePaused ? ' The queue is paused, so they will wait until resumed.' : ''}`);
     } catch (error) {
-      if (queuedPatches.size) {
-        setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
-          ? { ...paper, ...queuedPatches.get(paper.id) }
-          : paper));
-      }
-      setStatus(queuedPatches.size
-        ? `Queued ${queuedPatches.size} of ${waitingPapers.length} waiting papers before stopping: ${error.message || 'queue update failed'}`
-        : error.message || 'Could not resume waiting paper analyses.');
+      errors.push(error.message || 'Could not check waiting papers against Drive JSON files.');
     } finally {
       setWaitingRetryAllLoading(false);
     }
+    const skippedCount = summary.skippedCount + summary.invalidMetadataCount;
+    const parts = [
+      `${summary.queuedCount} queued with valid Drive JSON`,
+      `${skippedCount} skipped without a matching valid JSON or required metadata`,
+      `${summary.reviewCount} flagged for review`,
+      ...(summary.errorCount ? [`${summary.errorCount} failed checks`] : []),
+    ];
+    const pauseNote = analysisQueuePaused ? ' The analysis queue is paused, so queued papers will wait until you resume it.' : '';
+    const failureNote = errors.length ? ` Errors: ${[...new Set(errors)].join('; ')}` : '';
+    setStatus(`${parts.join(' · ')}.${pauseNote}${failureNote}`);
   };
 
   const stopPaperAnalysis = async (paper) => {
@@ -1206,6 +1237,19 @@ export const PastExamPapersPage = () => {
     }
   };
 
+  const renderMemoAction = (paper, label = 'Memo') => {
+    if (!paper.memoUrl) return <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>;
+    if (role === ROLES.STUDENT && memoAccess.isMemoLocked(paper.id)) {
+      const message = memoAccess.error
+        ? 'Memo unavailable until submission status can be checked'
+        : memoAccess.isLoading
+          ? 'Checking memo access…'
+          : 'Submit today’s work to unlock memo';
+      return <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600" role="status">{message}</span>;
+    }
+    return <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>{label}</Link>;
+  };
+
   const handleBulkSubmit = async () => {
     if (!bulkRows.length) {
       setStatus('Choose bulk files first.');
@@ -1253,7 +1297,7 @@ export const PastExamPapersPage = () => {
               {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
               <div className="mt-3 flex flex-wrap gap-2">
                 {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
-                {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>}
+                {renderMemoAction(paper)}
               </div>
             </div>
           ) : null}
@@ -1270,7 +1314,7 @@ export const PastExamPapersPage = () => {
         {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
           <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
-          {paper.memoUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>Open memo</Link> : <span className="rounded-full bg-slate-50 px-3 py-2 text-slate-500">No memo uploaded</span>}
+          {renderMemoAction(paper, 'Open memo')}
           {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
           {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
           {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
@@ -1658,7 +1702,7 @@ export const PastExamPapersPage = () => {
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
                       <div>
                         <p className="text-sm font-semibold text-amber-950">{waitingPapers.length} paper{waitingPapers.length === 1 ? '' : 's'} are waiting for Drive JSON.</p>
-                        <p className="mt-1 text-xs text-amber-900">Resume All retries them through the normal Drive-JSON-first queue, in order. Papers without a matching JSON will remain waiting. If the queue is paused, they will wait until you resume it.</p>
+                        <p className="mt-1 text-xs text-amber-900">Resume All checks each matching Drive JSON before queueing a paper. Papers without a valid JSON are skipped and remain waiting. If the analysis queue is paused, eligible papers wait until you resume it.</p>
                       </div>
                       <button
                         type="button"

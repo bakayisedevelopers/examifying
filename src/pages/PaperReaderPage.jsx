@@ -6,6 +6,7 @@ import { InAppPdfPage } from '../components/common/InAppPdfPage';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
+import { useStudentExercisePaperAccess } from '../hooks/useStudentExercisePaperAccess';
 import { ROLES } from '../lib/constants';
 import { getQuestionPaperById, subscribeQuestionPaperAnalysisActivity, updateQuestionPaper } from '../services/firestoreService';
 
@@ -275,7 +276,7 @@ export const PaperReaderPage = () => {
   const { paperId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { profile, logout } = useAuth();
+  const { profile, user, logout } = useAuth();
   const { runOperation } = useOperationStatus();
   const [paper, setPaper] = useState(null);
   const [analysisActivity, setAnalysisActivity] = useState([]);
@@ -291,6 +292,17 @@ export const PaperReaderPage = () => {
   const documentUrl = documentType === 'memo' ? paper?.memoUrl : paper?.paperUrl;
   const documentTitle = documentType === 'memo' ? 'Memorandum' : 'Question paper';
   const canReviewAnalysis = role === ROLES.ADMIN;
+  const isStudentMemo = role === ROLES.STUDENT && documentType === 'memo';
+  const memoAccess = useStudentExercisePaperAccess(profile?.uid ?? user?.uid, isStudentMemo);
+  const studentMemoLocked = isStudentMemo && memoAccess.isMemoLocked(paperId);
+  const visibleDocumentUrl = studentMemoLocked ? '' : documentUrl;
+  const visibleDocumentStatus = studentMemoLocked
+    ? memoAccess.isLoading
+      ? 'Checking whether today’s exercise has been submitted…'
+      : memoAccess.error
+        ? 'Memo access is unavailable because today’s submission status could not be checked. Please try again shortly.'
+        : 'Submit today’s exercise before opening its memo.'
+    : status;
 
   useEffect(() => {
     let active = true;
@@ -351,7 +363,7 @@ export const PaperReaderPage = () => {
   };
 
   if (role === ROLES.STUDENT || role === ROLES.TUTOR) {
-    return <StudentFullPagePdf paper={paper} documentUrl={documentUrl} documentTitle={documentTitle} pageNumber={pageNumber} questionReference={questionReference} status={status} onPageChange={updatePage} onBack={goBack} />;
+    return <StudentFullPagePdf paper={paper} documentUrl={visibleDocumentUrl} documentTitle={documentTitle} pageNumber={pageNumber} questionReference={questionReference} status={visibleDocumentStatus} onPageChange={updatePage} onBack={goBack} />;
   }
 
   return (

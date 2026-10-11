@@ -79,7 +79,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   };
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-slate-950 text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:static lg:h-screen">
+    <div className="fixed inset-0 overflow-hidden bg-transparent text-slate-100 selection:bg-lime-400 selection:text-slate-950 lg:bg-slate-950 lg:static lg:h-screen">
       <div className="mx-auto flex h-[100dvh] max-h-[100dvh] max-w-7xl flex-col gap-4 px-4 py-4 lg:grid lg:h-screen lg:max-h-none lg:grid-cols-[260px_1fr] lg:gap-6 lg:px-6">
         
         {/* Mobile Header */}
@@ -120,10 +120,10 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
         )}
 
         <aside 
-          className={`panel z-50 flex flex-col p-5 border-slate-800 bg-slate-900/95 transition-transform duration-300 ease-in-out
+          className={`panel z-50 flex flex-col p-5 border-slate-800 !bg-slate-950/95 transition-transform duration-300 ease-in-out
             fixed inset-y-4 left-4 max-h-[calc(100dvh-2rem)] max-w-[300px] w-[90vw] overflow-y-auto overscroll-contain
             ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-[calc(100%+1.5rem)]'}
-            lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:shadow-sm`}
+            lg:!bg-slate-900/95 lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:shadow-sm`}
         >
           <div className="mb-5 flex items-center justify-between lg:hidden">
             <Link to={homePath} className="block" onClick={() => setIsMobileMenuOpen(false)}>

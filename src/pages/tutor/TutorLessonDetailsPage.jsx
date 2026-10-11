@@ -621,9 +621,11 @@ export const TutorLessonDetailsPage = () => {
       ) : (
         <section className="panel space-y-5 p-5">
           <SectionHeader
-            eyebrow={sessionMode === 'group' ? 'Group lesson' : 'One-on-one lesson'}
+            eyebrow={lessonRows[0]?.manualTopicCompletion ? 'Manual topic completion' : sessionMode === 'group' ? 'Group lesson' : 'One-on-one lesson'}
             title={`${subject} • ${grade || 'Grade not recorded'}`}
-            description={`${lessonDate} • ${lessonType === 'inPerson' ? 'In-person' : 'Online (WhatsApp)'} • ${lessonRows.length} student${lessonRows.length === 1 ? '' : 's'}`}
+            description={lessonRows[0]?.manualTopicCompletion
+              ? `${lessonDate} • ${topics.length} completed topic${topics.length === 1 ? '' : 's'}`
+              : `${lessonDate} • ${lessonType === 'inPerson' ? 'In-person' : 'Online (WhatsApp)'} • ${lessonRows.length} student${lessonRows.length === 1 ? '' : 's'}`}
           />
           {!canManageExisting ? <p className="text-sm font-medium text-amber-700">{historyPeriodId ? 'Historical lesson record · read-only.' : 'This lesson is read-only because your current role is not a co-owner for every student in the session.'}</p> : null}
           {lessonRows.length && lessonRows.every((row) => row.status === 'planned') && canManageExisting ? (

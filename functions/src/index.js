@@ -48,6 +48,8 @@ export {
   mutatePlannedLessonSession,
 } from './lessonEntitlements.js';
 
+export { addManualCompletedTopics } from './manualTopicCompletion.js';
+
 export {
   callKiloText,
   callExerciseGenerationText,

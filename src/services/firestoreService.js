@@ -2110,6 +2110,41 @@ export const getGlobalTopicList = async ({ subject, grade } = {}) => {
   return [...new Set(values.map((value) => String(value ?? '').trim()).filter((value) => value.split('|').length === 2))];
 };
 
+export const getManualTopicCompletionOptions = async ({ studentId, subjectInstanceId, subject, grade } = {}) => {
+  if (!studentId || !subjectInstanceId || !subject || !grade) {
+    throw new Error('Choose a student and subject before loading topics.');
+  }
+  const catalogTopics = await getGlobalTopicList({ subject, grade });
+  if (!isFirebaseConfigured) return catalogTopics;
+  ensureDb();
+  const topicSnapshot = await getDocs(collection(db, 'users', studentId, 'subjects', subjectInstanceId, 'topics'));
+  const existingKeys = new Set(topicSnapshot.docs.flatMap((item) => {
+    const data = item.data();
+    return [item.id, data.canonicalTopicKey, data.topicName]
+      .map((value) => normalizeCatalogTopicKey(value))
+      .filter(Boolean);
+  }));
+  return catalogTopics.filter((topic) => !existingKeys.has(normalizeCatalogTopicKey(topic)));
+};
+
+export const saveManualTopicCompletion = async ({
+  tutorId,
+  studentId,
+  subjectInstanceId,
+  subject,
+  grade,
+  topicScores = [],
+  operationId,
+} = {}) => {
+  if (!tutorId || !studentId || !subjectInstanceId || !subject || !grade || !Array.isArray(topicScores) || !topicScores.length) {
+    throw new Error('Choose a student, subject, and at least one topic with a score.');
+  }
+  if (!functions) throw new Error('Firebase Functions are not configured to save completed topics.');
+  const callable = httpsCallable(functions, 'addManualCompletedTopics');
+  const result = await callable({ tutorId, studentId, subjectInstanceId, subject, grade, topicScores, operationId });
+  return result.data;
+};
+
 export const getGlobalTopicOptionGroups = async ({ subject, grade, studentIds = [], questionPapers } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading topics.');
   if (!isFirebaseConfigured) {
@@ -3705,6 +3740,7 @@ export const getTutorAssignedStudentContexts = async (tutorId, studentId = null)
     const isPrimaryTutor = episode.primaryTutorId === tutorId;
     return {
       studentId: episode.studentId, subject: episode.subjectKey, subjectInstanceId: item.id,
+      grade: episode.grade || episode.gradeLevel || '',
       assignmentId: item.id, assignmentPeriodId: item.id,
       accessRole: isPrimaryTutor ? 'co-owner' : episode.staffByUid?.[tutorId] ?? 'viewer',
       isPrimaryTutor,
@@ -3717,7 +3753,10 @@ export const getTutorAssignedStudentContexts = async (tutorId, studentId = null)
   const studentIds = [...new Set(rows.map((row) => row.studentId).filter(Boolean))];
   const students = await Promise.all(studentIds.map((id) => getDoc(doc(db, collections.users, id))));
   const profilesByStudentId = new Map(studentIds.map((id, index) => [id, students[index].exists() ? students[index].data() : {}]));
-  return rows.map((row) => ({ ...(profilesByStudentId.get(row.studentId) ?? {}), ...row, uid: row.studentId }));
+  return rows.map((row) => {
+    const profile = profilesByStudentId.get(row.studentId) ?? {};
+    return { ...profile, ...row, grade: row.grade || profile.grade || profile.gradeLevel || '', uid: row.studentId };
+  });
 };
 
 export const getTutorAssignmentHistoryContexts = async (tutorId, studentId = null) => {

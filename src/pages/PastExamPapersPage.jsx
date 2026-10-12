@@ -8,7 +8,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { useStudentExercisePaperAccess } from '../hooks/useStudentExercisePaperAccess';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
-import { cancelQuestionPaperAnalysis, getDriveTopicCatalogAllSyncStatus, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, previewDriveTopicCatalogSync, queueLegacyDriveJsonAnalyses, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startDriveTopicCatalogAllSync, startGoogleDrivePastPaperImport, subscribeQuestionPapers, syncDriveTopicCatalog, updateQuestionPaper } from '../services/firestoreService';
+import { cancelQuestionPaperAnalysis, getDriveTopicCatalogAllSyncStatus, getGlobalTopicList, getGoogleDrivePastPaperFolderContents, getGoogleDrivePastPaperImportStatuses, getQuestionPaperAnalysisControl, getTopicResolverMappings, getTopicResolverSourceRecords, initializeGlobalTopicCatalog, previewDriveTopicCatalogSync, queueLegacyDriveJsonAnalyses, resolveTopicsWithGemini, saveQuestionPaper, saveTopicResolverMappings, setQuestionPaperAnalysisPaused, startDriveTopicCatalogAllSync, startGoogleDrivePastPaperImport, startGoogleDrivePastPaperImportAll, subscribeQuestionPapers, syncDriveTopicCatalog, updateQuestionPaper } from '../services/firestoreService';
 import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
@@ -307,6 +307,7 @@ export const PastExamPapersPage = () => {
   const [isLoadingPapers, setIsLoadingPapers] = useState(true);
   const [status, setStatus] = useState('');
   const [driveImportRunning, setDriveImportRunning] = useState(false);
+  const [driveFullImportRunning, setDriveFullImportRunning] = useState(false);
   const [driveImportMessage, setDriveImportMessage] = useState('');
   const [driveExplorerOpen, setDriveExplorerOpen] = useState(false);
   const [driveFolderContents, setDriveFolderContents] = useState(null);
@@ -1106,6 +1107,25 @@ export const PastExamPapersPage = () => {
     }
   };
 
+  const handleDriveImportAll = async () => {
+    if (driveFullImportRunning) return;
+    setDriveFullImportRunning(true);
+    setDriveImportMessage('Scanning the configured past-paper folder and queueing eligible folders…');
+    try {
+      const result = await runOperation({
+        operationName: 'Queueing all missing Google Drive papers',
+        successMessage: 'The configured Drive folders were queued for import.',
+      }, startGoogleDrivePastPaperImportAll);
+      setDriveImportMessage(
+        `Drive scan complete: ${result?.queuedFolders ?? 0} folder(s) queued, ${result?.alreadyQueuedFolders ?? 0} already queued, across ${result?.discoveredFolders ?? 0} folders with ${result?.discoveredPdfFiles ?? 0} PDF(s). Each folder imports files one at a time; papers already present are skipped.`,
+      );
+    } catch (error) {
+      setDriveImportMessage(error.message || 'Could not start the full Google Drive import.');
+    } finally {
+      setDriveFullImportRunning(false);
+    }
+  };
+
   const handleBulkFiles = (event) => {
     const files = Array.from(event.target.files ?? []);
     const result = buildBulkRows({ files, profile });
@@ -1444,22 +1464,33 @@ export const PastExamPapersPage = () => {
         <div className="panel !bg-transparent space-y-4 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="font-semibold text-slate-900">Google Drive past-paper folders</h2>
-              <p className="mt-1 text-sm text-slate-600">Browse one folder at a time, check paper and memo storage status, then import only the selected paper files.</p>
-              {driveImportMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{driveImportMessage}</p> : null}
+                <h2 className="font-semibold text-slate-100">Google Drive past-paper folders</h2>
+              <p className="mt-1 text-sm text-slate-300">Browse folders to import selected papers, or queue all missing PDFs beneath the configured root. The importer processes each folder and its files sequentially.</p>
+              {driveImportMessage ? <p className="mt-2 text-sm text-lime-200" role="status">{driveImportMessage}</p> : null}
             </div>
-            <button
-              type="button"
-              className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
-              disabled={driveFolderLoading || driveImportRunning}
-              onClick={handleToggleDriveExplorer}
-            >
-              {driveFolderLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <HardDriveDownload className="h-4 w-4" aria-hidden="true" />}
-              {driveExplorerOpen ? 'Close Drive browser' : 'Browse Drive folders'}
-            </button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                disabled={driveFullImportRunning || driveImportRunning}
+                onClick={handleDriveImportAll}
+              >
+                {driveFullImportRunning ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <HardDriveDownload className="h-4 w-4" aria-hidden="true" />}
+                {driveFullImportRunning ? 'Queueing all folders…' : 'Import all missing papers'}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
+                disabled={driveFolderLoading || driveImportRunning || driveFullImportRunning}
+                onClick={handleToggleDriveExplorer}
+              >
+                {driveFolderLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <HardDriveDownload className="h-4 w-4" aria-hidden="true" />}
+                {driveExplorerOpen ? 'Close Drive browser' : 'Browse Drive folders'}
+              </button>
+            </div>
           </div>
           {driveExplorerOpen ? (
-            <div className="w-full space-y-4 border-t border-slate-200 pt-4">
+            <div className="w-full space-y-4 border-t border-slate-700 pt-4">
               {driveFolderTrail.length ? (
                 <nav aria-label="Google Drive folder path" className="flex flex-wrap items-center gap-1 text-sm">
                   {driveFolderTrail.map((folder, index) => (
@@ -1477,7 +1508,7 @@ export const PastExamPapersPage = () => {
                 </nav>
               ) : null}
               {driveFolderLoading ? (
-                <div className="flex items-center gap-2 py-5 text-sm text-slate-600"><LoaderCircle className="h-4 w-4 animate-spin text-lime-700" aria-hidden="true" />Loading folder contents…</div>
+                <div className="flex items-center gap-2 py-5 text-sm text-slate-200"><LoaderCircle className="h-4 w-4 animate-spin text-lime-300" aria-hidden="true" />Loading folder contents…</div>
               ) : driveFolderContents ? (
                 <>
                   {driveFolderContents.folders.length ? (
@@ -1542,20 +1573,20 @@ export const PastExamPapersPage = () => {
                             return (
                               <tr key={group.identityKey} className="align-top transition-colors hover:bg-lime-300/5">
                                 <td className="max-w-[22rem] px-4 py-3">
-                                  <p className="font-semibold text-slate-900">{title}</p>
+                                  <p className="font-semibold text-slate-100">{title}</p>
                                   {group.reviewReason ? <p className="mt-1 text-xs text-rose-300">{group.reviewReason}</p> : null}
                                 </td>
                                 <td className="max-w-[20rem] px-4 py-3">
-                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{questionName}</span></div>
+                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-200">{questionName}</span></div>
                                   <div className="mt-2">{statusBadge(group.paperStatus, questionImportStage)}</div>
                                 </td>
                                 <td className="max-w-[20rem] px-4 py-3">
-                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-700">{memoName}</span></div>
+                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-200">{memoName}</span></div>
                                   <div className="mt-2">{statusBadge(group.memoStatus, memoImportStage)}</div>
                                 </td>
                                 <td className="px-4 py-3 text-right">
                                   {groupIsImporting ? (
-                                    <span className="inline-flex items-center gap-2 text-xs font-semibold text-lime-800"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Importing…</span>
+                                    <span className="inline-flex items-center gap-2 text-xs font-semibold text-lime-300"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Importing…</span>
                                   ) : group.importFileIds.length ? (
                                     <button type="button" className="btn-primary whitespace-nowrap" disabled={driveImportRunning} onClick={() => handleDriveImport(group)}>
                                       {driveImportRunning ? 'Importing…' : 'Import missing files'}
@@ -1565,7 +1596,7 @@ export const PastExamPapersPage = () => {
                                   ) : ['uploaded', 'analyzing', 'analyzed'].includes(group.paperStatus) && ['uploaded', 'analyzing', 'analyzed', 'no-file'].includes(group.memoStatus) ? (
                                     <span className="text-xs font-medium text-lime-300">Up to date</span>
                                   ) : (
-                                    <span className="text-xs text-slate-500">No import available</span>
+                                    <span className="text-xs text-slate-400">No import available</span>
                                   )}
                                 </td>
                               </tr>

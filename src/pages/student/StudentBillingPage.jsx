@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
@@ -14,7 +14,7 @@ import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verif
 import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 export const StudentBillingPage = () => {
-  const { profile, logout, refreshProfile } = useAuth();
+  const { profile, logout, refreshProfile, setProfileCompletionStatus } = useAuth();
   const { runOperation, closeOperationStatus } = useOperationStatus();
   const location = useLocation();
   const navigate = useNavigate();
@@ -112,11 +112,19 @@ export const StudentBillingPage = () => {
 
       if (verification?.status === 'success') {
         await completeStudentAccessFlow(reference, verification);
+        try {
+          await setProfileCompletionStatus('paid_incomplete');
+        } catch {
+          setPaymentVerificationState('processing');
+          setPaymentVerificationMessage('Your payment was verified, but we could not finish preparing your profile. Sign in again or retry verification to continue.');
+          setStatus('Your payment is confirmed. Profile setup will be checked again automatically when you sign in.');
+          return 'processing';
+        }
         setPaymentVerificationState('success');
         setPaymentVerificationMessage('Your subscription is active. Exercise generation may continue while any remaining requirements are completed.');
         setPendingCheckoutReference('');
         setPendingAuthorizationCheckout(null);
-        navigate(location.pathname, { replace: true });
+        window.setTimeout(() => navigate('/student/onboarding', { replace: true, state: { paymentVerified: true } }), 1600);
         return 'success';
       }
 
@@ -160,7 +168,7 @@ export const StudentBillingPage = () => {
     } finally {
       setIsVerifyingPayment(false);
     }
-  }, [completeStudentAccessFlow, location.pathname, navigate, profile?.uid]);
+  }, [completeStudentAccessFlow, location.pathname, navigate, profile?.uid, setProfileCompletionStatus]);
 
   const handleContinue = async (selection) => {
     if (!profile?.uid) return;
@@ -252,12 +260,18 @@ export const StudentBillingPage = () => {
 
   return (
     <AppShell
-      title="Subscription"
-      subtitle="Choose a subscription and manage your billing period."
+      title={profile?.profileCompletionStatus === 'unpaid_incomplete' ? 'Complete your profile · Subscription' : 'Subscription'}
+      subtitle={profile?.profileCompletionStatus === 'unpaid_incomplete' ? 'Choose a plan to continue, or browse the past-paper library.' : 'Choose a subscription and manage your billing period.'}
       role="student"
       user={profile}
       onLogout={logout}
     >
+      {profile?.profileCompletionStatus === 'unpaid_incomplete' ? (
+        <div className="panel flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-slate-200">You can browse question papers while you decide on a subscription.</p>
+          <Link to="/student/papers" className="btn-secondary inline-flex w-fit items-center justify-center">Browse past papers</Link>
+        </div>
+      ) : null}
       <div className="panel mb-5 p-4 text-sm">
           {!subscriptionState ? <p className="flex items-center gap-2" role="status"><LoaderCircle className="h-4 w-4 animate-spin text-lime-500" aria-hidden="true" />Checking your current subscription…</p> : (
           <>
@@ -302,7 +316,9 @@ export const StudentBillingPage = () => {
           setPaymentVerificationMessage('');
           setPendingCheckoutReference('');
           setStatus('');
-          navigate(location.pathname, { replace: true });
+          navigate(profile?.profileCompletionStatus === 'paid_incomplete'
+            ? '/student/onboarding'
+            : location.pathname, { replace: true, state: profile?.profileCompletionStatus === 'paid_incomplete' ? { paymentVerified: true } : undefined });
         }}
         onRetry={() => {
           const reference = pendingCheckoutReference || params.get('reference') || params.get('trxref') || pendingAuthorizationCheckout?.reference;

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES } from '../../lib/constants';
-import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getStudentSubjectHistoryOptions, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
+import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getStudentSubjectHistoryOptions, getStudentSubscriptionState, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
 import { getApprovedTutorSubjects } from '../../utils/tutorSubjects';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
@@ -25,8 +26,9 @@ const formatDate = (value) => {
   return Number.isNaN(date.getTime()) ? 'Just now' : date.toLocaleString();
 };
 
-export const ProfileSubjectsPage = ({ role }) => {
-  const { profile, logout, refreshProfile } = useAuth();
+export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice = '' }) => {
+  const { profile, logout, refreshProfile, setProfileCompletionStatus, retryProfileCompletionCheck } = useAuth();
+  const navigate = useNavigate();
   const { runOperation } = useOperationStatus();
   const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
   const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
@@ -76,6 +78,38 @@ export const ProfileSubjectsPage = ({ role }) => {
   ), [profile?.tutorSubjectMarks]);
   const subjectAvailability = profile?.subjectAvailability ?? {};
 
+  const completeStudentOnboarding = async () => {
+    const [verifiedSubscription, activeSubjects] = await Promise.all([
+      getStudentSubscriptionState(profile),
+      getActiveSubjectsForStudent(profile.uid),
+    ]);
+    const paymentIsVerified = verifiedSubscription?.paymentCompleted === true
+      && verifiedSubscription?.paidSubscriptionActive === true
+      && verifiedSubscription?.subscriptionPaymentVerified === true;
+    if (!paymentIsVerified) {
+      await setProfileCompletionStatus('unpaid_incomplete');
+      setStatus('We could not confirm an active payment. Please return to subscription checkout.');
+      navigate('/student/billing', { replace: true });
+      throw new Error('We could not confirm your active subscription. Please return to checkout.');
+    }
+    if (!activeSubjects.length) {
+      setStatus('Add at least one subject before continuing.');
+      throw new Error('Add at least one subject before continuing.');
+    }
+    await setProfileCompletionStatus('paid_completed');
+    await refreshProfile(profile.uid);
+    navigate('/student', { replace: true });
+    return true;
+  };
+
+  const showTutorProgress = (message) => {
+    if (onboarding) {
+      setStatus('Checking your results document…');
+      return;
+    }
+    setStatus(message);
+  };
+
   const loadTutorDocuments = useCallback(async () => {
     if (!isTutorRole || !profile?.uid) { setDocumentsLoading(false); return; }
     setDocumentsLoading(true);
@@ -89,9 +123,9 @@ export const ProfileSubjectsPage = ({ role }) => {
 
   useEffect(() => {
     loadTutorDocuments().catch((error) => {
-      setStatus(error.message || 'Could not load uploaded tutor documents.');
+      setStatus(onboarding ? 'Uploaded results could not be loaded. You can still upload a new document.' : error.message || 'Could not load uploaded tutor documents.');
     });
-  }, [loadTutorDocuments]);
+  }, [loadTutorDocuments, onboarding]);
 
   useEffect(() => {
     if (!isTutorRole || !profile?.uid) return undefined;
@@ -208,8 +242,9 @@ export const ProfileSubjectsPage = ({ role }) => {
         await addStudentSubjects({ studentId: profile.uid, subjects: selectedSubjects, restoreSubjectInstanceIds: selectedHistoryIds });
         await loadStudentSubjects();
         await refreshProfile(profile.uid);
+        if (onboarding) await completeStudentOnboarding();
       });
-      setStatus(`${selectedSubjects.join(', ')} added to your subjects.`);
+      setStatus(onboarding ? 'Your profile is complete.' : `${selectedSubjects.join(', ')} added to your subjects.`);
       setSelectedSubjects([]);
       setSelectedHistoryIds([]);
       setSubjectToAdd('');
@@ -240,16 +275,18 @@ export const ProfileSubjectsPage = ({ role }) => {
       setSaving(true);
       setStatus('Uploading and checking marks...');
       setDocuments((current) => [temporaryDocument, ...current]);
-      const uploadResult = await runOperation({ operationName: 'Uploading and processing tutor marks', successMessage: 'The marks document was processed.' }, () => uploadTutorMarksDocument({ file, tutor: profile, onProgress: setStatus }));
+      const uploadResult = await runOperation({ operationName: onboarding ? 'Checking your results document' : 'Uploading and processing tutor marks', successMessage: onboarding ? 'Your results document was checked.' : 'The marks document was processed.' }, () => uploadTutorMarksDocument({ file, tutor: profile, onProgress: showTutorProgress }));
       setResult(uploadResult);
       await refreshProfile(profile.uid);
       await loadTutorDocuments();
-      setStatus(uploadResult.addedSubjects.length ? `Added: ${uploadResult.addedSubjects.join(', ')}.` : 'No new eligible subjects were found at 60% or above.');
+      setStatus(onboarding
+        ? (uploadResult.addedSubjects.length ? 'Your eligible subject was saved.' : 'No new eligible subject was found. Upload a results document with a listed subject at 60% or above.')
+        : uploadResult.addedSubjects.length ? `Added: ${uploadResult.addedSubjects.join(', ')}.` : 'No new eligible subjects were found at 60% or above.');
       tutorUploadFormRef.current?.reset();
       setFile(null);
     } catch (error) {
       setDocuments((current) => current.map((item) => item.id === temporaryDocument.id ? { ...item, status: 'failed', errorMessage: error.message } : item));
-      setStatus(error.message || 'Could not process marks document.');
+      setStatus(onboarding ? 'We could not read an eligible subject and result from that document. Please upload a clearer file or try again.' : error.message || 'Could not process marks document.');
       await loadTutorDocuments();
     } finally {
       setSaving(false);
@@ -261,13 +298,15 @@ export const ProfileSubjectsPage = ({ role }) => {
       setActiveDocumentId(documentRecord.id);
       setStatus(`Retrying ${documentRecord.fileName}...`);
       setDocuments((current) => current.map((item) => item.id === documentRecord.id ? { ...item, status: 'processing', errorMessage: '' } : item));
-      const retryResult = await runOperation({ operationName: `Reprocessing ${documentRecord.fileName}`, successMessage: 'The marks document was processed.' }, () => retryTutorMarksDocument({ documentRecord, tutor: profile, onProgress: setStatus }));
+      const retryResult = await runOperation({ operationName: onboarding ? 'Checking your results document' : `Reprocessing ${documentRecord.fileName}`, successMessage: onboarding ? 'Your results document was checked.' : 'The marks document was processed.' }, () => retryTutorMarksDocument({ documentRecord, tutor: profile, onProgress: showTutorProgress }));
       setResult(retryResult);
       await refreshProfile(profile.uid);
       await loadTutorDocuments();
-      setStatus(retryResult.addedSubjects.length ? `Added: ${retryResult.addedSubjects.join(', ')}.` : 'Retry complete. No new eligible subjects were found.');
+      setStatus(onboarding
+        ? (retryResult.addedSubjects.length ? 'Your eligible subject was saved.' : 'No new eligible subject was found. Upload a results document with a listed subject at 60% or above.')
+        : retryResult.addedSubjects.length ? `Added: ${retryResult.addedSubjects.join(', ')}.` : 'Retry complete. No new eligible subjects were found.');
     } catch (error) {
-      setStatus(error.message || 'Retry failed.');
+      setStatus(onboarding ? 'We could not read an eligible subject and result from that document. Please upload a clearer file or try again.' : error.message || 'Retry failed.');
       await loadTutorDocuments();
     } finally {
       setActiveDocumentId('');
@@ -346,10 +385,19 @@ export const ProfileSubjectsPage = ({ role }) => {
   };
 
   return (
-    <AppShell title="Subjects" subtitle="Manage the subjects connected to your Examifying account." role={role} user={profile} onLogout={logout}>
+    <AppShell title={onboarding ? 'Complete your profile' : 'Subjects'} subtitle={onboarding
+      ? (isTutorRole ? 'Add a results document showing at least one catalogue subject at 60% or higher.' : 'Choose at least one subject included in your verified subscription.')
+      : 'Manage the subjects connected to your Examifying account.'} role={role} user={profile} onLogout={logout}>
+      {onboarding && profile?.onboardingStatusCheckFailed ? (
+        <div className="panel flex flex-col gap-3 p-4 text-sm text-amber-100 sm:flex-row sm:items-center sm:justify-between" role="status">
+          <span>We could not verify your profile status. Retry the check to continue.</span>
+          <button type="button" className="btn-secondary" onClick={() => retryProfileCompletionCheck().catch(() => {})}>Retry check</button>
+        </div>
+      ) : null}
+      {onboardingNotice ? <div className="panel border border-lime-300/30 p-4 text-sm text-lime-100" role="status">{onboardingNotice}</div> : null}
       <section className="panel p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-slate-950">Current subjects</p>
+          <p className="text-sm font-semibold text-slate-950">{onboarding && isTutorRole ? 'Eligible subjects' : 'Current subjects'}</p>
           {role === ROLES.STUDENT && subscriptionState?.paymentCompleted ? <p className="text-xs font-medium text-slate-500">{currentSubjects.length} of {subjectLimit} included subjects selected</p> : null}
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -376,7 +424,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                     type="button"
                     onClick={() => handleRemoveSubject(subject)}
                     className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-white text-base font-bold leading-none text-rose-600 shadow-sm transition hover:bg-rose-50"
-                    disabled={saving}
+                    disabled={saving || onboarding}
                     aria-label={`Remove ${subject}`}
                     title={`Remove ${subject}`}
                   >
@@ -396,7 +444,7 @@ export const ProfileSubjectsPage = ({ role }) => {
                   </button>
                 ) : null}
 
-                {isTutorRole ? (
+                {isTutorRole && !onboarding ? (
                   <div className="mt-4 border-t border-lime-900/10 pt-3">
                     <label className="grid gap-2 text-xs font-semibold text-slate-800">
                       WhatsApp group invite link
@@ -477,18 +525,32 @@ export const ProfileSubjectsPage = ({ role }) => {
               )) : <span className="text-sm text-slate-500">No subjects selected yet.</span>}
             </div>
           </div>
-          <button className="btn-primary w-full md:w-auto" disabled={saving || !selectedSubjects.length || selectedSubjects.length > subjectLimit - currentSubjects.length}>Save subjects</button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button className="btn-primary w-full md:w-auto" disabled={saving || !selectedSubjects.length || selectedSubjects.length > subjectLimit - currentSubjects.length}>Save subjects</button>
+            {onboarding && currentSubjects.length > 0 && !selectedSubjects.length ? (
+              <button type="button" className="btn-secondary w-full md:w-auto" disabled={saving} onClick={async () => {
+                try {
+                  setSaving(true);
+                  await runOperation({ operationName: 'Completing your profile', successMessage: 'Your profile is complete.' }, completeStudentOnboarding);
+                } catch (error) {
+                  setStatus(error.message || 'Could not complete your profile. Please try again.');
+                } finally {
+                  setSaving(false);
+                }
+              }}>Continue to Examifying</button>
+            ) : null}
+          </div>
         </form>
       ) : role === ROLES.STUDENT ? (
-        <div className="panel p-5 text-sm text-slate-600">Choose Circle or Personalized to manage registered subjects.</div>
+          <div className="panel p-5 text-sm text-slate-200">Choose a subscription to manage registered subjects.</div>
       ) : null}
 
       {isTutorRole ? (
         <>
           <form ref={tutorUploadFormRef} onSubmit={handleTutorUpload} className="panel space-y-4 p-5">
             <div>
-              <p className="text-sm font-semibold text-slate-950">Add more tutor subjects</p>
-              <p className="mt-1 text-sm text-slate-500">Upload a PDF or image of your results. PDF pages are rendered as images for AI review. Only listed subjects with marks of 60% or above are eligible.</p>
+                <p className="text-sm font-semibold text-slate-950">{onboarding ? 'Add a results document' : 'Add more tutor subjects'}</p>
+              <p className="mt-1 text-sm text-slate-600">Upload a PDF or image showing your results. Listed subjects with a result of 60% or higher can be added to your profile.</p>
             </div>
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
               <input type="file" className="input" accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
@@ -497,7 +559,7 @@ export const ProfileSubjectsPage = ({ role }) => {
           </form>
 
           <section className="panel p-5">
-            <p className="text-sm font-semibold text-slate-950">Uploaded marks documents</p>
+            <p className="text-sm font-semibold text-slate-950">{onboarding ? 'Document status' : 'Uploaded marks documents'}</p>
             <div className="mt-4 space-y-3">
               {documentsLoading ? <LoadingState label="Loading uploaded documents…" /> : null}
               {documents.map((documentRecord) => (
@@ -505,14 +567,16 @@ export const ProfileSubjectsPage = ({ role }) => {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-slate-900">{documentRecord.fileName}</p>
-                      <p className="mt-1 text-xs text-slate-500">Uploaded {formatDate(documentRecord.createdAt)}</p>
+                      {!onboarding ? <p className="mt-1 text-xs text-slate-500">Uploaded {formatDate(documentRecord.createdAt)}</p> : null}
                     </div>
                     <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[documentRecord.status] ?? 'bg-slate-100 text-slate-600'}`}>
-                      {documentRecord.status ?? 'processing'}
+                      {onboarding
+                        ? documentRecord.status === 'done' ? 'Checked' : documentRecord.status === 'failed' ? 'Try again' : 'Checking'
+                        : documentRecord.status ?? 'processing'}
                     </span>
                   </div>
-                  {documentRecord.progressMessage ? <p className="mt-3 text-sm text-slate-600">{documentRecord.progressMessage}</p> : null}
-                  {documentRecord.errorMessage ? <p className="mt-3 text-sm text-rose-600">{documentRecord.errorMessage}</p> : null}
+                  {documentRecord.progressMessage && !onboarding ? <p className="mt-3 text-sm text-slate-600">{documentRecord.progressMessage}</p> : null}
+                  {documentRecord.errorMessage ? <p className="mt-3 text-sm text-rose-700">{onboarding ? 'This file could not be checked. Please upload a clearer document or retry.' : documentRecord.errorMessage}</p> : null}
                   {documentRecord.addedSubjects?.length ? <p className="mt-3 text-sm text-emerald-700">Added: {documentRecord.addedSubjects.join(', ')}</p> : null}
                   {documentRecord.extractedMarks?.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -527,9 +591,9 @@ export const ProfileSubjectsPage = ({ role }) => {
                     <button type="button" className="btn-secondary px-4 py-2" onClick={() => handleRetry(documentRecord)} disabled={activeDocumentId === documentRecord.id || documentRecord.status === 'processing'}>
                       Retry
                     </button>
-                    <button type="button" className="rounded-full bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-100" onClick={() => handleDelete(documentRecord)} disabled={activeDocumentId === documentRecord.id || documentRecord.status === 'processing'}>
+                    {!onboarding ? <button type="button" className="rounded-full bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-100" onClick={() => handleDelete(documentRecord)} disabled={activeDocumentId === documentRecord.id || documentRecord.status === 'processing'}>
                       Delete
-                    </button>
+                    </button> : null}
                   </div>
                 </div>
               ))}

@@ -47,6 +47,7 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     ? {
       paymentCompleted: false,
       subscriptionStatus: 'pending',
+      profileCompletionStatus: 'unpaid_incomplete',
     }
     : {};
 
@@ -67,6 +68,7 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     privacyNoticeAcknowledgedAt: serverTimestamp(),
     privacyNoticeVersion: legalAcceptance.version,
     ...(isTutorRole ? { subject: null, subjects: [] } : {}),
+    ...(isTutorRole ? { profileCompletionStatus: 'incomplete' } : {}),
     isTeacher: role === 'teacher' || extraProfile.isTeacher === true || extraProfile.isTeacher === 'true',
     createdAt: serverTimestamp(),
     ...(role === 'student' ? { whatsappNumber } : {}),

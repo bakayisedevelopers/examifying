@@ -472,7 +472,7 @@ const runDrivePaperImport = createDrivePaperImportRunner({
   maxFileBytes: MAX_PDF_BYTES,
 });
 
-const enqueueScheduledFolderImports = async () => {
+const enqueueDriveFolderImports = async ({ requestedBy = 'scheduled_import', runKey = '' } = {}) => {
   const rootFolderId = requireConfiguredDriveRoot();
   const files = await listConfiguredDriveTree(rootFolderId);
   const folders = new Map();
@@ -491,14 +491,15 @@ const enqueueScheduledFolderImports = async () => {
   }
 
   const scheduleSlot = Math.floor(Date.now() / TWO_HOURS_MS);
+  const taskRunKey = runKey || String(scheduleSlot);
   let queuedFolders = 0;
   let alreadyQueuedFolders = 0;
   for (const folder of folders.values()) {
     const queued = await enqueueTaskOnce(FOLDER_IMPORT_TASK, {
       folderId: folder.folderId,
-      requestedBy: 'scheduled_import',
+      requestedBy,
     }, {
-      id: stableTaskId('drive-paper-folder', `${folder.folderId}:${scheduleSlot}`),
+      id: stableTaskId('drive-paper-folder', `${folder.folderId}:${taskRunKey}`),
     });
     if (queued) queuedFolders += 1;
     else alreadyQueuedFolders += 1;
@@ -510,15 +511,31 @@ const enqueueScheduledFolderImports = async () => {
     queuedFolders,
     alreadyQueuedFolders,
   };
-  logger.info('Google Drive past-paper folder jobs queued', result);
+  logger.info('Google Drive past-paper folder jobs queued', { requestedBy, ...result });
   return result;
 };
+
+const enqueueScheduledFolderImports = () => enqueueDriveFolderImports({ requestedBy: 'scheduled_import' });
 
 export const importGoogleDrivePastPapers = onSchedule({
   ...DRIVE_PAPER_IMPORT_SCHEDULE,
   timeoutSeconds: 300,
   memory: '512MiB',
 }, enqueueScheduledFolderImports);
+
+export const startGoogleDrivePastPaperImportAll = onCall({
+  timeoutSeconds: 180,
+  memory: '512MiB',
+}, async (request) => {
+  const uid = await requireAdminCaller(request);
+  try {
+    return await enqueueDriveFolderImports({ requestedBy: `admin:${uid}`, runKey: `manual:${randomUUID()}` });
+  } catch (error) {
+    const message = safeErrorSummary(error);
+    logger.error('Admin requested a full Google Drive past-paper import', { uid, error: message });
+    throw new HttpsError('failed-precondition', message);
+  }
+});
 
 export const importGoogleDrivePastPaperFolderTask = onTaskDispatched({
   retryConfig: {

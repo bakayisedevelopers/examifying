@@ -127,6 +127,7 @@ export {
   getGoogleDrivePastPaperFolderContents,
   importGoogleDrivePastPapers,
   importGoogleDrivePastPaperFolderTask,
+  startGoogleDrivePastPaperImportAll,
   startGoogleDrivePastPaperImport,
 } from './googleDrivePaperImport.js';
 

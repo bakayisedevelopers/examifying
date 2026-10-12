@@ -2504,6 +2504,11 @@ export const addAdminTutorSubject = async ({ tutorId, subject, mark } = {}) => {
       extractedMarks: [{ subject: normalizedSubject, rawSubject: normalizedSubject, mark: numericMark }],
       minimumMark: 60,
     }).map((item) => item.subject === normalizedSubject ? { ...item, source: 'profile' } : item);
+    profile.profileCompletionStatus = profile.tutorSubjectMarks.some((item) => {
+      const subjectKey = normalizeEligibleSubject(item.subject || item.rawSubject);
+      const itemMark = Number(item.mark ?? item.bestMark);
+      return Boolean(subjectKey) && Number.isFinite(itemMark) && itemMark >= 60 && itemMark <= 100;
+    }) ? 'completed' : 'incomplete';
     return { subject: normalizedSubject, mark: numericMark };
   }
 
@@ -2523,7 +2528,16 @@ export const addAdminTutorSubject = async ({ tutorId, subject, mark } = {}) => {
       extractedMarks: [{ subject: normalizedSubject, rawSubject: normalizedSubject, mark: numericMark }],
       minimumMark: 60,
     }).map((item) => item.subject === normalizedSubject ? { ...item, source: 'profile' } : item);
-    transaction.update(tutorRef, { tutorSubjectMarks, updatedAt: serverTimestamp() });
+    const hasQualifyingSubject = tutorSubjectMarks.some((item) => {
+      const subjectKey = normalizeEligibleSubject(item.subject || item.rawSubject);
+      const itemMark = Number(item.mark ?? item.bestMark);
+      return Boolean(subjectKey) && Number.isFinite(itemMark) && itemMark >= 60 && itemMark <= 100;
+    });
+    transaction.update(tutorRef, {
+      tutorSubjectMarks,
+      profileCompletionStatus: hasQualifyingSubject ? 'completed' : 'incomplete',
+      updatedAt: serverTimestamp(),
+    });
     return { subject: normalizedSubject, mark: numericMark };
   });
 };
@@ -2782,6 +2796,14 @@ export const startGoogleDrivePastPaperImport = async ({ folderId, fileIds } = {}
   if (!functions) throw new Error('Firebase Functions are not configured.');
   const callable = httpsCallable(functions, 'startGoogleDrivePastPaperImport', { timeout: 540_000 });
   const response = await callable({ folderId, fileIds });
+  return response.data;
+};
+
+export const startGoogleDrivePastPaperImportAll = async () => {
+  ensureDb();
+  if (!functions) throw new Error('Firebase Functions are not configured.');
+  const callable = httpsCallable(functions, 'startGoogleDrivePastPaperImportAll', { timeout: 180_000 });
+  const response = await callable({});
   return response.data;
 };
 

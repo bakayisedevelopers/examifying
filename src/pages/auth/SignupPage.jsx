@@ -44,6 +44,10 @@ export const SignupPage = () => {
   if (profile?.role) {
     const selection = new URLSearchParams(location.search);
     if (profile.role === ROLES.STUDENT) {
+      if (profile.profileCompletionStatus === 'paid_incomplete') return <Navigate to="/student/onboarding" replace />;
+      if (profile.profileCompletionStatus === 'paid_completed' && !selection.has('planId') && !selection.has('discountCode')) {
+        return <Navigate to="/student" replace />;
+      }
       if (!['free', 'circle', 'personalized'].includes(selection.get('planId'))) {
         selection.set('planId', ['circle', 'personalized'].includes(profile.subscriptionPlanId) ? profile.subscriptionPlanId : 'circle');
       }
@@ -54,7 +58,11 @@ export const SignupPage = () => {
     if (profile.role === ROLES.PARENT && pendingDiscountCode) {
       return <Navigate to={`/parent?discountCode=${encodeURIComponent(pendingDiscountCode)}`} replace />;
     }
-    return <Navigate to={getPortalForProfile(profile) === 'teacher' ? '/teacher' : `/${profile.role}`} replace />;
+    const profilePortal = getPortalForProfile(profile);
+    if (['tutor', 'teacher'].includes(profile.role) && profile.profileCompletionStatus !== 'completed') {
+      return <Navigate to={profilePortal === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding'} replace />;
+    }
+    return <Navigate to={profilePortal === 'teacher' ? '/teacher' : `/${profile.role}`} replace />;
   }
 
   if (pendingDiscountCode && new URLSearchParams(location.search).get('checkout') !== '1') {
@@ -141,7 +149,8 @@ export const SignupPage = () => {
         },
       }));
 
-      const targetRoute = form.role === 'teacher' ? '/teacher' : `/${result.profile.role}`;
+      const targetRoute = form.role === 'teacher' ? '/teacher/onboarding'
+        : form.role === ROLES.TUTOR ? '/tutor/onboarding' : `/${result.profile.role}`;
       const selection = new URLSearchParams(location.search);
       const planId = selection.get('planId');
       if (form.role === ROLES.STUDENT) {

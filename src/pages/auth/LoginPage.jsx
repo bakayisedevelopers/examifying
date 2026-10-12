@@ -22,6 +22,20 @@ export const LoginPage = () => {
 
   const redirectByRole = (profile) => {
     const selection = new URLSearchParams(location.search);
+    if (profile.role === 'student') {
+      if (profile.profileCompletionStatus === 'unpaid_incomplete') {
+        navigate(`/student/billing${selection.size ? `?${selection.toString()}` : ''}`);
+        return;
+      }
+      if (profile.profileCompletionStatus === 'paid_incomplete') {
+        navigate('/student/onboarding');
+        return;
+      }
+    }
+    if (['tutor', 'teacher'].includes(profile.role) && profile.profileCompletionStatus !== 'completed') {
+      navigate(getPortalForProfile(profile) === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding');
+      return;
+    }
     const planId = selection.get('planId');
     if (profile.role === 'student' && (['free', 'circle', 'personalized'].includes(planId) || selection.has('discountCode'))) {
       navigate(`/student/billing?${selection.toString()}`);

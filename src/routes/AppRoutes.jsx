@@ -19,6 +19,8 @@ const StudentLessonDetailsPage = lazyNamed(() => import('../pages/student/Studen
 const StudentExerciseDetailsPage = lazyNamed(() => import('../pages/student/StudentExerciseDetailsPage'), 'StudentExerciseDetailsPage');
 const StudentPeerReviewsPage = lazyNamed(() => import('../pages/student/StudentPeerReviewsPage'), 'StudentPeerReviewsPage');
 const StudentBillingPage = lazyNamed(() => import('../pages/student/StudentBillingPage'), 'StudentBillingPage');
+const StudentOnboardingPage = lazyNamed(() => import('../pages/onboarding/StudentOnboardingPage'), 'StudentOnboardingPage');
+const TutorOnboardingPage = lazyNamed(() => import('../pages/onboarding/TutorOnboardingPage'), 'TutorOnboardingPage');
 const StudentProfilePage = lazyNamed(() => import('../pages/student/StudentProfilePage'), 'StudentProfilePage');
 const TutorDashboardPage = lazyNamed(() => import('../pages/tutor/TutorDashboardPage'), 'TutorDashboardPage');
 const TutorStudentsPage = lazyNamed(() => import('../pages/tutor/TutorStudentsPage'), 'TutorStudentsPage');
@@ -69,6 +71,7 @@ export const AppRoutes = () => {
     </Route>
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.STUDENT]} />}>
+      <Route path="/student/onboarding" element={<StudentOnboardingPage />} />
       <Route path="/student" element={<StudentDashboardPage />} />
       <Route path="/student/billing" element={<StudentBillingPage />} />
       <Route path="/student/profile" element={<ProfileHubPage role={ROLES.STUDENT} />} />
@@ -102,6 +105,7 @@ export const AppRoutes = () => {
     </Route>
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
+      <Route path="/tutor/onboarding" element={<TutorOnboardingPage role={ROLES.TUTOR} />} />
       <Route path="/tutor" element={<TutorDashboardPage />} />
       <Route path="/tutor/students" element={<TutorStudentsPage />} />
       <Route path="/tutor/students/:studentId" element={<TutorStudentDetailsPage />} />
@@ -125,6 +129,7 @@ export const AppRoutes = () => {
     </Route>
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
+      <Route path="/teacher/onboarding" element={<TutorOnboardingPage role="teacher" />} />
       <Route path="/teacher" element={<TutorDashboardPage />} />
       <Route path="/teacher/students" element={<TutorStudentsPage />} />
       <Route path="/teacher/students/:studentId" element={<TutorStudentDetailsPage />} />

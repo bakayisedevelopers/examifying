@@ -55,9 +55,19 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const { runOperation } = useOperationStatus();
   const isFreeStudent = effectiveRole === ROLES.STUDENT && !subscriptionState?.paymentCompleted;
   const roleNavigation = getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
-  const navigation = roleNavigation;
-  const homePath = isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
-  const profilePath = `/${effectiveRole}/profile`;
+  const isUnpaidStudent = effectiveRole === ROLES.STUDENT
+    && !['paid_incomplete', 'paid_completed'].includes(account.profileCompletionStatus);
+  const isStudentProfileIncomplete = effectiveRole === ROLES.STUDENT && account.profileCompletionStatus === 'paid_incomplete';
+  const isTutorProfileIncomplete = ['tutor', 'teacher'].includes(effectiveRole) && account.profileCompletionStatus !== 'completed';
+  const onboardingLocked = isUnpaidStudent || isStudentProfileIncomplete || isTutorProfileIncomplete;
+  const onboardingPath = effectiveRole === ROLES.STUDENT
+    ? '/student/onboarding'
+    : effectiveRole === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding';
+  const navigation = isUnpaidStudent
+    ? [{ to: '/student/papers', label: 'Browse past papers', icon: BookOpen }]
+    : onboardingLocked ? [] : roleNavigation;
+  const homePath = onboardingLocked ? onboardingPath : isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
+  const profilePath = onboardingLocked ? onboardingPath : `/${effectiveRole}/profile`;
   const displayName = account.displayName || account.name || account.fullName || 'Account';
   const email = account.email || '';
   const avatarUrl = account.photoURL || account.photoUrl || account.avatarUrl || account.profileImageUrl || account.avatar || '';
@@ -73,6 +83,10 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const navigate = useNavigate();
   const handleLogout = () => runOperation({ operationName: 'Signing out', successMessage: 'You have been signed out.', autoDismissMs: 650 }, () => onLogout?.()).catch(() => {});
   const handleBack = () => {
+    if (onboardingLocked) {
+      navigate(onboardingPath, { replace: true });
+      return;
+    }
     const historyIndex = Number(window.history.state?.idx);
     if (Number.isInteger(historyIndex) && historyIndex > 0) navigate(-1);
     else navigate(homePath, { replace: true });

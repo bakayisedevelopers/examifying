@@ -14,7 +14,7 @@ import { callKiloImage, callKiloText } from './kiloService';
 import { extractDocumentText } from './documentExtractionService';
 import { collections } from '../firebase/schema';
 import { SUBJECTS } from '../lib/constants';
-import { extractTutorSubjectMarks, getApprovedTutorSubjects, getNewEligibleTutorSubjects, mergeBestTutorSubjectMarks } from '../utils/tutorSubjects';
+import { extractTutorSubjectMarks, getApprovedTutorSubjects, getNewEligibleTutorSubjects, mergeBestTutorSubjectMarks, normalizeEligibleSubject } from '../utils/tutorSubjects';
 
 const uploadFile = async ({ file, path }) => {
   const contentType = getImageContentType(file);
@@ -371,6 +371,11 @@ const analyzeTutorMarksDocument = async ({ documentRef, documentRecord, tutor, f
     const addedSubjects = getNewEligibleTutorSubjects({ extractedMarks: mergedMarks, existingSubjects, minimumMark: 60 });
     const eligibleSubjectSet = new Set(mergedSubjects);
     const skippedSubjects = extractedMarks.filter((item) => Number(item.mark) < 60 || !eligibleSubjectSet.has(item.subject));
+    const profileCompletionStatus = mergedMarks.some((item) => {
+      const subject = normalizeEligibleSubject(item.subject ?? item.rawSubject);
+      const mark = Number(item.mark ?? item.bestMark);
+      return Boolean(subject) && Number.isFinite(mark) && mark >= 60 && mark <= 100;
+    }) ? 'completed' : 'incomplete';
 
     const tutorRef = doc(db, collections.users, tutor.uid);
     await updateDoc(tutorRef, {
@@ -380,6 +385,7 @@ const analyzeTutorMarksDocument = async ({ documentRef, documentRecord, tutor, f
       marksDocumentAnalysisModel: [analysis.model, normalizedModel].filter(Boolean).join(', '),
       marksDocumentAnalyzedAt: serverTimestamp(),
       tutorSubjectMarks: mergedMarks,
+      profileCompletionStatus,
       updatedAt: serverTimestamp(),
     });
 

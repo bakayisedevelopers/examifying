@@ -340,7 +340,6 @@ export const PastExamPapersPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [editingPaper, setEditingPaper] = useState(null);
   const [editForm, setEditForm] = useState(null);
-  const [expandedPaperIds, setExpandedPaperIds] = useState({});
   const [topicResolverOpen, setTopicResolverOpen] = useState(false);
   const [topicResolverSubject, setTopicResolverSubject] = useState('');
   const [topicResolverGrade, setTopicResolverGrade] = useState('');
@@ -507,6 +506,31 @@ export const PastExamPapersPage = () => {
       .filter((paper) => filters.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(filters.subject))
       .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
   }, [papers, role, visibleSubjects, filters, isStudentExploring, studentFilterOverrides, searchTerm]);
+  const studentPaperSections = useMemo(() => {
+    if (role !== ROLES.STUDENT) return [];
+    const subjects = new Map();
+    visiblePapers.forEach((paper) => {
+      const subject = getPaperSubject(paper) || 'Other subjects';
+      const subjectKey = normalizePaperSubject(subject);
+      const section = subjects.get(subjectKey) ?? { subject, groups: new Map() };
+      const grade = getPaperField(paper, 'grade') || 'Grade not listed';
+      const year = String(getPaperField(paper, 'year') || 'Year not listed');
+      const groupKey = `${grade}::${year}`;
+      const group = section.groups.get(groupKey) ?? { grade, year, papers: [] };
+      group.papers.push(paper);
+      section.groups.set(groupKey, group);
+      subjects.set(subjectKey, section);
+    });
+
+    return [...subjects.values()]
+      .map((section) => ({
+        ...section,
+        groups: [...section.groups.values()].sort((left, right) => Number(right.year) - Number(left.year)
+          || right.year.localeCompare(left.year)
+          || left.grade.localeCompare(right.grade)),
+      }))
+      .sort((left, right) => left.subject.localeCompare(right.subject));
+  }, [role, visiblePapers]);
   const adminPaperGroups = useMemo(() => {
     const groups = { analyzing: [], analyzed: [], failed: [], waiting: [] };
     const orderedPapers = [...papers].sort((left, right) =>
@@ -1270,6 +1294,38 @@ export const PastExamPapersPage = () => {
     return <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>{label}</Link>;
   };
 
+  const getStudentDocumentTitle = (paper, type) => {
+    const rawPaperNumber = String(getPaperField(paper, 'paperNumber') || '').trim();
+    const paperNumber = rawPaperNumber.replace(/^paper\s*/i, '').trim();
+    const base = paperNumber ? `${type === 'memo' ? 'Memo' : 'Paper'} ${paperNumber}` : (type === 'memo' ? 'Memo' : 'Question paper');
+    const languageValue = getPaperField(paper, 'language') || getPaperField(paper, 'paperLanguage') || getPaperField(paper, 'languages');
+    const language = Array.isArray(languageValue) ? languageValue.filter(Boolean).join(' & ') : String(languageValue || '').trim();
+    const details = [language, getPaperField(paper, 'month'), getPaperField(paper, 'region')].filter(Boolean);
+    return details.length ? `${base} (${details.join(' · ')})` : base;
+  };
+
+  const renderStudentOpenAction = (paper, type) => {
+    const url = type === 'memo' ? paper.memoUrl : paper.paperUrl;
+    if (!url) return <span className="text-xs text-slate-500">Unavailable</span>;
+    if (type === 'memo' && memoAccess.isMemoLocked(paper.id)) {
+      const message = memoAccess.error
+        ? 'Memo unavailable until submission status can be checked'
+        : memoAccess.isLoading
+          ? 'Checking memo access…'
+          : 'Submit today’s work to unlock memo';
+      return <span className="text-xs font-medium text-slate-400" role="status" title={message}>{memoAccess.isLoading ? 'Checking…' : 'Locked'}</span>;
+    }
+    return (
+      <Link
+        className="inline-flex min-h-9 items-center justify-center rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 px-4 py-2 text-xs font-bold text-slate-950 transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300"
+        to={type === 'memo' ? `/student/papers/${paper.id}?document=memo&page=1` : `/student/papers/${paper.id}?page=1`}
+        aria-label={`Open ${getStudentDocumentTitle(paper, type)}`}
+      >
+        Open
+      </Link>
+    );
+  };
+
   const handleBulkSubmit = async () => {
     if (!bulkRows.length) {
       setStatus('Choose bulk files first.');
@@ -1293,37 +1349,7 @@ export const PastExamPapersPage = () => {
 
   const renderPaperCard = (paper) => (
     <div key={paper.id}>
-      {role === ROLES.STUDENT ? (
-        <div className="panel p-3 md:hidden">
-          <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <h3 className="break-words text-sm font-semibold text-slate-950">{getPaperTitle(paper)}</h3>
-              <span className="mt-2 inline-flex max-w-full truncate rounded-full border border-lime-400/20 bg-lime-400/10 px-2.5 py-1 text-xs font-medium text-lime-300">{getPaperField(paper, 'subject') || 'Subject not listed'}</span>
-            </div>
-            <button
-              type="button"
-              className="btn-secondary h-10 w-10 flex-none p-0"
-              aria-label={`${expandedPaperIds[paper.id] ? 'Hide' : 'Show'} ${paper.displayName || 'paper'} details`}
-              aria-expanded={Boolean(expandedPaperIds[paper.id])}
-              title={expandedPaperIds[paper.id] ? 'Hide paper details' : 'Show paper details'}
-              onClick={() => setExpandedPaperIds((current) => ({ ...current, [paper.id]: !current[paper.id] }))}
-            >
-              <ChevronDown className={`mx-auto h-4 w-4 transition-transform ${expandedPaperIds[paper.id] ? 'rotate-180' : ''}`} aria-hidden="true" />
-            </button>
-          </div>
-          {expandedPaperIds[paper.id] ? (
-            <div className="mt-3 border-t border-slate-200 pt-3">
-              <p className="text-xs text-slate-600">{getPaperField(paper, 'grade') || 'Grade not listed'} • {getPaperField(paper, 'region') || 'Region not listed'} • {getPaperField(paper, 'month')} {getPaperField(paper, 'year')} • {getPaperField(paper, 'paperNumber') || 'Paper 1'}</p>
-              {paper.notes ? <p className="mt-2 text-sm text-slate-600">{paper.notes}</p> : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                {paper.paperUrl ? <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Paper</Link> : null}
-                {renderMemoAction(paper)}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      <div className={`${role === ROLES.STUDENT ? 'hidden md:block ' : ''}panel p-5`}>
+      <div className="panel p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
@@ -1778,6 +1804,54 @@ export const PastExamPapersPage = () => {
             );
           })}
         </div>
+      ) : role === ROLES.STUDENT ? (
+        studentPaperSections.length ? (
+          <div className="space-y-6">
+            {studentPaperSections.map((subjectSection) => (
+              <section key={subjectSection.subject} className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/90 shadow-[0_4px_25px_rgba(0,0,0,0.35)]">
+                <header className="px-4 pb-3 pt-4 sm:px-5">
+                  <h2 className="text-xl font-semibold text-white">{subjectSection.subject}</h2>
+                  <div className="mt-3 h-1 w-full rounded-full bg-slate-800" aria-hidden="true">
+                    <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400" />
+                  </div>
+                </header>
+                <div className="space-y-5 px-3 pb-4 sm:px-5">
+                  {subjectSection.groups.map((group) => (
+                    <section key={`${subjectSection.subject}-${group.grade}-${group.year}`} aria-label={`${subjectSection.subject}, ${group.grade}, ${group.year}`}>
+                      <h3 className="mb-2 px-2 text-sm font-semibold text-lime-300">{group.grade} · {group.year}</h3>
+                      <div className="overflow-x-auto rounded-xl border border-slate-800">
+                        <table className="w-full min-w-[19rem] border-collapse text-left text-sm">
+                          <thead className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
+                            <tr>
+                              <th scope="col" className="px-3 py-3 sm:px-4">Title</th>
+                              <th scope="col" className="w-24 px-3 py-3 text-right sm:w-28 sm:px-4">Open</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/90">
+                            {group.papers.flatMap((paper) => ([
+                              <tr key={`${paper.id}-question`} className="transition-colors hover:bg-lime-400/5">
+                                <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getStudentDocumentTitle(paper, 'paper')}</td>
+                                <td className="px-3 py-2 text-right sm:px-4">{renderStudentOpenAction(paper, 'paper')}</td>
+                              </tr>,
+                              ...(paper.memoUrl ? [
+                                <tr key={`${paper.id}-memo`} className="transition-colors hover:bg-lime-400/5">
+                                  <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getStudentDocumentTitle(paper, 'memo')}</td>
+                                  <td className="px-3 py-2 text-right sm:px-4">{renderStudentOpenAction(paper, 'memo')}</td>
+                                </tr>,
+                              ] : []),
+                            ]))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="panel p-5 text-sm text-slate-400">{isLoadingPapers ? <LoadingState label="Loading past papers…" /> : 'No papers match these filters.'}</div>
+        )
       ) : (
         <div className="space-y-4">
           {visiblePapers.map(renderPaperCard)}

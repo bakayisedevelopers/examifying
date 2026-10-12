@@ -583,9 +583,18 @@ export const createDrivePaperImportRunner = (dependencies) => {
     maxFileBytes = 50 * 1024 * 1024,
   } = dependencies ?? {};
 
-  const run = async ({ requestedBy = 'schedule', folderId = '', fileIds = [], importAllFolderFiles = false } = {}) => {
+  const run = async ({ requestedBy = 'schedule', folderId = '', fileIds = [], importAllFolderFiles = false, retryReviewFileIds = [] } = {}) => {
     if (!String(rootFolderId ?? '').trim()) {
       throw new Error('Google Drive past-paper import is not configured: set GOOGLE_DRIVE_PAPERS_ROOT_ID to one specific folder ID.');
+    }
+    if (!Array.isArray(retryReviewFileIds) || retryReviewFileIds.length > 2) {
+      throw new Error('A review recheck can include one or two selected Drive files.');
+    }
+    const retryReviewIds = new Set(retryReviewFileIds.map((id) => String(id ?? '').trim()).filter(Boolean));
+    if (retryReviewIds.size !== retryReviewFileIds.length || retryReviewIds.size && (
+      importAllFolderFiles || retryReviewIds.size !== fileIds.length || fileIds.some((id) => !retryReviewIds.has(String(id)))
+    )) {
+      throw new Error('Review rechecks must explicitly select only the reviewed Drive files.');
     }
 
     const lease = await acquireLease({ requestedBy, now: now() });
@@ -600,6 +609,7 @@ export const createDrivePaperImportRunner = (dependencies) => {
       waitingFiles: 0,
       failedFiles: 0,
       skippedFiles: 0,
+      reviewSkippedFiles: 0,
     };
     const writeStatus = createStatusWriter({ writeTracking, now });
 
@@ -664,12 +674,20 @@ export const createDrivePaperImportRunner = (dependencies) => {
           attemptCount: Number(tracking?.retryCount ?? 0) + 1,
         };
 
-        if (tracking?.driveFingerprint && tracking.driveFingerprint !== item.fingerprint) {
+        const retryingReview = retryReviewIds.has(file.id) && tracking?.importStatus === 'review';
+        if (tracking?.driveFingerprint && tracking.driveFingerprint !== item.fingerprint && !retryingReview) {
           await markReview(item, 'This Drive file changed after it was seen. The stored Firebase paper was left untouched; review the new Drive revision manually.');
           continue;
         }
-        if (tracking && tracking.driveFingerprint === item.fingerprint && terminalStatuses.has(tracking.importStatus)) {
+        if (tracking && tracking.driveFingerprint === item.fingerprint && terminalStatuses.has(tracking.importStatus) && !retryingReview) {
           summary.skippedFiles += 1;
+          if (tracking.importStatus === 'review') {
+            summary.reviewSkippedFiles += 1;
+            logger.info('Drive file remains in review; it was skipped until an administrator rechecks it', {
+              driveFileId: file.id,
+              reviewReason: safeErrorSummary(tracking.reviewReason ?? tracking.errorSummary ?? ''),
+            });
+          }
           continue;
         }
         if (isDrivePaperImportActive(tracking, now())) {

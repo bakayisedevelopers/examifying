@@ -3,6 +3,7 @@ dist
 dist-sites
 build
 .firebase
+.codex-state/
 .env
 .env.local
 functions/node_modules

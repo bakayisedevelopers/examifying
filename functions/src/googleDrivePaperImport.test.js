@@ -451,6 +451,35 @@ test('ambiguous metadata and combined paper/memo PDFs are held for review', asyn
   assert.equal(tracking.get('drive-combined').importStatus, 'review');
 });
 
+test('reviewed Drive files stay skipped until an administrator explicitly rechecks them', async () => {
+  const file = paperFile('drive-review-recheck');
+  const { runner, calls, tracking } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        reviewReason: 'Previous metadata needs correction.',
+      },
+    },
+  });
+
+  const ordinaryRun = await runner();
+  assert.equal(ordinaryRun.reviewSkippedFiles, 1);
+  assert.equal(ordinaryRun.importedFiles, 0);
+  assert.ok(calls.logs.some(([message]) => message.includes('remains in review')));
+
+  const recheck = await runner({
+    requestedBy: 'admin:test',
+    folderId: 'selected-folder',
+    fileIds: [file.id],
+    retryReviewFileIds: [file.id],
+  });
+  assert.equal(recheck.importedFiles, 1);
+  assert.equal(tracking.get(file.id).importStatus, 'imported');
+  assert.equal(calls.upload.length, 1);
+});
+
 test('one failed file does not block a later valid file in the same scan', async () => {
   const files = [paperFile('drive-fails'), paperFile('drive-succeeds', 'Mathematics - Grade 11 - Gauteng - October - 2023 - Paper 2.pdf')];
   const { runner, calls, tracking } = createHarness({

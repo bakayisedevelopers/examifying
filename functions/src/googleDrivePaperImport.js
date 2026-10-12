@@ -586,12 +586,16 @@ export const startGoogleDrivePastPaperImport = onCall({
   const uid = await requireAdminCaller(request);
   const folderId = String(request.data?.folderId ?? '').trim();
   const fileIds = request.data?.fileIds;
+  const retryReviewFileIds = request.data?.retryReviewFileIds ?? [];
   if (!folderId || !Array.isArray(fileIds) || fileIds.length < 1 || fileIds.length > 2) {
     throw new HttpsError('invalid-argument', 'Choose one paper or paper/memo pair from one folder before importing.');
   }
+  if (!Array.isArray(retryReviewFileIds) || retryReviewFileIds.length > 2) {
+    throw new HttpsError('invalid-argument', 'A review recheck can include one or two selected Drive files.');
+  }
   try {
     await getFolderWithinConfiguredRoot(folderId);
-    return await runDrivePaperImport({ requestedBy: `admin:${uid}`, folderId, fileIds });
+    return await runDrivePaperImport({ requestedBy: `admin:${uid}`, folderId, fileIds, retryReviewFileIds });
   } catch (error) {
     const message = safeErrorSummary(error);
     logger.error('Manual Google Drive past-paper import failed', { uid, folderId, error: message });

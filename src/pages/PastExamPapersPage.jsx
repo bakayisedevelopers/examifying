@@ -19,6 +19,7 @@ const paperStatusStyles = {
   Analyzed: 'bg-lime-400/15 text-lime-300 border border-lime-400/30',
   Failed: 'bg-rose-400/15 text-rose-300 border border-rose-400/30',
   'Waiting for Drive JSON': 'bg-amber-400/15 text-amber-200 border border-amber-400/30',
+  'Drive JSON review required': 'bg-orange-400/15 text-orange-200 border border-orange-400/30',
   Cancelled: 'bg-slate-800 text-slate-400 border border-slate-700',
 };
 
@@ -213,7 +214,9 @@ const buildBulkRows = ({ files, profile }) => {
 };
 
 const PaperAnalysisStatus = ({ paper }) => {
-  const status = paper.analysisStatus ?? (paper.availableForGeneration ? 'Analyzed' : 'Analyzing');
+  const status = paper.driveAnalysisJsonStatus === 'review_required' && !['Analyzed', 'Analyzing'].includes(paper.analysisStatus)
+    ? 'Drive JSON review required'
+    : paper.analysisStatus ?? (paper.availableForGeneration ? 'Analyzed' : 'Analyzing');
   const current = Number(paper.analysisProgressCurrent ?? 0);
   const total = Math.max(1, Number(paper.analysisProgressTotal ?? 1));
   const percentage = status === 'Analyzed' ? 100 : Math.max(0, Math.min(100, Math.round((current / total) * 100)));
@@ -237,7 +240,9 @@ const PaperAnalysisStatus = ({ paper }) => {
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
         <div className="h-full rounded-full bg-brand-500 transition-all" style={{ width: `${percentage}%` }} />
       </div>
-      <p className="mt-2 text-xs text-slate-500">{paper.analysisProgressMessage ?? (status === 'Analyzed' ? `${paper.questionCount ?? 0} questions indexed` : 'Waiting for analysis')}</p>
+      <p className="mt-2 text-xs text-slate-500">{status === 'Drive JSON review required'
+        ? 'A matching Drive JSON was found but failed validation.'
+        : paper.analysisProgressMessage ?? (status === 'Analyzed' ? `${paper.questionCount ?? 0} questions indexed` : 'Waiting for analysis')}</p>
       {paper.driveAnalysisJsonStatus === 'review_required' && paper.driveAnalysisJsonReviewReason ? (
         <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">Drive analysis JSON needs review: {paper.driveAnalysisJsonReviewReason}</p>
       ) : null}
@@ -278,6 +283,10 @@ const getPaperTitle = (paper) => paper.title || paper.paperName || paper.paperFi
   paper.paperTitle || paper.paperMetadata?.paperTitle || paper.displayName || `${paper.subject || 'Question paper'} • ${paper.grade || ''}`;
 const getPaperDateValue = (value) => value?.toMillis?.() ?? new Date(value?.toDate?.() ?? value ?? 0).getTime();
 const getPaperField = (paper, field) => paper?.[field] ?? paper?.paperMetadata?.[field] ?? '';
+const getPaperNumberSortValue = (paper) => {
+  const paperNumber = String(getPaperField(paper, 'paperNumber')).match(/\d+/)?.[0];
+  return paperNumber ? Number(paperNumber) : Number.MAX_SAFE_INTEGER;
+};
 const getPaperSubject = (paper) => String(getPaperField(paper, 'subject') ?? '').trim().replace(/\s+/g, ' ');
 const normalizePaperSubject = (subject) => String(subject ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 const getPaperSearchText = (paper) => [
@@ -335,6 +344,7 @@ export const PastExamPapersPage = () => {
     analyzed: { search: '', subject: 'all', year: 'all' },
     failed: { search: '', subject: 'all', year: 'all' },
     waiting: { search: '', subject: 'all', year: 'all' },
+    review: { search: '', subject: 'all', year: 'all' },
   });
   const [studentFilterOverrides, setStudentFilterOverrides] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
@@ -506,8 +516,8 @@ export const PastExamPapersPage = () => {
       .filter((paper) => filters.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(filters.subject))
       .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
   }, [papers, role, visibleSubjects, filters, isStudentExploring, studentFilterOverrides, searchTerm]);
-  const studentPaperSections = useMemo(() => {
-    if (role !== ROLES.STUDENT) return [];
+  const paperCatalogSections = useMemo(() => {
+    if (![ROLES.STUDENT, ROLES.TUTOR, 'teacher'].includes(role)) return [];
     const subjects = new Map();
     visiblePapers.forEach((paper) => {
       const subject = getPaperSubject(paper) || 'Other subjects';
@@ -525,21 +535,30 @@ export const PastExamPapersPage = () => {
     return [...subjects.values()]
       .map((section) => ({
         ...section,
-        groups: [...section.groups.values()].sort((left, right) => Number(right.year) - Number(left.year)
-          || right.year.localeCompare(left.year)
-          || left.grade.localeCompare(right.grade)),
+        groups: [...section.groups.values()]
+          .map((group) => ({
+            ...group,
+            papers: [...group.papers].sort((left, right) => getPaperNumberSortValue(left) - getPaperNumberSortValue(right)
+              || String(getPaperField(left, 'paperNumber')).localeCompare(String(getPaperField(right, 'paperNumber')), undefined, { numeric: true })
+              || String(left.id).localeCompare(String(right.id))),
+          }))
+          .sort((left, right) => Number(right.year) - Number(left.year)
+            || right.year.localeCompare(left.year)
+            || left.grade.localeCompare(right.grade)),
       }))
       .sort((left, right) => left.subject.localeCompare(right.subject));
   }, [role, visiblePapers]);
   const adminPaperGroups = useMemo(() => {
-    const groups = { analyzing: [], analyzed: [], failed: [], waiting: [] };
+    const groups = { analyzing: [], analyzed: [], failed: [], waiting: [], review: [] };
     const orderedPapers = [...papers].sort((left, right) =>
       Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
       getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
 
     orderedPapers.forEach((paper) => {
       const status = paper.analysisStatus;
-      const group = status === 'Waiting for Drive JSON'
+      const group = paper.driveAnalysisJsonStatus === 'review_required' && !['Analyzed', 'Analyzing'].includes(status)
+        ? 'review'
+        : status === 'Waiting for Drive JSON'
         ? 'waiting'
         : status === 'Failed' || status === 'Cancelled'
         ? 'failed'
@@ -856,7 +875,7 @@ export const PastExamPapersPage = () => {
   const resumeAllWaitingPapers = async (waitingPapers) => {
     if (waitingRetryAllLoading || !waitingPapers.length) return;
     setWaitingRetryAllLoading(true);
-    setStatus('Checking Google Drive for valid analysis JSON files before queueing waiting papers...');
+    setStatus('Checking Google Drive for valid analysis JSON files before queueing selected papers...');
     const summary = { queuedCount: 0, skippedCount: 0, reviewCount: 0, errorCount: 0, invalidMetadataCount: 0 };
     const groupedPapers = new Map();
     waitingPapers.forEach((paper) => {
@@ -1083,7 +1102,7 @@ export const PastExamPapersPage = () => {
     if (!driveFolderContents) loadDriveFolderContents();
   };
 
-  const handleDriveImport = async (paperGroup) => {
+  const handleDriveImport = async (paperGroup, { retryReviewFileIds = [] } = {}) => {
     const fileIds = paperGroup?.importFileIds ?? [];
     if (!driveFolderContents?.folder?.id || !fileIds.length) return;
     const selectedFolderId = driveFolderContents.folder.id;
@@ -1113,14 +1132,14 @@ export const PastExamPapersPage = () => {
       const result = await runOperation({
         operationName: 'Importing selected paper from Google Drive',
         successMessage: 'The Google Drive import run completed. Check the per-file statuses for the result.',
-      }, () => startGoogleDrivePastPaperImport({ folderId: selectedFolderId, fileIds }));
+      }, () => startGoogleDrivePastPaperImport({ folderId: selectedFolderId, fileIds, retryReviewFileIds }));
       stopStatusPolling();
       if (result?.skipped && result.reason === 'already_running') {
         setDriveImportMessage('A Google Drive import is already running.');
       } else {
         const refreshed = await loadDriveFolderContents(selectedFolderId, driveFolderTrail);
         setDriveImportMessage(
-          `Selected-folder import finished: ${result?.importedFiles ?? 0} file(s) added, ${result?.duplicateFiles ?? 0} duplicate(s), ${result?.waitingFiles ?? 0} waiting for a matching paper, ${result?.skippedFiles ?? 0} skipped because an import was already active or complete, ${result?.reviewFiles ?? 0} sent for review, ${result?.failedFiles ?? 0} failed.${refreshed ? '' : ' Folder status could not be refreshed.'}`,
+          `Selected-folder import finished: ${result?.importedFiles ?? 0} file(s) added, ${result?.duplicateFiles ?? 0} duplicate(s), ${result?.waitingFiles ?? 0} waiting for a matching paper, ${result?.skippedFiles ?? 0} skipped because an import was already active or complete (including ${result?.reviewSkippedFiles ?? 0} still held for review), ${result?.reviewFiles ?? 0} sent for review, ${result?.failedFiles ?? 0} failed.${refreshed ? '' : ' Folder status could not be refreshed.'}`,
         );
       }
     } catch (error) {
@@ -1294,7 +1313,7 @@ export const PastExamPapersPage = () => {
     return <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>{label}</Link>;
   };
 
-  const getStudentDocumentTitle = (paper, type) => {
+  const getCatalogDocumentTitle = (paper, type) => {
     const rawPaperNumber = String(getPaperField(paper, 'paperNumber') || '').trim();
     const paperNumber = rawPaperNumber.replace(/^paper\s*/i, '').trim();
     const base = paperNumber ? `${type === 'memo' ? 'Memo' : 'Paper'} ${paperNumber}` : (type === 'memo' ? 'Memo' : 'Question paper');
@@ -1304,10 +1323,10 @@ export const PastExamPapersPage = () => {
     return details.length ? `${base} (${details.join(' · ')})` : base;
   };
 
-  const renderStudentOpenAction = (paper, type) => {
+  const renderCatalogOpenAction = (paper, type) => {
     const url = type === 'memo' ? paper.memoUrl : paper.paperUrl;
     if (!url) return <span className="text-xs text-slate-500">Unavailable</span>;
-    if (type === 'memo' && memoAccess.isMemoLocked(paper.id)) {
+    if (role === ROLES.STUDENT && type === 'memo' && memoAccess.isMemoLocked(paper.id)) {
       const message = memoAccess.error
         ? 'Memo unavailable until submission status can be checked'
         : memoAccess.isLoading
@@ -1317,9 +1336,9 @@ export const PastExamPapersPage = () => {
     }
     return (
       <Link
-        className="inline-flex min-h-9 items-center justify-center rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 px-4 py-2 text-xs font-bold text-slate-950 transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300"
-        to={type === 'memo' ? `/student/papers/${paper.id}?document=memo&page=1` : `/student/papers/${paper.id}?page=1`}
-        aria-label={`Open ${getStudentDocumentTitle(paper, type)}`}
+        className="px-2 py-2 text-sm font-semibold text-lime-300 transition hover:text-lime-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300"
+        to={`/${role}/papers/${paper.id}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
+        aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
       >
         Open
       </Link>
@@ -1488,13 +1507,13 @@ export const PastExamPapersPage = () => {
       ) : null}
       {role === ROLES.ADMIN ? (
         <div className="panel !bg-transparent space-y-4 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
                 <h2 className="font-semibold text-slate-100">Google Drive past-paper folders</h2>
               <p className="mt-1 text-sm text-slate-300">Browse folders to import selected papers, or queue all missing PDFs beneath the configured root. The importer processes each folder and its files sequentially.</p>
               {driveImportMessage ? <p className="mt-2 text-sm text-lime-200" role="status">{driveImportMessage}</p> : null}
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-1 sm:justify-end">
               <button
                 type="button"
                 className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
@@ -1595,6 +1614,7 @@ export const PastExamPapersPage = () => {
                             };
                             const questionImportStage = group.questionFiles.find((file) => ['importing', 'processing'].includes(file.importStatus))?.importStage;
                             const memoImportStage = group.memoFiles.find((file) => ['importing', 'processing'].includes(file.importStatus))?.importStage;
+                            const reviewFileIds = group.files.filter((file) => file.importStatus === 'review').map((file) => file.id);
                             const groupIsImporting = group.paperStatus === 'importing' || group.memoStatus === 'importing';
                             return (
                               <tr key={group.identityKey} className="align-top transition-colors hover:bg-lime-300/5">
@@ -1616,6 +1636,16 @@ export const PastExamPapersPage = () => {
                                   ) : group.importFileIds.length ? (
                                     <button type="button" className="btn-primary whitespace-nowrap" disabled={driveImportRunning} onClick={() => handleDriveImport(group)}>
                                       {driveImportRunning ? 'Importing…' : 'Import missing files'}
+                                    </button>
+                                  ) : group.reviewReason && reviewFileIds.length ? (
+                                    <button
+                                      type="button"
+                                      className="btn-secondary whitespace-nowrap"
+                                      disabled={driveImportRunning}
+                                      onClick={() => handleDriveImport({ ...group, importFileIds: reviewFileIds }, { retryReviewFileIds: reviewFileIds })}
+                                      title="Reruns validation for the selected reviewed files. Files that still conflict or fail validation remain in review."
+                                    >
+                                      {driveImportRunning ? 'Rechecking…' : 'Recheck reviewed files'}
                                     </button>
                                   ) : group.reviewReason ? (
                                     <span className="text-xs font-medium text-rose-300">Review first</span>
@@ -1708,12 +1738,14 @@ export const PastExamPapersPage = () => {
           {[
             { key: 'analyzing', title: 'Analyzing', emptyMessage: 'No papers are currently analyzing.' },
             { key: 'analyzed', title: 'Analyzed', emptyMessage: 'No completed paper analyses.' },
+            { key: 'review', title: 'Drive JSON needs review', emptyMessage: 'No Drive analysis JSON files need review.' },
             { key: 'waiting', title: 'Waiting for Drive JSON', emptyMessage: 'No papers are waiting for Drive analysis JSON.' },
             { key: 'failed', title: 'Failed', emptyMessage: 'No failed or cancelled paper analyses.' },
           ].map(({ key, title, emptyMessage }) => {
             const sectionPapers = adminPaperGroups[key];
             const failedPapers = key === 'failed' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Failed') : [];
             const waitingPapers = key === 'waiting' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Waiting for Drive JSON') : [];
+            const reviewPapers = key === 'review' ? sectionPapers.filter((paper) => paper.driveAnalysisJsonStatus === 'review_required') : [];
             const sectionFilter = adminPaperFilters[key];
             const sectionSubjects = paperSubjects;
             const sectionYears = [...new Set(sectionPapers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))]
@@ -1772,6 +1804,23 @@ export const PastExamPapersPage = () => {
                       </button>
                     </div>
                   ) : null}
+                  {key === 'review' && reviewPapers.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-orange-200 bg-orange-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-orange-950">{reviewPapers.length} paper{reviewPapers.length === 1 ? '' : 's'} have a prior Drive JSON review flag.</p>
+                        <p className="mt-1 text-xs text-orange-900">Recheck the current JSON files. Papers that pass validation are queued; any remaining issue stays here with its reason.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                        disabled={waitingRetryAllLoading}
+                        onClick={() => resumeAllWaitingPapers(reviewPapers)}
+                      >
+                        {waitingRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                        {waitingRetryAllLoading ? 'Rechecking…' : 'Recheck JSON'}
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="grid gap-3 md:grid-cols-[minmax(12rem,2fr)_minmax(10rem,1fr)_minmax(8rem,1fr)]">
                     <label>
                       <span className="sr-only">Search {title.toLowerCase()} papers</span>
@@ -1804,13 +1853,13 @@ export const PastExamPapersPage = () => {
             );
           })}
         </div>
-      ) : role === ROLES.STUDENT ? (
-        studentPaperSections.length ? (
+      ) : [ROLES.STUDENT, ROLES.TUTOR, 'teacher'].includes(role) ? (
+        paperCatalogSections.length ? (
           <div className="space-y-6">
-            {studentPaperSections.map((subjectSection) => (
-              <section key={subjectSection.subject} className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/90 shadow-[0_4px_25px_rgba(0,0,0,0.35)]">
+            {paperCatalogSections.map((subjectSection) => (
+              <section key={subjectSection.subject} className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/75 shadow-[0_4px_25px_rgba(0,0,0,0.35)]">
                 <header className="px-4 pb-3 pt-4 sm:px-5">
-                  <h2 className="text-xl font-semibold text-white">{subjectSection.subject}</h2>
+                  <h2 className="text-xl font-semibold text-lime-200">{subjectSection.subject}</h2>
                   <div className="mt-3 h-1 w-full rounded-full bg-slate-800" aria-hidden="true">
                     <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400" />
                   </div>
@@ -1819,24 +1868,24 @@ export const PastExamPapersPage = () => {
                   {subjectSection.groups.map((group) => (
                     <section key={`${subjectSection.subject}-${group.grade}-${group.year}`} aria-label={`${subjectSection.subject}, ${group.grade}, ${group.year}`}>
                       <h3 className="mb-2 px-2 text-sm font-semibold text-lime-300">{group.grade} · {group.year}</h3>
-                      <div className="overflow-x-auto rounded-xl border border-slate-800">
+                      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/35">
                         <table className="w-full min-w-[19rem] border-collapse text-left text-sm">
                           <thead className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
                             <tr>
                               <th scope="col" className="px-3 py-3 sm:px-4">Title</th>
-                              <th scope="col" className="w-24 px-3 py-3 text-right sm:w-28 sm:px-4">Open</th>
+                              <th scope="col" className="w-24 px-3 py-3 text-right sm:w-28 sm:px-4">Action</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800/90">
                             {group.papers.flatMap((paper) => ([
                               <tr key={`${paper.id}-question`} className="transition-colors hover:bg-lime-400/5">
-                                <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getStudentDocumentTitle(paper, 'paper')}</td>
-                                <td className="px-3 py-2 text-right sm:px-4">{renderStudentOpenAction(paper, 'paper')}</td>
+                                <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getCatalogDocumentTitle(paper, 'paper')}</td>
+                                <td className="px-3 py-2 text-right sm:px-4">{renderCatalogOpenAction(paper, 'paper')}</td>
                               </tr>,
                               ...(paper.memoUrl ? [
                                 <tr key={`${paper.id}-memo`} className="transition-colors hover:bg-lime-400/5">
-                                  <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getStudentDocumentTitle(paper, 'memo')}</td>
-                                  <td className="px-3 py-2 text-right sm:px-4">{renderStudentOpenAction(paper, 'memo')}</td>
+                                  <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getCatalogDocumentTitle(paper, 'memo')}</td>
+                                  <td className="px-3 py-2 text-right sm:px-4">{renderCatalogOpenAction(paper, 'memo')}</td>
                                 </tr>,
                               ] : []),
                             ]))}

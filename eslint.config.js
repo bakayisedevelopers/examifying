@@ -6,9 +6,15 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 
 export default [
   {
-    ignores: ['dist/**', 'functions/**', 'public/pdfjs/**'],
+    ignores: ['dist/**', 'dist-sites/**', 'functions/**', 'public/pdfjs/**'],
   },
   js.configs.recommended,
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
   {
     files: ['src/**/*.{js,jsx}'],
     languageOptions: {

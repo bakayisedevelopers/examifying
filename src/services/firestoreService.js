@@ -2791,11 +2791,11 @@ export const getGoogleDrivePastPaperImportStatuses = async (fileIds = []) => {
   return response.data?.statuses ?? [];
 };
 
-export const startGoogleDrivePastPaperImport = async ({ folderId, fileIds } = {}) => {
+export const startGoogleDrivePastPaperImport = async ({ folderId, fileIds, retryReviewFileIds = [] } = {}) => {
   ensureDb();
   if (!functions) throw new Error('Firebase Functions are not configured.');
   const callable = httpsCallable(functions, 'startGoogleDrivePastPaperImport', { timeout: 540_000 });
-  const response = await callable({ folderId, fileIds });
+  const response = await callable({ folderId, fileIds, retryReviewFileIds });
   return response.data;
 };
 

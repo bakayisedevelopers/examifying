@@ -29,6 +29,8 @@ const PlanCard = ({
   mobileSwipe,
   isSubmitting,
   submitLabel,
+  selectionOnly,
+  onSelectionChange,
   onSelect,
   onContinue,
 }) => {
@@ -45,6 +47,17 @@ const PlanCard = ({
   const activeDiscountQuote = validatedSelectionKey === selectionKey && validatedCode === discountCode
     ? discountQuote
     : null;
+
+  useEffect(() => {
+    if (!selectionOnly || !selected) return;
+    onSelectionChange?.({
+      studentId,
+      planId: plan.id,
+      billingPeriod,
+      subjectCount: quote.subjectCount,
+      ...(discountCode ? { discountCode } : {}),
+    });
+  }, [billingPeriod, discountCode, onSelectionChange, plan.id, quote.subjectCount, selected, selectionOnly, studentId]);
 
   useEffect(() => {
     let current = true;
@@ -188,7 +201,7 @@ const PlanCard = ({
         )}
       </ul>
 
-      {selected ? (
+      {selected && !selectionOnly ? (
         <button
           type="button"
           className="btn-primary mt-5 w-full"
@@ -220,6 +233,8 @@ export const SubscriptionPlanSelector = ({
   initialDiscountCode = '',
   allowDiscountInput = false,
   submitLabel = 'Continue to checkout',
+  selectionOnly = false,
+  onSelectionChange,
 }) => {
   const [planId, setPlanId] = useState(['circle', 'personalized'].includes(initialSelection.planId)
     ? initialSelection.planId
@@ -244,9 +259,9 @@ export const SubscriptionPlanSelector = ({
         </div>
         <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:items-end">
           <div className="flex flex-wrap items-center justify-between gap-3 sm:justify-end">
-            <button type="button" className="text-sm font-semibold text-slate-400 underline decoration-slate-600 underline-offset-4 hover:text-white" onClick={continueWithFree} disabled={isSubmitting}>
+            {!selectionOnly ? <button type="button" className="text-sm font-semibold text-slate-400 underline decoration-slate-600 underline-offset-4 hover:text-white" onClick={continueWithFree} disabled={isSubmitting}>
               Continue with Free question papers
-            </button>
+            </button> : null}
             <div className="flex items-center gap-2" role="group" aria-label="Billing period">
               <button type="button" onClick={() => setBillingPeriod('monthly')} aria-pressed={billingPeriod === 'monthly'} className={billingPeriod === 'monthly' ? 'btn-primary' : 'btn-secondary'}>Monthly</button>
               <button type="button" onClick={() => setBillingPeriod('yearly')} aria-pressed={billingPeriod === 'yearly'} className={`hidden ${billingPeriod === 'yearly' ? 'btn-primary' : 'btn-secondary'}`}>Yearly · 2 months free</button>
@@ -292,6 +307,8 @@ export const SubscriptionPlanSelector = ({
             mobileSwipe={mobileSwipe}
             isSubmitting={isSubmitting}
             submitLabel={submitLabel}
+            selectionOnly={selectionOnly}
+            onSelectionChange={onSelectionChange}
             onSelect={setPlanId}
             onContinue={onContinue}
           />

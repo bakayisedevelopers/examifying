@@ -132,16 +132,21 @@ export const saveTutorWhatsAppGroupLink = onCall({ cpu: 'gcf_gen1' }, async (req
 export const getAuthorizedLessonWhatsAppAccess = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = getUid(request);
   const { studentId, subjectInstanceId, lessonId } = request.data ?? {};
-  if (!studentId || !subjectInstanceId || !lessonId || uid !== studentId) {
+  if (!studentId || !subjectInstanceId || !lessonId) {
     throw new HttpsError('permission-denied', 'WhatsApp access is only available from your own assigned lesson.');
   }
 
   const db = getDb();
-  const [studentSnapshot, episodeSnapshot] = await Promise.all([
+  const [actorSnapshot, studentSnapshot, episodeSnapshot] = await Promise.all([
+    userRef(db, uid).get(),
     userRef(db, studentId).get(),
     userRef(db, studentId).collection('subjects').doc(subjectInstanceId).get(),
   ]);
+  const actor = actorSnapshot.exists ? actorSnapshot.data() : null;
   const student = studentSnapshot.exists ? studentSnapshot.data() : null;
+  const isStudent = uid === studentId && actor?.role === 'student';
+  const isLinkedParent = actor?.role === 'parent' && student?.parentId === uid;
+  if (!isStudent && !isLinkedParent) throw new HttpsError('permission-denied', 'Only the student or their linked parent can open this lesson access.');
   const episode = episodeSnapshot.exists ? episodeSnapshot.data() : null;
   if (student?.role !== 'student' || !episode || episode.status !== 'active' || episode.studentId !== studentId) {
     throw new HttpsError('permission-denied', 'This subject assignment is not active.');

@@ -7,7 +7,7 @@ import { HomeExerciseCard } from '../../components/dashboard/HomeExerciseCard';
 import { ExerciseActivityCalendar } from '../../components/dashboard/ExerciseActivityCalendar';
 import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
 import { getLocalDateKey, shiftDateKey } from '../../utils/dateKey';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
@@ -68,7 +68,7 @@ const ReadinessChecklist = ({ rows, studentName }) => {
 };
 
 export const StudentDashboardPage = () => {
-  const { profile, logout } = useAuth();
+  const { profile, logout, isParentWorkspace, toStudentPath } = useStudentWorkspaceProfile();
   const navigate = useNavigate();
   const { runOperation } = useOperationStatus();
   const subscriptionState = useStudentSubscriptionState(profile);
@@ -410,12 +410,13 @@ export const StudentDashboardPage = () => {
       generationOperations.forEach((operation) => operation.resolve());
       generationOperations.clear();
     };
-  }, [profile?.uid, availableSubjects, availableSubjectEpisodes, runOperation, saveLastAppData]);
+  }, [profile?.uid, availableSubjects, availableSubjectEpisodes, runOperation, saveLastAppData, isParentWorkspace]);
 
   useEffect(() => {
     let active = true;
 
     const runGeneratePlan = async (subject, mode) => {
+      if (isParentWorkspace) return { generated: false, reason: 'Exercise generation remains automatic.' };
       setIsGenerating(true);
       setReadinessRows((current) => {
         const next = current.filter((row) => row.subject !== subject);
@@ -520,7 +521,7 @@ export const StudentDashboardPage = () => {
             const initialWasAttempted = access.generationRunStatus?.lastTrigger === 'initial'
               && ['completed', 'failed'].includes(access.generationRunStatus?.status);
             const generationIsProcessing = access.generationRunStatus?.status === 'processing';
-            const shouldGenerate = access.paidSubscriptionActive
+            const shouldGenerate = !isParentWorkspace && access.paidSubscriptionActive
               && !access.hasInitialGeneration
               && access.initialGenerationReady
               && !initialWasAttempted
@@ -571,9 +572,10 @@ export const StudentDashboardPage = () => {
 
     load();
     return () => { active = false; };
-  }, [availableSubjects, availableSubjectEpisodes, isLoadingSubjects, profile, runOperation, saveLastAppData]);
+  }, [availableSubjects, availableSubjectEpisodes, isLoadingSubjects, isParentWorkspace, profile, runOperation, saveLastAppData]);
 
   const retryInitialGeneration = async (subject) => {
+    if (isParentWorkspace) return;
     if (!subject || retryingInitialSubject) return;
     setRetryingInitialSubject(subject);
     setIsGenerating(true);
@@ -632,11 +634,11 @@ export const StudentDashboardPage = () => {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => navigate('/student/billing')}>
+            <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => navigate(toStudentPath('/student/subscription'))}>
               <CreditCard className="h-4 w-4" aria-hidden="true" />
               View subscriptions
             </button>
-            <button type="button" className="btn-secondary" onClick={() => navigate('/student/papers')}>Browse Past Papers</button>
+            <button type="button" className="btn-secondary" onClick={() => navigate(toStudentPath('/student/papers'))}>Browse Past Papers</button>
           </div>
         </section>
       </AppShell>
@@ -655,7 +657,7 @@ export const StudentDashboardPage = () => {
       {isCheckingAccess && (visibleLastAppData?.accessChecked || hasCachedAccessState) ? <p className="inline-flex items-center gap-2 text-xs font-medium text-slate-300" role="status"><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-lime-300 border-r-transparent" aria-hidden="true" />Refreshing subscription and access in the background; showing your last loaded data.</p> : null}
       {!availableSubjects.length && !requiresSubscriptionSelection && !globalSubjectsLoading && !homeSubjectOptions.length ? (
         <div className="panel p-5 text-sm text-slate-600">
-          No additional subjects are available for your grade and subscription. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate('/student/profile/subjects')}>Manage subjects</button>
+          No additional subjects are available for your grade and subscription. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate(toStudentPath('/student/profile/subjects'))}>Manage subjects</button>
         </div>
       ) : null}
 
@@ -734,7 +736,7 @@ export const StudentDashboardPage = () => {
             <HomeExerciseCard key={exercise.id} exercise={exercise} onOpen={() => {
               const params = new URLSearchParams();
               if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
-              navigate(`/student/exercises/${exercise.id}${params.size ? `?${params.toString()}` : ''}`);
+              navigate(`${toStudentPath(`/student/exercises/${exercise.id}`)}${params.size ? `?${params.toString()}` : ''}`);
             }} />
           )) : (
             <div className="panel col-span-full flex min-h-40 items-center justify-center p-6 text-center text-sm text-slate-500">

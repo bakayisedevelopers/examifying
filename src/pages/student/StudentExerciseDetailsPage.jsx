@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { getCompletedPeerMarkingAssignmentsForStudent, getExerciseAssignmentById, getStudentEntitlementState, getTopicUnderstandingQuestionScores, subscribePeerMarkingAssignmentsForStudent } from '../../services/firestoreService';
 import { getExerciseAvailability } from '../../utils/exerciseRules';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds, uniqueTopicNames } from '../../utils/exerciseTopicRows';
@@ -20,7 +20,7 @@ export const StudentExerciseDetailsPage = () => {
   const { exerciseId } = useParams();
   const [searchParams] = useSearchParams();
   const subjectInstanceId = searchParams.get('subjectInstanceId');
-  const { profile, logout } = useAuth();
+  const { profile, logout, toStudentPath } = useStudentWorkspaceProfile();
   const [exercise, setExercise] = useState(null);
   const [paymentLocked, setPaymentLocked] = useState(false);
   const [status, setStatus] = useState('Loading exercise...');
@@ -118,7 +118,7 @@ export const StudentExerciseDetailsPage = () => {
       {status && !isLoading ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">
-          <Link to="/student" className="btn-secondary hidden w-fit lg:inline-flex">Back to today’s exercises</Link>
+          <Link to={toStudentPath('/student')} className="btn-secondary hidden w-fit lg:inline-flex">Back to today’s exercises</Link>
           <ExerciseCard
             exercise={exercise}
             availability={availability}

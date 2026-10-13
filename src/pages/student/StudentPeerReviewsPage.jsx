@@ -3,7 +3,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { PeerReviewForm } from '../../components/dashboard/PeerReviewForm';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import {
   completePeerMarkingAssignment,
@@ -15,7 +15,7 @@ import { uploadPeerReviewImage } from '../../services/storageService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 export const StudentPeerReviewsPage = () => {
-  const { profile, logout } = useAuth();
+  const { profile, logout } = useStudentWorkspaceProfile();
   const { operationStatus, runOperation, closeOperationStatus } = useOperationStatus();
   const [availableSubjects, setAvailableSubjects] = useState([]);
   const [availableSubjectEpisodes, setAvailableSubjectEpisodes] = useState([]);
@@ -37,7 +37,7 @@ export const StudentPeerReviewsPage = () => {
       if (subjects.length && !subjects.includes(selectedSubject)) setSelectedSubject(subjects[0]);
     }).catch((error) => setStatus(error.message || 'Could not load your active subjects.'));
     return () => { active = false; };
-  }, [profile?.uid]);
+  }, [profile?.uid, selectedSubject]);
 
   useEffect(() => {
     if (!profile?.uid || !selectedSubject) return undefined;

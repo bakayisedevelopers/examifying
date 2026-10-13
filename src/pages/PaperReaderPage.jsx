@@ -4,7 +4,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react
 import { AppShell } from '../components/common/AppShell';
 import { InAppPdfPage } from '../components/common/InAppPdfPage';
 import { SectionHeader } from '../components/common/SectionHeader';
-import { useAuth } from '../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../hooks/useStudentWorkspaceProfile';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { useStudentExercisePaperAccess } from '../hooks/useStudentExercisePaperAccess';
 import { ROLES } from '../lib/constants';
@@ -277,7 +277,7 @@ export const PaperReaderPage = () => {
   const { paperId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { profile, user, logout } = useAuth();
+  const { profile, user, logout, toStudentPath, isParentWorkspace } = useStudentWorkspaceProfile();
   const { runOperation } = useOperationStatus();
   const [paper, setPaper] = useState(null);
   const [analysisActivity, setAnalysisActivity] = useState([]);
@@ -346,6 +346,7 @@ export const PaperReaderPage = () => {
   const goBack = () => {
     if (window.history.state?.idx > 0) navigate(-1);
     else if (location.pathname.startsWith('/teacher')) navigate('/teacher/exercises');
+    else if (isParentWorkspace) navigate(toStudentPath('/student'));
     else navigate(role === ROLES.TUTOR ? '/tutor/exercises' : '/student');
   };
 

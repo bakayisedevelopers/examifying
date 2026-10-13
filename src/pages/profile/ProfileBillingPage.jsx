@@ -1,19 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { ROLES } from '../../lib/constants';
 import { getTutorBillingSummary } from '../../services/firestoreService';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
-import { initializeSubscriptionPayment } from '../../services/paymentsService';
+import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
 import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 export const ProfileBillingPage = ({ role }) => {
-  const { profile, logout, refreshProfile } = useAuth();
+  const { profile, logout, refreshViewedProfile, isParentWorkspace, toStudentPath } = useStudentWorkspaceProfile();
   const navigate = useNavigate();
   const location = useLocation();
   const [summary, setSummary] = useState(null);
@@ -21,6 +21,7 @@ export const ProfileBillingPage = ({ role }) => {
   const [subscriptionStatus, setSubscriptionStatus] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
   const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
+  const verifiedReference = useRef('');
 
   const continueSubscription = async (selection) => {
     setSubscriptionStatus('');
@@ -30,10 +31,10 @@ export const ProfileBillingPage = ({ role }) => {
       const result = await initializeSubscriptionPayment({
         studentId: profile.uid,
         ...selection,
-        callbackUrl: `${window.location.origin}/student/billing`,
+        callbackUrl: `${window.location.origin}${location.pathname}`,
       });
       if (result.freeCheckout) {
-        const refreshedProfile = await refreshProfile(profile.uid);
+        const refreshedProfile = await refreshViewedProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
         const discount = result.discount;
         if (discount?.billingDuration === 'recurring' && discount?.percentOff === 100) {
@@ -44,12 +45,12 @@ export const ProfileBillingPage = ({ role }) => {
           setSubscriptionStatus('Subscription activated with the discount code. Automatic renewal requires a successful card payment and reusable authorization.');
         }
       } else if (result.free) {
-        const refreshedProfile = await refreshProfile(profile.uid);
+        const refreshedProfile = await refreshViewedProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
         setSubscriptionStatus('Free plan activated. Unlimited question papers are available.');
-        navigate('/student/papers');
+        navigate(toStudentPath('/student/papers'));
       } else if (result.scheduledChange) {
-        const refreshedProfile = await refreshProfile(profile.uid);
+        const refreshedProfile = await refreshViewedProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
         const discountNote = result.discount
           ? ` ${result.discount.percentOff}% discount (${result.discount.billingDuration === 'fixed_months' ? `first ${result.discount.discountDurationMonths} months` : result.discount.billingDuration === 'recurring' ? 'recurring' : 'first payment'}) is reserved for this change; the next payment is R${Number(result.discount.finalAmount).toLocaleString('en-ZA')}.`
@@ -73,6 +74,30 @@ export const ProfileBillingPage = ({ role }) => {
       if (!redirectingToPaystack) setIsStartingSubscription(false);
     }
   };
+
+  useEffect(() => {
+    if (!isParentWorkspace || role !== ROLES.STUDENT || !profile?.uid) return undefined;
+    const params = new URLSearchParams(location.search);
+    const reference = params.get('reference') || params.get('trxref') || '';
+    const studentId = params.get('studentId') || profile.uid;
+    if (!reference || studentId !== profile.uid || verifiedReference.current === reference) return undefined;
+    verifiedReference.current = reference;
+    let active = true;
+    setSubscriptionStatus('Verifying the student’s payment…');
+    verifySubscriptionPayment(reference, profile.uid).then(async (verification) => {
+      if (!active) return;
+      if (verification?.status !== 'success') throw new Error(`Payment verification returned status: ${verification?.status || 'unknown'}`);
+      const updatedProfile = await refreshViewedProfile(profile.uid);
+      await refreshStudentSubscriptionState(updatedProfile || profile);
+      setSubscriptionStatus(verification.authorizationOnly
+        ? `Payment verified and subscription activated. The R1 card authorization refund is ${verification.refundStatus || 'pending'}.`
+        : 'Payment verified and subscription activated.');
+      navigate(location.pathname, { replace: true });
+    }).catch((error) => {
+      if (active) setSubscriptionStatus(error?.message || 'Payment verification failed.');
+    });
+    return () => { active = false; };
+  }, [isParentWorkspace, location.pathname, location.search, navigate, profile, refreshViewedProfile, role]);
 
   useEffect(() => {
     if (role === ROLES.TUTOR && profile?.uid) {

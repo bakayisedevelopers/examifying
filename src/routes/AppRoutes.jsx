@@ -6,6 +6,7 @@ import { AppRouteErrorBoundary } from '../components/common/AppRouteErrorBoundar
 import { ROLES } from '../lib/constants';
 import { PaidStudentRoute } from '../components/common/PaidStudentRoute';
 import { ExamifyingLoader } from '../components/common/ExamifyingLoader';
+import { ParentStudentWorkspaceRoute } from '../contexts/ParentStudentWorkspaceContext';
 
 const lazyNamed = (loader, exportName) => lazy(() => loader().then((module) => ({ default: module[exportName] })));
 
@@ -41,6 +42,7 @@ const PastExamPapersPage = lazyNamed(() => import('../pages/PastExamPapersPage')
 const GuidePage = lazyNamed(() => import('../pages/GuidePage'), 'GuidePage');
 const PoliciesPage = lazyNamed(() => import('../pages/PoliciesPage'), 'PoliciesPage');
 const ParentDashboardPage = lazyNamed(() => import('../pages/parent/ParentDashboardPage'), 'ParentDashboardPage');
+const ParentHomePage = lazyNamed(() => import('../pages/parent/ParentHomePage'), 'ParentHomePage');
 const ProfileHubPage = lazyNamed(() => import('../pages/profile/ProfileHubPage'), 'ProfileHubPage');
 const ProfilePersonalDetailsPage = lazyNamed(() => import('../pages/profile/ProfilePersonalDetailsPage'), 'ProfilePersonalDetailsPage');
 const ProfileSubjectsPage = lazyNamed(() => import('../pages/profile/ProfileSubjectsPage'), 'ProfileSubjectsPage');
@@ -94,7 +96,26 @@ export const AppRoutes = () => {
     </Route>
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.PARENT]} />}>
-      <Route path="/parent" element={<ParentDashboardPage />} />
+      <Route path="/parent" element={<ParentHomePage />} />
+      <Route path="/parent/kids" element={<ParentDashboardPage />} />
+      <Route path="/parent/papers" element={<PastExamPapersPage />} />
+      <Route path="/parent/papers/:paperId" element={<PaperReaderPage />} />
+      <Route path="/parent/kids/:studentId" element={<ParentStudentWorkspaceRoute />}>
+        <Route index element={<Navigate to="home" replace />} />
+        <Route path="home" element={<StudentDashboardPage />} />
+        <Route path="exercises" element={<StudentExercisesPage />} />
+        <Route path="exercises/:exerciseId" element={<StudentExerciseDetailsPage />} />
+        <Route path="lessons" element={<StudentLessonsPage />} />
+        <Route path="lessons/:lessonId" element={<StudentLessonDetailsPage />} />
+        <Route path="peer-reviews" element={<StudentPeerReviewsPage />} />
+        <Route path="subscription" element={<ProfileBillingPage role={ROLES.STUDENT} />} />
+        <Route path="papers" element={<PastExamPapersPage />} />
+        <Route path="papers/:paperId" element={<PaperReaderPage />} />
+        <Route path="profile" element={<ProfileHubPage role={ROLES.STUDENT} />} />
+        <Route path="profile/details" element={<ProfilePersonalDetailsPage role={ROLES.STUDENT} />} />
+        <Route path="profile/subjects" element={<ProfileSubjectsPage role={ROLES.STUDENT} />} />
+        <Route path="profile/billing" element={<Navigate to="../subscription" replace />} />
+      </Route>
       <Route path="/parent/profile" element={<ProfileHubPage role={ROLES.PARENT} />} />
       <Route path="/parent/profile/details" element={<ProfilePersonalDetailsPage role={ROLES.PARENT} />} />
       <Route path="/parent/profile/subjects" element={<ProfileSubjectsPage role={ROLES.PARENT} />} />

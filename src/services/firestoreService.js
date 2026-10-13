@@ -44,14 +44,15 @@ import {
   mockUsers,
   mockGuideQuizResults,
 } from '../data/mockData';
-import { DEFAULT_SUBJECT, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
+import { DEFAULT_SUBJECT, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, REGIONS, SOUTH_AFRICAN_GRADES, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
 import { getApprovedTutorSubjects, getUserSubjects, mergeBestTutorSubjectMarks, normalizeEligibleSubject } from '../utils/tutorSubjects';
 import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscriptionPaymentConsistent } from '../utils/subscriptionPlans';
-import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
+import { normalizeWhatsAppLessonLink, normalizeWhatsAppNumber } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
 import { queryClient } from '../lib/queryClient';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
+import { mergeParentStudentSubscriptionSummary } from '../utils/parentStudentSummary.js';
 
 const getDoc = (...args) => trackFirestoreRead('getDoc', () => firebaseGetDoc(...args));
 const getDocs = (...args) => trackFirestoreRead('getDocs', () => firebaseGetDocs(...args));
@@ -1551,21 +1552,22 @@ export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT, 
 
 export const getParentStudentSummary = async (student, subject = DEFAULT_SUBJECT) => {
   if (!student?.uid) return { ...getEffectiveSubscriptionState(), completedLessonsCount: 0, todayExercise: null };
-  const access = await getStudentEntitlementState(student, subject);
-  if (isFirebaseConfigured && !access.subjectEpisode) {
-    return { ...access, todayExercise: null, completedLessonsCount: 0 };
-  }
-  const [todayExercise, completedLessons] = await Promise.all([
-    getTodayExercise(student.uid, subject, access.subjectEpisode),
-    access.subjectEpisode
-      ? getCompletedLessons(student.uid, subject, access.subjectInstanceId, access.subjectEpisode)
-      : getCompletedLessons(student.uid, subject),
+  const subscription = await getStudentSubscriptionState(student);
+  const access = await getStudentEntitlementState(student, subject, null, subscription);
+  const episodes = await getActiveSubjectEpisodesForStudent(student.uid);
+  const [todayExerciseGroups, completedLessonGroups] = await Promise.all([
+    Promise.all(episodes.map((episode) => getTodayExercise(student.uid, episode.subjectKey || subject, episode))),
+    Promise.all(episodes.map((episode) => getCompletedLessons(
+      student.uid,
+      episode.subjectKey || subject,
+      episode.id,
+      episode,
+    ))),
   ]);
-  return {
-    ...access,
-    todayExercise,
-    completedLessonsCount: completedLessons.length,
-  };
+  return mergeParentStudentSubscriptionSummary(access, subscription, {
+    todayExercise: todayExerciseGroups.flat().sort((left, right) => String(left.subject ?? '').localeCompare(String(right.subject ?? '')))[0] ?? null,
+    completedLessonsCount: completedLessonGroups.flat().length,
+  });
 };
 
 export const getStudentTopicScoresForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, contexts = null }) => {
@@ -4269,7 +4271,91 @@ export const getStudentsForParent = async (parentId) => {
   ensureDb();
   const q = query(collection(db, collections.users), where('parentId', '==', parentId), where('role', '==', 'student'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(docSnap => docSnap.data());
+  return snapshot.docs.map((docSnap) => ({ ...docSnap.data(), uid: docSnap.id }));
+};
+
+export const getParentStudentProfile = async ({ parentId, studentId }) => {
+  if (!parentId || !studentId) throw new Error('A parent and student are required.');
+  if (!isFirebaseConfigured) return demoUsers.find((user) => user.uid === studentId) ?? null;
+  ensureDb();
+  const snapshot = await getDoc(doc(db, collections.users, studentId));
+  if (!snapshot.exists()) return null;
+  const student = { ...snapshot.data(), uid: snapshot.id };
+  if (student.role !== 'student' || student.parentId !== parentId) {
+    throw new Error('This student is not linked to your parent account.');
+  }
+  return student;
+};
+
+const normalizedEmailPart = (value) => String(value ?? '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 48);
+
+export const createManagedStudentProfileForParent = async ({ parentId, displayName, grade, province, school, whatsappNumber, email = '', autoGenerateEmail = false }) => {
+  const cleanName = String(displayName ?? '').trim().replace(/\s+/g, ' ');
+  const cleanGrade = String(grade ?? '').trim();
+  const cleanProvince = String(province ?? '').trim();
+  const cleanSchool = String(school ?? '').trim();
+  if (!parentId || !cleanName || !SOUTH_AFRICAN_GRADES.includes(cleanGrade) || cleanGrade === 'Select Grade') throw new Error('Enter the student’s name and a valid grade.');
+  if (!REGIONS.includes(cleanProvince) || cleanProvince === 'National') throw new Error('Choose the student’s province.');
+  if (!cleanSchool) throw new Error('Enter the student’s school.');
+  const cleanWhatsAppNumber = normalizeWhatsAppNumber(whatsappNumber);
+  if (!isFirebaseConfigured) return { uid: `demo-managed-${Date.now()}`, parentId, displayName: cleanName, grade: cleanGrade };
+  ensureDb();
+  const parentSnapshot = await getDoc(doc(db, collections.users, parentId));
+  if (!parentSnapshot.exists() || parentSnapshot.data().role !== 'parent') throw new Error('Only a parent account can create a managed student.');
+  const parentEmailPrefix = normalizedEmailPart(parentSnapshot.data().email?.split('@')[0]);
+  let cleanEmail = String(email ?? '').trim().toLowerCase();
+  if (autoGenerateEmail) {
+    const namePrefix = normalizedEmailPart(cleanName);
+    if (!namePrefix || !parentEmailPrefix) throw new Error('A name and parent email are required to generate the student email.');
+    const base = `${namePrefix}-${parentEmailPrefix}`;
+    cleanEmail = `${base}@examifying.com`;
+    let suffix = 2;
+    while ((await getDocs(query(collection(db, collections.users), where('emailLowercase', '==', cleanEmail), limit(1)))).size) {
+      cleanEmail = `${base}-${suffix}@examifying.com`;
+      suffix += 1;
+      if (suffix > 100) throw new Error('Could not generate a unique student email. Enter an email address instead.');
+    }
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error('Enter a valid student email or choose automatic email generation.');
+  if ((await getDocs(query(collection(db, collections.users), where('emailLowercase', '==', cleanEmail), limit(1)))).size) {
+    throw new Error('A profile already uses this email. Link that student instead or choose another email.');
+  }
+  const studentRef = doc(collection(db, collections.users));
+  const profile = {
+    uid: studentRef.id,
+    role: 'student',
+    displayName: cleanName,
+    email: cleanEmail,
+    emailLowercase: cleanEmail,
+    grade: cleanGrade,
+    province: cleanProvince,
+    school: cleanSchool,
+    whatsappNumber: cleanWhatsAppNumber,
+    parentId,
+    isManagedStudent: true,
+    authUserExists: false,
+    profileCompletionStatus: 'unpaid_incomplete',
+    paymentCompleted: false,
+    subscriptionStatus: 'pending',
+    previousYearMark: 0,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await setDoc(studentRef, profile);
+  return profile;
+};
+
+export const changeStudentGradeForParent = async ({ studentId, newGrade, restoreSubjectInstanceIds = [] }) => {
+  if (!studentId || !newGrade) throw new Error('Choose the student and new grade.');
+  if (!isFirebaseConfigured || !functions) throw new Error('Firebase Functions are not configured.');
+  const response = await httpsCallable(functions, 'changeStudentGrade')({ studentId, newGrade, restoreSubjectInstanceIds });
+  return response.data;
 };
 
 export const updateStudentProfileByParent = async ({ parentId, studentId, updates }) => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
@@ -7,16 +7,20 @@ import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
-import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { AuthorizationChargeDisclosure } from '../../components/billing/AuthorizationChargeDisclosure';
 import { 
   assignStudentToParent, 
   getStudentsForParent, 
   getParentStudentSummary,
+  createManagedStudentProfileForParent,
   updateStudentProfileByParent 
 } from '../../services/firestoreService';
 import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
-import { Users, Link as LinkIcon, AlertCircle, Edit, Check, X, Calendar, Activity } from 'lucide-react';
+import { Users, Link as LinkIcon, AlertCircle, Edit, Check, X, Calendar, Activity, Plus } from 'lucide-react';
+import { REGIONS, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
+import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
+
+const PARENT_GROUP_CHECKOUT_STORAGE_KEY = 'examifying-parent-group-checkout';
 
 const EditDetailsForm = ({ student, onSave, onCancel }) => {
   const [form, setForm] = useState({
@@ -70,6 +74,16 @@ export const ParentDashboardPage = () => {
   const [students, setStudents] = useState([]);
   const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [studentIdInput, setStudentIdInput] = useState('');
+  const [newStudentName, setNewStudentName] = useState('');
+  const [newStudentGrade, setNewStudentGrade] = useState('Grade 10');
+  const [newStudentProvince, setNewStudentProvince] = useState('');
+  const [newStudentSchool, setNewStudentSchool] = useState('');
+  const [newStudentWhatsApp, setNewStudentWhatsApp] = useState('');
+  const [newStudentEmail, setNewStudentEmail] = useState('');
+  const [autoGenerateEmail, setAutoGenerateEmail] = useState(true);
+  const [groupStudentIds, setGroupStudentIds] = useState([]);
+  const [groupSelections, setGroupSelections] = useState({});
+  const [groupCheckoutOpen, setGroupCheckoutOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [editingStudentId, setEditingStudentId] = useState(null);
@@ -129,6 +143,56 @@ export const ParentDashboardPage = () => {
     }
   }, [profile?.uid]);
 
+  const updateGroupSelection = useCallback((selection) => {
+    const { studentId, ...choice } = selection ?? {};
+    if (!studentId) return;
+    setGroupSelections((current) => {
+      const previous = current[studentId];
+      if (previous && previous.planId === choice.planId && previous.billingPeriod === choice.billingPeriod
+        && previous.subjectCount === choice.subjectCount && previous.discountCode === choice.discountCode) return current;
+      return { ...current, [studentId]: choice };
+    });
+  }, []);
+
+  const startGroupCheckout = useCallback(async (entries) => {
+    if (!profile?.uid || !entries.length) return;
+    let remaining = [...entries];
+    setLoading(true);
+    setStatus('Preparing subscriptions for the selected kids…');
+    try {
+      while (remaining.length) {
+        window.sessionStorage.setItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY, JSON.stringify(remaining));
+        const [entry, ...rest] = remaining;
+        const result = await initializeSubscriptionPayment({
+          studentId: entry.studentId,
+          ...entry.selection,
+          callbackUrl: `${window.location.origin}${location.pathname}?groupCheckout=1`,
+        });
+        if (result.authorizationUrl) {
+          setStatus(`Opening Paystack for ${entry.displayName || 'the selected student'}…`);
+          window.location.assign(result.authorizationUrl);
+          return;
+        }
+        if (result.freeCheckout || result.free || result.scheduledChange || result.pendingChangeCancelled || result.alreadyActive) {
+          await loadStudents();
+          remaining = rest;
+          continue;
+        }
+        throw new Error(`Could not prepare a subscription for ${entry.displayName || 'the selected student'}.`);
+      }
+      window.sessionStorage.removeItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY);
+      setGroupCheckoutOpen(false);
+      setGroupStudentIds([]);
+      setGroupSelections({});
+      setStatus('The selected kids’ subscription actions are complete. Each student’s payment and card authorization remain on that student’s record.');
+      await loadStudents();
+    } catch (error) {
+      setStatus(error?.message || 'The group checkout could not be started.');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadStudents, location.pathname, profile?.uid]);
+
   useEffect(() => {
     loadStudents();
   }, [loadStudents]);
@@ -175,7 +239,30 @@ export const ParentDashboardPage = () => {
         const authorizationNote = verification.authorizationOnly
           ? ` R1.00 was temporarily charged for card authorization; the automatic refund request is ${verification.refundStatus || 'pending'}${verification.nextBillingDate ? `. The next actual charge is expected ${new Date(verification.nextBillingDate).toLocaleDateString()} for R${Number(verification.nextBillingAmount || 0).toFixed(2)}` : (verification.noNextChargeWhileOfferApplies ? '. This offer has no paid renewal while it remains active' : '')}.${verification.manualPaymentRequired ? ' Paystack did not provide a reusable authorization, so the next payment will need to be completed manually.' : ''}`
           : '';
-        setStatus(`Payment verified and subscription activated.${authorizationNote}`);
+        if (params.get('groupCheckout') === '1') {
+          let queue = [];
+          try {
+            queue = JSON.parse(window.sessionStorage.getItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY) || '[]');
+          } catch {
+            queue = [];
+          }
+          const remaining = queue[0]?.studentId === paymentStudentId
+            ? queue.slice(1)
+            : queue.filter((entry) => entry.studentId !== paymentStudentId);
+          if (remaining.length) {
+            window.sessionStorage.setItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY, JSON.stringify(remaining));
+            setStatus(`Payment verified for ${updatedStudent.displayName || 'the student'}. Continuing with ${remaining.length} more student subscription${remaining.length === 1 ? '' : 's'}…`);
+            setGroupCheckoutOpen(false);
+            await startGroupCheckout(remaining);
+            return;
+          }
+          window.sessionStorage.removeItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY);
+          setStatus(`All selected student subscriptions were processed.${authorizationNote}`);
+          setGroupStudentIds([]);
+          setGroupSelections({});
+        } else {
+          setStatus(`Payment verified and subscription activated.${authorizationNote}`);
+        }
         navigate(location.pathname, { replace: true });
       } catch (error) {
         setStatus(error?.message || 'Payment verification failed.');
@@ -185,7 +272,7 @@ export const ParentDashboardPage = () => {
     };
 
     runVerification();
-  }, [loadStudents, location.pathname, location.search, navigate, profile?.uid, runOperation]);
+  }, [loadStudents, location.pathname, location.search, navigate, profile?.uid, runOperation, startGroupCheckout]);
 
   const handleLinkStudent = async (e) => {
     e.preventDefault();
@@ -202,6 +289,37 @@ export const ParentDashboardPage = () => {
       setStudentIdInput('');
     } catch (err) {
       setStatus(err.message || 'Failed to link student.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateStudent = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setStatus('');
+    try {
+      await runOperation({ operationName: 'Creating managed student profile', successMessage: 'Student profile created.' }, async () => {
+        await createManagedStudentProfileForParent({
+          parentId: profile.uid,
+          displayName: newStudentName,
+          grade: newStudentGrade,
+          province: newStudentProvince,
+          school: newStudentSchool,
+          whatsappNumber: newStudentWhatsApp,
+          email: newStudentEmail,
+          autoGenerateEmail,
+        });
+        await loadStudents();
+      });
+      setNewStudentName('');
+      setNewStudentEmail('');
+      setNewStudentProvince('');
+      setNewStudentSchool('');
+      setNewStudentWhatsApp('');
+      setStatus('Student profile created and linked. This profile has no separate sign-in account yet.');
+    } catch (err) {
+      setStatus(err.message || 'Could not create the student profile.');
     } finally {
       setLoading(false);
     }
@@ -342,11 +460,21 @@ export const ParentDashboardPage = () => {
   };
 
   const unpaidCount = students.filter(s => !s.paymentCompleted).length;
+  const selectedGroupStudents = students.filter((student) => groupStudentIds.includes(student.uid));
+  const missingGroupSelections = selectedGroupStudents.filter((student) => !groupSelections[student.uid]);
+  const beginGroupCheckout = () => {
+    if (selectedGroupStudents.length < 2 || missingGroupSelections.length) return;
+    void startGroupCheckout(selectedGroupStudents.map((student) => ({
+      studentId: student.uid,
+      displayName: student.displayName || student.email,
+      selection: groupSelections[student.uid],
+    })));
+  };
 
   return (
     <AppShell
-      title="Parent Dashboard"
-      subtitle="Manage your children's accounts, track learning progress, and handle subscriptions."
+      title="Kids"
+      subtitle="Link students, create managed profiles, and manage each child’s subscription."
       role="parent"
       user={profile}
       onLogout={logout}
@@ -377,6 +505,52 @@ export const ParentDashboardPage = () => {
           Link Student
         </button>
       </div>
+
+      <form onSubmit={handleCreateStudent} className="panel mb-8 grid gap-4 p-6 md:grid-cols-2" aria-label="Create a student profile">
+        <div className="md:col-span-2">
+          <h2 className="text-lg font-bold text-slate-950">Add a child without an account</h2>
+          <p className="mt-1 text-sm text-slate-500">This creates a student profile in Firestore only. It does not create an authentication account.</p>
+        </div>
+        <label>
+          <span className="label">Student’s full name</span>
+          <input className="input w-full" value={newStudentName} onChange={(event) => setNewStudentName(event.target.value)} required maxLength={100} />
+        </label>
+        <label>
+          <span className="label">Grade</span>
+          <select className="input w-full" value={newStudentGrade} onChange={(event) => setNewStudentGrade(event.target.value)} required>
+            {SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade').map((grade) => <option key={grade}>{grade}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="label">Province</span>
+          <select className="input w-full" value={newStudentProvince} onChange={(event) => setNewStudentProvince(event.target.value)} required>
+            <option value="">Select province</option>
+            {REGIONS.filter((region) => region !== 'National').map((region) => <option key={region}>{region}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="label">School</span>
+          <input className="input w-full" value={newStudentSchool} onChange={(event) => setNewStudentSchool(event.target.value)} required maxLength={160} />
+        </label>
+        <label className="md:col-span-2">
+          <span className="label">WhatsApp number</span>
+          <input type="tel" inputMode="tel" autoComplete="tel" className="input w-full" placeholder="082 123 4567 or +27 82 123 4567" value={newStudentWhatsApp} onChange={(event) => setNewStudentWhatsApp(event.target.value)} required />
+          <span className="mt-1 block text-xs text-slate-500">Use a country code or a South African number beginning with 0.</span>
+        </label>
+        <div className="space-y-3 md:col-span-2">
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" checked={autoGenerateEmail} onChange={(event) => setAutoGenerateEmail(event.target.checked)} />
+            Generate a placeholder email from the child’s name and my email
+          </label>
+          {!autoGenerateEmail ? <label className="block">
+            <span className="label">Student email</span>
+            <input type="email" className="input w-full" value={newStudentEmail} onChange={(event) => setNewStudentEmail(event.target.value)} required />
+          </label> : <p className="text-xs text-slate-500">The generated address uses the format child-name-parent-email-name@examifying.com. If already taken, a number is added.</p>}
+        </div>
+        <button type="submit" className="btn-primary inline-flex w-fit items-center gap-2 md:col-span-2" disabled={loading || !newStudentName.trim() || !newStudentProvince || !newStudentSchool.trim() || !newStudentWhatsApp.trim()}>
+          <Plus className="h-4 w-4" aria-hidden="true" />{loading ? 'Creating…' : 'Create student profile'}
+        </button>
+      </form>
       
       {status && (
         <div className="mb-6 p-4 rounded-xl border border-lime-400/30 bg-lime-400/10 text-lime-300 flex flex-wrap items-center gap-2 text-sm font-medium">
@@ -396,6 +570,9 @@ export const ParentDashboardPage = () => {
             <h3 className="font-bold text-white text-lg">Payments</h3>
             <p className="text-slate-300 text-sm mt-1">{unpaidCount} student{unpaidCount !== 1 ? 's' : ''} need a subscription. Choose a plan for each student.</p>
           </div>
+          <button type="button" className="btn-primary" onClick={() => { setGroupSelections({}); setGroupCheckoutOpen(true); }} disabled={groupStudentIds.length < 2 || loading}>
+            Pay for selected kids ({groupStudentIds.length})
+          </button>
         </div>
       )}
 
@@ -414,13 +591,19 @@ export const ParentDashboardPage = () => {
                   <h3 className="text-lg font-bold text-white">{student.displayName || student.email}</h3>
                   <p className="text-sm text-slate-400">{student.grade || 'Unknown Grade'} • {student.province || 'Unknown Region'}</p>
                 </div>
-                <button 
-                  onClick={() => setEditingStudentId(editingStudentId === student.uid ? null : student.uid)}
-                  className="p-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-lime-400 hover:border-lime-400/50 transition-colors"
-                  title="Edit Profile"
-                >
-                  <Edit className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
+                    <input type="checkbox" checked={groupStudentIds.includes(student.uid)} onChange={(event) => setGroupStudentIds((current) => event.target.checked ? [...current, student.uid] : current.filter((id) => id !== student.uid))} aria-label={`Select ${student.displayName || 'student'} for group checkout`} />
+                    Group
+                  </label>
+                  <button
+                    onClick={() => setEditingStudentId(editingStudentId === student.uid ? null : student.uid)}
+                    className="p-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-lime-400 hover:border-lime-400/50 transition-colors"
+                    title="Edit Profile"
+                  >
+                    <Edit className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="p-6 flex-1 flex flex-col">
@@ -460,6 +643,7 @@ export const ParentDashboardPage = () => {
                 )}
 
                 <div className="mt-auto pt-4 border-t border-slate-100">
+                  <Link to={`/parent/kids/${student.uid}`} className="btn-secondary mb-4 inline-flex w-full items-center justify-center">Open student workspace</Link>
                   <div className="flex justify-between items-center mb-4 text-sm">
                     <span className="text-slate-500">Subscription Status</span>
                     <span className={`font-semibold px-2 py-1 rounded-md text-xs ${student.subscriptionStatus === 'past_due' ? 'bg-amber-50 text-amber-700' : student.paymentCompleted ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
@@ -486,6 +670,44 @@ export const ParentDashboardPage = () => {
           ))}
         </div>
       )}
+      {groupCheckoutOpen ? (
+        <div className="fixed inset-0 z-[80] overflow-y-auto bg-slate-950/95 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Group student subscription checkout">
+          <div className="mx-auto my-4 max-w-6xl space-y-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Group checkout</p>
+                <h2 className="mt-1 text-2xl font-bold text-white">Choose a plan for each child</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-300">Each child keeps an individual subscription and payment record. Paystack opens separately for each child so their card authorization stays with their own student record.</p>
+              </div>
+              <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setGroupCheckoutOpen(false)} aria-label="Close group checkout"><X className="h-5 w-5" /></button>
+            </div>
+            {selectedGroupStudents.length < 2 ? <p className="panel p-4 text-sm text-amber-800">Select at least two kids on this page to continue with group checkout.</p> : null}
+            {selectedGroupStudents.map((student) => (
+              <section key={student.uid} className="panel space-y-4 p-5">
+                <h3 className="text-lg font-bold text-white">{student.displayName || student.email}</h3>
+                <SubscriptionPlanSelector
+                  studentId={student.uid}
+                  selectionOnly
+                  onSelectionChange={updateGroupSelection}
+                  initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || ''}
+                  initialSelection={{
+                    planId: ['circle', 'personalized'].includes(student.subscriptionPlanId) ? student.subscriptionPlanId : 'circle',
+                    billingPeriod: student.subscriptionBillingPeriod || 'monthly',
+                    subjectCount: student.subscriptionSubjectCount || 1,
+                  }}
+                />
+              </section>
+            ))}
+            {missingGroupSelections.length ? <p className="text-sm text-amber-200" role="status">Choose a subscription for each selected child before checkout.</p> : null}
+            <div className="flex flex-wrap justify-end gap-3">
+              <button type="button" className="btn-secondary" onClick={() => setGroupCheckoutOpen(false)}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={beginGroupCheckout} disabled={loading || selectedGroupStudents.length < 2 || missingGroupSelections.length > 0}>
+                {loading ? 'Preparing checkout…' : `Checkout ${selectedGroupStudents.length} kids`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {subscriptionStudent ? (
         <div className="fixed inset-0 z-[80] overflow-y-auto bg-slate-950/95 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Subscription for ${subscriptionStudent.displayName || 'student'}`}>
           <div className="mx-auto my-4 max-w-6xl">

@@ -98,19 +98,30 @@ export const completePeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (
   const assignmentSnapshot = await assignmentRef.get();
   if (!assignmentSnapshot.exists) throw new HttpsError('not-found', 'Peer-marking assignment not found.');
   const assignment = assignmentSnapshot.data();
-  if (assignment.reviewerId !== uid) throw new HttpsError('permission-denied', 'This work is assigned to another student.');
+  const reviewerId = assignment.reviewerId;
+  if (!reviewerId) throw new HttpsError('failed-precondition', 'This marking assignment has no reviewer.');
+  let actingAsParent = false;
+  if (reviewerId !== uid) {
+    const [actorSnapshot, reviewerSnapshot] = await Promise.all([
+      db.collection('users').doc(uid).get(),
+      db.collection('users').doc(reviewerId).get(),
+    ]);
+    actingAsParent = actorSnapshot.exists && actorSnapshot.data().role === 'parent'
+      && reviewerSnapshot.exists && reviewerSnapshot.data().parentId === uid;
+    if (!actingAsParent) throw new HttpsError('permission-denied', 'This work is assigned to another student.');
+  }
   if (assignment.status !== 'assigned') throw new HttpsError('failed-precondition', 'This assignment is no longer available.');
   const now = admin.firestore.Timestamp.now();
   const primary = pages[0];
   const reviewRef = assignmentRef.parent.parent.collection('peerReviews').doc();
   const batch = db.batch();
-  batch.set(reviewRef, { reviewerId: uid, reviewerSubjectInstanceId: assignment.reviewerSubjectInstanceId,
+  batch.set(reviewRef, { reviewerId, reviewerSubjectInstanceId: assignment.reviewerSubjectInstanceId,
     peerAssignmentId: assignmentRef.id, reviewImages: pages, reviewImageUrl: primary.url,
-    reviewedAt: now, status: 'completed' });
+    reviewedAt: now, submittedBy: uid, submittedByParent: actingAsParent, status: 'completed' });
   batch.update(assignmentRef, { reviewId: reviewRef.id, reviewImages: pages, reviewImageUrl: primary.url,
     reviewFileName: primary.fileName ?? '', status: 'completed', completedAt: now, updatedAt: now });
   batch.update(assignmentRef.parent.parent, { peerReviewed: 'Yes', peerReviewStatus: 'completed',
-    peerReviewDate: now, peerMarkedImages: pages, peerReviewerId: uid, updatedAt: now });
+    peerReviewDate: now, peerMarkedImages: pages, peerReviewerId: reviewerId, peerReviewSubmittedBy: uid, updatedAt: now });
   if (assignment.reviewerExercisePath) batch.set(db.doc(assignment.reviewerExercisePath), {
     peerMarkingImages: pages, markedPeerExerciseId: assignment.exerciseId,
     peerMarkingAssignmentId: assignmentRef.id, peerMarkingStatus: 'completed', updatedAt: now,

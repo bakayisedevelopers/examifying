@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { LessonAccessDetails } from '../../components/lessons/LessonAccessDetails';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { getLessonById } from '../../services/firestoreService';
 import { getAuthorizedLessonWhatsAppAccess } from '../../services/whatsappService';
 
@@ -17,7 +17,7 @@ const lessonScorePercent = (value) => {
 export const StudentLessonDetailsPage = () => {
   const { lessonId } = useParams();
   const [searchParams] = useSearchParams();
-  const { profile, logout } = useAuth();
+  const { profile, logout, toStudentPath } = useStudentWorkspaceProfile();
   const [lesson, setLesson] = useState(null);
   const [whatsappAccess, setWhatsAppAccess] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -52,7 +52,7 @@ export const StudentLessonDetailsPage = () => {
 
   return (
     <AppShell title="Lesson details" subtitle={lesson ? `${lesson.subject} • ${lesson.lessonDate || lesson.completedOn || 'No date'}` : 'Loading lesson'} role="student" user={profile} onLogout={logout}>
-      <Link to="/student/lessons" className="btn-secondary hidden w-fit lg:inline-flex">Back to lessons</Link>
+      <Link to={toStudentPath('/student/lessons')} className="btn-secondary hidden w-fit lg:inline-flex">Back to lessons</Link>
       {isLoading ? <LoadingState label="Loading lesson details…" /> : null}
       {loadError ? <div className="panel p-4 text-sm text-rose-700" role="alert">{loadError}</div> : null}
       {lesson ? (() => {

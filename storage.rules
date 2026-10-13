@@ -4,6 +4,7 @@ service firebase.storage {
     function signedIn() { return request.auth != null; }
     function profile(uid) { return firestore.get(/databases/(default)/documents/users/$(uid)).data; }
     function isAdmin() { return signedIn() && profile(request.auth.uid).role == 'admin'; }
+    function isParentOf(studentId) { return signedIn() && profile(studentId).get('parentId', '') == request.auth.uid; }
     function episode(studentId, subjectInstanceId) {
       return firestore.get(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)).data;
     }
@@ -43,20 +44,20 @@ service firebase.storage {
       allow write: if signedIn() && (request.auth.uid == uploaderId || isAdmin());
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/submissions/{fileName} {
-      allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId)
+      allow read: if signedIn() && (request.auth.uid == studentId || isParentOf(studentId) || isStaff(studentId, subjectInstanceId)
         || isPrimaryTutor(studentId, subjectInstanceId) || isAdmin()
         || firestore.exists(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)/peerMarkingAssignments/$(request.auth.uid)));
-      allow create: if signedIn() && request.auth.uid == studentId && validImage()
+      allow create: if signedIn() && (request.auth.uid == studentId || isParentOf(studentId)) && validImage()
         && exerciseSubmissionIsOpen(studentId, subjectInstanceId, exerciseId);
       allow update, delete: if false;
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/{folder}/{fileName} {
-      allow read: if signedIn() && (request.auth.uid == studentId || isStaff(studentId, subjectInstanceId)
+      allow read: if signedIn() && (request.auth.uid == studentId || isParentOf(studentId) || isStaff(studentId, subjectInstanceId)
         || isPrimaryTutor(studentId, subjectInstanceId) || isAdmin());
       allow create: if validImage() && ((folder == 'tutor-marking' && (canMark(studentId, subjectInstanceId) || isAdmin()))
-        || (folder == 'peer-reviews' && signedIn() && request.auth.uid == studentId));
+        || (folder == 'peer-reviews' && signedIn() && (request.auth.uid == studentId || isParentOf(studentId))));
       allow update, delete: if folder in ['tutor-marking', 'peer-reviews']
-        && (canMark(studentId, subjectInstanceId) || isAdmin() || (folder == 'peer-reviews' && request.auth.uid == studentId));
+        && (canMark(studentId, subjectInstanceId) || isAdmin() || (folder == 'peer-reviews' && (request.auth.uid == studentId || isParentOf(studentId))));
     }
     match /users/{userId}/tutorMarksDocuments/{allPaths=**} {
       allow read, write: if signedIn() && (request.auth.uid == userId || isAdmin());

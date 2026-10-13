@@ -5,6 +5,36 @@ service cloud.firestore {
     function profile(uid) { return get(/databases/$(database)/documents/users/$(uid)).data; }
     function isAdmin() { return signedIn() && profile(request.auth.uid).role == 'admin'; }
     function isParentOf(studentId) { return signedIn() && profile(studentId).get('parentId', '') == request.auth.uid; }
+    function validManagedStudentCreate(userId) {
+      return signedIn() && profile(request.auth.uid).role == 'parent'
+        && request.resource.data.keys().hasOnly([
+          'uid', 'role', 'displayName', 'email', 'emailLowercase', 'grade', 'province', 'school', 'whatsappNumber', 'parentId',
+          'isManagedStudent', 'authUserExists', 'profileCompletionStatus', 'paymentCompleted',
+          'subscriptionStatus', 'previousYearMark', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.role == 'student'
+        && request.resource.data.parentId == request.auth.uid
+        && request.resource.data.isManagedStudent == true
+        && request.resource.data.authUserExists == false
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.email is string
+        && request.resource.data.emailLowercase is string
+        && request.resource.data.emailLowercase == request.resource.data.email
+        && request.resource.data.grade is string
+        && request.resource.data.grade.matches('^Grade (4|5|6|7|8|9|10|11|12)$')
+        && request.resource.data.province is string
+        && request.resource.data.province in ['Eastern Cape', 'Free State', 'Gauteng', 'KwaZulu-Natal', 'Limpopo', 'Mpumalanga', 'North West', 'Northern Cape', 'Western Cape']
+        && request.resource.data.school is string
+        && request.resource.data.school.size() > 0
+        && request.resource.data.whatsappNumber is string
+        && request.resource.data.whatsappNumber.matches('^\\+[1-9][0-9]{7,14}$')
+        && request.resource.data.profileCompletionStatus == 'unpaid_incomplete'
+        && request.resource.data.paymentCompleted == false
+        && request.resource.data.subscriptionStatus == 'pending'
+        && request.resource.data.previousYearMark == 0;
+    }
     function validSelfProfileUpdate(userId) {
       return signedIn() && request.auth.uid == userId
         && request.resource.data.uid == resource.data.uid
@@ -23,8 +53,10 @@ service cloud.firestore {
         && request.resource.data.parentId == resource.data.parentId
         && request.resource.data.role == resource.data.role
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'displayName', 'previousYearMark', 'updatedAt'
-        ]);
+          'displayName', 'previousYearMark', 'whatsappNumber', 'subjectAvailability', 'updatedAt'
+        ])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['subjectAvailability'])
+          || request.resource.data.subjectAvailability is map);
     }
     function episode(studentId, subjectInstanceId) {
       return get(/databases/$(database)/documents/users/$(studentId)/subjects/$(subjectInstanceId)).data;
@@ -122,10 +154,11 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.auth.uid == userId
+      allow create: if (signedIn() && request.auth.uid == userId
         && request.resource.data.uid == userId
         && request.resource.data.role in ['student', 'tutor', 'teacher', 'parent']
-        && (request.resource.data.role != 'student' || request.resource.data.paymentCompleted == false);
+        && (request.resource.data.role != 'student' || request.resource.data.paymentCompleted == false)
+        ) || validManagedStudentCreate(userId);
       allow update: if isAdmin() || validSelfProfileUpdate(userId) || validParentProfileUpdate(userId);
       allow delete: if isAdmin();
 
@@ -189,7 +222,7 @@ service cloud.firestore {
               && request.resource.data.subjectInstanceId == subjectInstanceId);
           allow delete: if isAdmin() || canTeach(userId, subjectInstanceId);
           allow update: if isAdmin() || canMark(userId, subjectInstanceId)
-            || (signedIn() && request.auth.uid == userId && exerciseIsOpen()
+            || (signedIn() && (request.auth.uid == userId || isParentOf(userId)) && exerciseIsOpen()
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                 'submittedImageUrl', 'submittedImages', 'submittedFileName', 'submittedFileNames',
                 'submissionPageCount', 'submittedAt', 'updatedAt', 'peerReviewed',
@@ -197,12 +230,12 @@ service cloud.firestore {
               ]));
           match /submissions/{submissionId} {
             allow read: if canReadEpisode(userId, subjectInstanceId);
-            allow create, update: if signedIn() && request.auth.uid == userId
+            allow create, update: if signedIn() && (request.auth.uid == userId || isParentOf(userId))
               && isExerciseAccessWindowOpen(userId, subjectInstanceId, exerciseId);
             allow write: if isAdmin() || canMark(userId, subjectInstanceId);
           }
           match /peerMarkingAssignments/{assignmentId} {
-            allow read: if signedIn() && (resource.data.reviewerId == request.auth.uid || resource.data.revieweeId == request.auth.uid || isAdmin() || isEpisodeStaff(userId, subjectInstanceId));
+            allow read: if signedIn() && (resource.data.reviewerId == request.auth.uid || isParentOf(resource.data.reviewerId) || resource.data.revieweeId == request.auth.uid || isParentOf(userId) || isAdmin() || isEpisodeStaff(userId, subjectInstanceId));
             allow write: if false;
           }
           match /peerReviews/{reviewId} {
@@ -254,7 +287,7 @@ service cloud.firestore {
       allow read: if isAdmin();
     }
     match /{path=**}/peerMarkingAssignments/{assignmentId} {
-      allow read: if signedIn() && resource.data.reviewerId == request.auth.uid;
+      allow read: if signedIn() && (resource.data.reviewerId == request.auth.uid || isParentOf(resource.data.reviewerId));
     }
     match /{path=**}/generationRuns/{runId} {
       allow read: if canReadEpisode(resource.data.studentId, resource.data.subjectInstanceId);

@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { updateUserProfileDetails } from '../../services/authService';
-import { getStudentSubjectHistoryOptions } from '../../services/firestoreService';
+import { changeStudentGradeForParent, getStudentSubjectHistoryOptions, updateStudentProfileByParent } from '../../services/firestoreService';
 import { ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { getTutorWhatsAppSettings } from '../../services/whatsappService';
 
 export const ProfilePersonalDetailsPage = ({ role }) => {
-  const { profile, logout, refreshProfile, isDemoMode } = useAuth();
+  const { profile, logout, parentProfile, isParentWorkspace, refreshViewedProfile, isDemoMode } = useStudentWorkspaceProfile();
   const { runOperation } = useOperationStatus();
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [grade, setGrade] = useState(profile?.grade || SOUTH_AFRICAN_GRADES[0]);
@@ -72,6 +72,18 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
 
     try {
       const result = await runOperation({ operationName: 'Saving personal details', successMessage: 'Your personal details were saved.' }, async () => {
+        if (isParentWorkspace) {
+          const gradeChangeResult = grade !== profile.grade
+            ? await changeStudentGradeForParent({ studentId: profile.uid, newGrade: grade, restoreSubjectInstanceIds: selectedHistoryIds })
+            : null;
+          await updateStudentProfileByParent({
+            parentId: parentProfile.uid,
+            studentId: profile.uid,
+            updates: { displayName, whatsappNumber },
+          });
+          await refreshViewedProfile(profile.uid);
+          return { gradeChangeResult };
+        }
         const saved = await updateUserProfileDetails({
           uid: profile?.uid,
           displayName,
@@ -81,7 +93,7 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
           newPassword: password || undefined,
           restoreSubjectInstanceIds: role === ROLES.STUDENT ? selectedHistoryIds : [],
         });
-        if (!isDemoMode) await refreshProfile(profile.uid);
+        if (!isDemoMode) await refreshViewedProfile(profile.uid);
         return saved;
       });
       setPassword('');
@@ -155,10 +167,10 @@ export const ProfilePersonalDetailsPage = ({ role }) => {
             <span className="mt-1 block text-xs text-slate-500">Enter an international number with its country code. Assigned students see this only for an upcoming online one-on-one lesson.</span>
           </label>
         ) : null}
-        <label>
+        {isParentWorkspace ? <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">You can update this child’s profile details here. Account security stays with the child’s sign-in account.</p> : <label>
           <span className="label">New password</span>
           <input type="password" minLength="6" className="input" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Leave blank to keep current password" />
-        </label>
+        </label>}
         <button className="btn-primary w-full md:w-auto" disabled={saving}>{saving ? 'Saving...' : 'Save details'}</button>
       </form>
     </AppShell>

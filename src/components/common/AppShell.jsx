@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag } from 'lucide-react';
+import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag, ClipboardList, MessageSquare } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
+import { useParentStudentWorkspace } from '../../hooks/useStudentWorkspaceProfile';
 
 const navigationByRole = {
   [ROLES.STUDENT]: [
@@ -28,6 +29,8 @@ const navigationByRole = {
   ],
   [ROLES.PARENT]: [
     { to: '/parent', label: 'Home', icon: LayoutDashboard },
+    { to: '/parent/kids', label: 'Kids', icon: Users },
+    { to: '/parent/papers', label: 'Past papers', icon: BookOpen },
   ],
 };
 
@@ -50,13 +53,29 @@ const getNavigationForRole = (role, isTeacher) => {
 export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobileHeaderContent, children }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { role, isTeacher } = useEffectiveRole();
-  const effectiveRole = propRole === 'teacher' || isTeacher ? 'teacher' : (propRole || role);
+  const parentWorkspace = useParentStudentWorkspace();
+  const isParentWorkspace = Boolean(parentWorkspace?.studentProfile?.uid);
+  const effectiveRole = isParentWorkspace
+    ? ROLES.PARENT
+    : propRole === 'teacher' || isTeacher ? 'teacher' : (propRole || role);
   const { profile, user: authUser } = useAuth();
   const account = useMemo(() => ({ ...(authUser ?? {}), ...(profile ?? {}), ...(user ?? {}) }), [authUser, profile, user]);
   const subscriptionState = useStudentSubscriptionState(effectiveRole === ROLES.STUDENT ? account : null);
   const { runOperation } = useOperationStatus();
   const isFreeStudent = effectiveRole === ROLES.STUDENT && !subscriptionState?.paymentCompleted;
-  const roleNavigation = getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
+  const childBasePath = isParentWorkspace ? `/parent/kids/${parentWorkspace.studentProfile.uid}` : '';
+  const roleNavigation = isParentWorkspace ? [
+    { to: '/parent', label: 'Family Home', icon: LayoutDashboard },
+    { to: '/parent/kids', label: 'Kids', icon: Users },
+    { to: `${childBasePath}/home`, label: 'Student Home', icon: LayoutDashboard },
+    { to: `${childBasePath}/exercises`, label: 'Exercises', icon: ClipboardList },
+    { to: `${childBasePath}/lessons`, label: 'Lessons', icon: GraduationCap },
+    { to: `${childBasePath}/peer-reviews`, label: 'Peer marking', icon: MessageSquare },
+    { to: `${childBasePath}/papers`, label: 'Past papers', icon: BookOpen },
+    { to: `${childBasePath}/subscription`, label: 'Subscription', icon: CreditCard },
+    { to: `${childBasePath}/profile/details`, label: 'Personal details', icon: Users },
+    { to: `${childBasePath}/profile/subjects`, label: 'Subjects', icon: BookOpen },
+  ] : getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
   const isUnpaidStudent = effectiveRole === ROLES.STUDENT
     && !['paid_incomplete', 'paid_completed'].includes(account.profileCompletionStatus);
   const isStudentProfileIncomplete = effectiveRole === ROLES.STUDENT && account.profileCompletionStatus === 'paid_incomplete';
@@ -65,11 +84,11 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const onboardingPath = effectiveRole === ROLES.STUDENT
     ? '/student/onboarding'
     : effectiveRole === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding';
-  const navigation = isUnpaidStudent
+  const navigation = isParentWorkspace ? roleNavigation : isUnpaidStudent
     ? [{ to: '/student/papers', label: 'Browse past papers', icon: BookOpen }]
     : onboardingLocked ? [] : roleNavigation;
-  const homePath = onboardingLocked ? onboardingPath : isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
-  const profilePath = `/${effectiveRole}/profile`;
+  const homePath = isParentWorkspace ? `${childBasePath}/home` : onboardingLocked ? onboardingPath : isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
+  const profilePath = isParentWorkspace ? `${childBasePath}/profile/details` : `/${effectiveRole}/profile`;
   const displayName = account.displayName || account.name || account.fullName || 'Account';
   const email = account.email || '';
   const avatarUrl = account.photoURL || account.photoUrl || account.avatarUrl || account.profileImageUrl || account.avatar || '';
@@ -79,7 +98,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     .slice(0, 2)
     .map((part) => part[0].toUpperCase())
     .join('') || 'U';
-  const identityLabel = effectiveRole === ROLES.STUDENT
+  const identityLabel = isParentWorkspace ? 'Parent view' : effectiveRole === ROLES.STUDENT
     ? (subscriptionState?.subscriptionPlanName || 'Student')
     : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[effectiveRole] || 'Account');
   const navigate = useNavigate();
@@ -181,7 +200,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
               <NavLink
                 key={to}
                 to={to}
-                end={to === `/${effectiveRole}`}
+                end={to === `/${effectiveRole}` || to === '/parent/kids' || (isParentWorkspace && to === `${childBasePath}/home`)}
                 onClick={() => setIsMobileMenuOpen(false)}
                 onMouseEnter={() => warmNavigationRoute(to)}
                 onFocus={() => warmNavigationRoute(to)}

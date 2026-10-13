@@ -3,12 +3,12 @@ import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { getActiveSubjectEpisodesForStudent, getExerciseHistory, getStudentEntitlementState, getTodayExercise } from '../../services/firestoreService';
 import { DEFAULT_SUBJECT } from '../../lib/constants';
 
 export const StudentExercisesPage = () => {
-  const { profile, logout } = useAuth();
+  const { profile, logout } = useStudentWorkspaceProfile();
   const [todayExercise, setTodayExercise] = useState(null);
   const [history, setHistory] = useState([]);
   const [paymentCompleted, setPaymentCompleted] = useState(false);
@@ -37,7 +37,7 @@ export const StudentExercisesPage = () => {
       if (active) setIsLoadingSubjects(false);
     });
     return () => { active = false; };
-  }, [profile?.uid]);
+  }, [profile?.uid, selectedSubject]);
 
   useEffect(() => {
     if (availableSubjects.length && !availableSubjects.includes(selectedSubject)) {

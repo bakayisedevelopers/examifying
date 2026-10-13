@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { LoadingState } from '../components/common/LoadingState';
 import { SectionHeader } from '../components/common/SectionHeader';
-import { useAuth } from '../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../hooks/useStudentWorkspaceProfile';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { useStudentExercisePaperAccess } from '../hooks/useStudentExercisePaperAccess';
 import { DEFAULT_SUBJECT, PAPER_MONTHS, PAPER_NUMBERS, REGIONS, ROLES, SOUTH_AFRICAN_GRADES, SUBJECTS } from '../lib/constants';
@@ -310,7 +310,7 @@ const getPaperSearchText = (paper) => [
 ].filter(Boolean).join(' ').toLowerCase();
 
 export const PastExamPapersPage = () => {
-  const { profile, user, logout } = useAuth();
+  const { profile, user, logout, isParentWorkspace, toStudentPath } = useStudentWorkspaceProfile();
   const { runOperation } = useOperationStatus();
   const [papers, setPapers] = useState([]);
   const [isLoadingPapers, setIsLoadingPapers] = useState(true);
@@ -376,6 +376,9 @@ export const PastExamPapersPage = () => {
   }, [topicResolverOpen]);
 
   const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
+  const paperPath = (paperId) => isParentWorkspace
+    ? toStudentPath(`/student/papers/${paperId}`)
+    : `/${role}/papers/${paperId}`;
   const memoAccess = useStudentExercisePaperAccess(profile?.uid ?? user?.uid, role === ROLES.STUDENT);
   useEffect(() => {
     if (role !== ROLES.ADMIN) return undefined;
@@ -1310,7 +1313,7 @@ export const PastExamPapersPage = () => {
           : 'Submit today’s work to unlock memo';
       return <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600" role="status">{message}</span>;
     }
-    return <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?document=memo&page=1`}>{label}</Link>;
+    return <Link className="btn-secondary" to={`${paperPath(paper.id)}?document=memo&page=1`}>{label}</Link>;
   };
 
   const getCatalogDocumentTitle = (paper, type) => {
@@ -1337,7 +1340,7 @@ export const PastExamPapersPage = () => {
     return (
       <Link
         className="px-2 py-2 text-sm font-semibold text-lime-300 transition hover:text-lime-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300"
-        to={`/${role}/papers/${paper.id}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
+        to={`${paperPath(paper.id)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
         aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
       >
         Open
@@ -1378,7 +1381,7 @@ export const PastExamPapersPage = () => {
         </div>
         {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
-          <Link className="btn-secondary" to={`/${role}/papers/${paper.id}?page=1`}>Open paper</Link>
+          <Link className="btn-secondary" to={`${paperPath(paper.id)}?page=1`}>Open paper</Link>
           {renderMemoAction(paper, 'Open memo')}
           {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
           {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}

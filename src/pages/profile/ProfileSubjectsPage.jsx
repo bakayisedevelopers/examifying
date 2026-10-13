@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { ROLES } from '../../lib/constants';
 import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getStudentSubjectHistoryOptions, getStudentSubscriptionState, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
 import { deleteTutorMarksDocument, retryTutorMarksDocument, uploadTutorMarksDocument } from '../../services/storageService';
@@ -28,7 +28,7 @@ const formatDate = (value) => {
 };
 
 export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice = '' }) => {
-  const { profile, logout, refreshProfile, setProfileCompletionStatus, retryProfileCompletionCheck } = useAuth();
+  const { profile, logout, refreshViewedProfile: refreshProfile, setProfileCompletionStatus, retryProfileCompletionCheck, toStudentPath } = useStudentWorkspaceProfile();
   const navigate = useNavigate();
   const { runOperation } = useOperationStatus();
   const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
@@ -88,7 +88,7 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
     if (!paymentIsVerified) {
       await setProfileCompletionStatus('unpaid_incomplete');
       setStatus('We could not confirm an active payment. Please return to subscription checkout.');
-      navigate('/student/billing', { replace: true });
+      navigate(toStudentPath('/student/subscription'), { replace: true });
       throw new Error('We could not confirm your active subscription. Please return to checkout.');
     }
     if (!activeSubjects.length) {
@@ -97,7 +97,7 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
     }
     await setProfileCompletionStatus('paid_completed');
     await refreshProfile(profile.uid);
-    navigate('/student', { replace: true });
+    navigate(toStudentPath('/student'), { replace: true });
     return true;
   };
 

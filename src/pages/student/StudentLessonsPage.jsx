@@ -3,11 +3,11 @@ import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
-import { useAuth } from '../../hooks/useAuth';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 import { getLessonsForStudent } from '../../services/firestoreService';
 
 export const StudentLessonsPage = () => {
-  const { profile, logout } = useAuth();
+  const { profile, logout, toStudentPath } = useStudentWorkspaceProfile();
   const [lessons, setLessons] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -34,7 +34,7 @@ export const StudentLessonsPage = () => {
           const statusLabel = missed ? 'Missed' : planned ? 'Upcoming' : 'Completed';
           const topics = (lesson.topics ?? [lesson.topic]).filter(Boolean);
           return (
-            <Link key={lesson.id} to={`/student/lessons/${lesson.id}?studentId=${encodeURIComponent(profile.uid)}&subjectInstanceId=${encodeURIComponent(lesson.subjectInstanceId || '')}`} className="panel block p-5 transition hover:border-lime-700/40">
+            <Link key={lesson.id} to={`${toStudentPath(`/student/lessons/${lesson.id}`)}?studentId=${encodeURIComponent(profile.uid)}&subjectInstanceId=${encodeURIComponent(lesson.subjectInstanceId || '')}`} className="panel block p-5 transition hover:border-lime-700/40">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <p className="font-semibold text-slate-950">{topics.join(' | ') || 'Lesson topics not recorded'}</p>
                 <span className={`rounded-full px-3 py-1 text-xs font-semibold ${missed ? 'bg-amber-100 text-amber-800' : planned ? 'bg-sky-100 text-sky-800' : 'bg-lime-100 text-lime-800'}`}>{statusLabel}</span>

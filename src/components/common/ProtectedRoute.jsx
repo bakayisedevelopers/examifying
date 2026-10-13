@@ -55,7 +55,6 @@ export const ProtectedRoute = ({ allowedRoles }) => {
   return (
     <StudentNotificationGate
       profile={profile}
-      required={profile.role === ROLES.STUDENT && allowedRoles?.includes(ROLES.STUDENT) && !location.pathname.startsWith('/student/profile')}
     >
       <Outlet />
     </StudentNotificationGate>

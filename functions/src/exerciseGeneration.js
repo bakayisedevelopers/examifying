@@ -1,8 +1,20 @@
+Warning: truncated output (original token count: 12887)
+Total output lines: 996
+
 import { createHash } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions';
 import { getDb, taskQueue } from './admin.js';
+import {
+  getExerciseGenerationSubjectQueryValues,
+  isAnalyzedExerciseSourcePaper,
+  matchesExerciseGenerationPaper,
+  normalizeExerciseGenerationGrade,
+  normalizeExerciseGenerationSubject,
+  sortExerciseGenerationPapersByRegionPreference,
+} from './exerciseGenerationPaperMatching.js';
 import {
   buildRuleBasedExercisePlan,
   createExerciseDateWindow,
@@ -179,15 +191,6 @@ const topicSummaryFromDoc = (doc) => {
 
 const eligibleTopics = (topics) => topics.filter((topic) => topic.topicStatus === 'done'
   || (topic.topicStatus === 'marked' && Number(topic.understandingLevel) >= MARKED_TOPIC_MIN_GENERATION_SCORE));
-
-const isAnalyzedPaper = (paper) => paper.analysisStatus === 'Analyzed'
-  && paper.availableForGeneration !== false
-  && Array.isArray(paper.questions)
-  && paper.questions.length > 0;
-
-const paperMatchesStudent = (paper, { grade, region, subject }) => paper.subject === subject
-  && (!paper.grade || !grade || paper.grade === grade)
-  && (paper.region === region || paper.region === 'National');
 
 const getSubscriptionQuote = (subscription) => {
   const planId = subscription?.planId;
@@ -392,187 +395,27 @@ export const queuePendingInitialGenerationAfterPaperAnalysis = onTaskDispatched(
     const path = episodeDoc.ref.path.split('/');
     if (path.length !== 4 || path[0] !== 'users' || path[2] !== 'subjects') return false;
     const episode = episodeDoc.data();
-    const episodeGrade = String(episode.grade ?? '').trim();
+    const episodeGrade = episode.grade;
     const pendingReason = episode.exerciseGenerationPendingTrigger;
     return episode.status === 'active'
-      && String(episode.subjectKey ?? episode.subjectName ?? '').trim() === String(paper.subject).trim()
-      && (!String(paper.grade ?? '').trim() || episodeGrade === String(paper.grade).trim())
+      && normalizeExerciseGenerationSubject(episode.subjectKey ?? episode.subjectName)
+        === normalizeExerciseGenerationSubject(paper.subject)
+      && (!String(paper.grade ?? '').trim()
+        || normalizeExerciseGenerationGrade(episodeGrade) === normalizeExerciseGenerationGrade(paper.grade))
       && ['initial', 'lesson'].includes(pendingReason);
   });
   for (const episodeDoc of candidateDocs) {
     const parts = episodeDoc.ref.path.split('/');
     const studentId = parts[1];
     const episode = episodeDoc.data();
-    const [studentSnapshot, generationSnapshot] = await Promise.all([
-      db.doc(`users/${studentId}`).get(),
-      episodeDoc.ref.collection('generationRuns').where('status', '==', 'completed').limit(1).get(),
-    ]);
-    const student = studentSnapshot.data() ?? {};
-    if (paper.region !== 'National' && String(student.province ?? '').trim() !== String(paper.region ?? '').trim()) continue;
+    const generationSnapshot = await episodeDoc.ref.collection('generationRuns')
+      .where('status', '==', 'completed').limit(1).get();
     await enqueueGeneration({
       studentId,
       subjectInstanceId: episodeDoc.id,
       subject: String(episode.subjectKey ?? episode.subjectName ?? paper.subject).trim(),
       reason: episode.exerciseGenerationPendingTrigger,
-      sourceLessonId: episode.exerciseGenerationPendingLessonId ?? null,
-      sourceLessonSignature: episode.exerciseGenerationPendingLessonSignature ?? null,
-      initialOnly: generationSnapshot.empty && episode.exerciseGenerationPendingTrigger === 'initial',
-      triggerKey: `paper:${paperId}:${runId}:${episodeDoc.id}`,
-    });
-  }
-  logger.info('Queued generation for pending subject episodes after paper analysis', {
-    paperId,
-    runId,
-    candidateCount: candidateDocs.length,
-  });
-});
-
-const getMatchingPapers = async ({ db, subject, grade, region }) => {
-  const snapshot = await db.collection('questionPapers').where('subject', '==', subject).get();
-  return snapshot.docs
-    .map((doc) => ({ id: doc.id, ...doc.data() }))
-    .filter(isAnalyzedPaper)
-    .filter((paper) => paperMatchesStudent(paper, { grade, region, subject }));
-};
-
-const getTopicSummaries = async (episodeRef) => {
-  const snapshot = await episodeRef.collection('topics').get();
-  return snapshot.docs.map(topicSummaryFromDoc).filter((item) => item?.topic);
-};
-
-const getHistory = async (episodeRef) => {
-  const snapshot = await episodeRef.collection('exercises').orderBy('assignmentDate', 'desc').limit(HISTORY_LIMIT).get();
-  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-};
-
-const getCompletedLessons = async (episodeRef) => {
-  const snapshot = await episodeRef.collection('lessons').where('status', '==', 'completed').limit(HISTORY_LIMIT).get();
-  return (await Promise.all(snapshot.docs.map((doc) => hydrateLessonScores(episodeRef, { id: doc.id, ...doc.data() }))))
-    .filter(isReadyCompletedLesson);
-};
-
-const accessTimes = (dateKey) => ({
-  assignmentOpensAt: new Date(`${dateKey}T00:00:00+02:00`),
-  locksAt: new Date(`${dateKey}T23:59:59.999+02:00`),
-});
-
-const runAutomaticGeneration = async (requestData) => {
-  const {
-    studentId,
-    subjectInstanceId,
-    subject: requestedSubject,
-    requestId,
-    reason: requestedReason,
-    sourceLessonId: requestedLessonId,
-    sourceLessonSignature: requestedLessonSignature,
-    initialOnly = false,
-  } = requestData;
-  if (!studentId || !subjectInstanceId || !requestId) throw new Error('Student, subject episode, and request ID are required.');
-  const db = getDb();
-  const studentRef = db.doc(`users/${studentId}`);
-  const episodeRef = studentRef.collection('subjects').doc(subjectInstanceId);
-  const requestRef = episodeRef.collection('generationRequests').doc(requestId);
-  const today = localDateKey();
-  const statusRef = episodeRef.collection('generationRuns').doc(today);
-  const startedAtMs = Date.now();
-
-  const lock = await db.runTransaction(async (transaction) => {
-    const [requestSnapshot, statusSnapshot] = await Promise.all([
-      transaction.get(requestRef),
-      transaction.get(statusRef),
-    ]);
-    const previousRequest = requestSnapshot.exists ? requestSnapshot.data() : null;
-    if (['completed', 'skipped'].includes(previousRequest?.status)) return { acquired: false, result: { generated: false, reason: 'This generation event has already been processed.' } };
-    if (previousRequest?.status === 'processing' && startedAtMs - Number(previousRequest.startedAtMs ?? 0) < LOCK_TIMEOUT_MS) {
-      return { acquired: false, result: { generated: false, busy: true, reason: 'This generation event is already running.' } };
-    }
-    const status = statusSnapshot.exists ? statusSnapshot.data() : null;
-    if (status?.status === 'processing' && startedAtMs - Number(status.startedAtMs ?? 0) < LOCK_TIMEOUT_MS) {
-      return { acquired: false, result: { generated: false, busy: true, reason: 'Exercise generation is already running for this student and subject.' } };
-    }
-    if (status?.status === 'completed' && requestedLessonId && requestedLessonSignature
-      && status.sourceLessonId === requestedLessonId
-      && status.sourceLessonSignature === requestedLessonSignature
-      && (status.mode === 'initial' || status.lastTrigger === 'lesson')) {
-      transaction.set(requestRef, { status: 'completed', reason: 'The lesson was already processed.', updatedAt: new Date() }, { merge: true });
-      return { acquired: false, result: { generated: false, reason: 'The lesson was already processed.' } };
-    }
-    transaction.set(requestRef, { status: 'processing', startedAtMs, trigger: requestedReason, updatedAt: new Date() }, { merge: true });
-    transaction.set(statusRef, {
-      studentId,
-      subjectInstanceId,
-      dateKey: today,
-      subject: requestedSubject ?? '',
-      status: 'processing',
-      lastTrigger: requestedReason,
-      ...(requestedLessonId ? { sourceLessonId: requestedLessonId } : {}),
-      ...(requestedLessonSignature ? { sourceLessonSignature: requestedLessonSignature } : {}),
-      message: requestedReason === 'lesson' ? 'Preparing exercises for the newly completed lesson.' : 'Preparing exercise generation.',
-      startedAtMs,
-      expiresAtMs: startedAtMs + LOCK_TIMEOUT_MS,
-      finishedAtMs: null,
-      updatedAt: new Date(),
-    }, { merge: true });
-    return { acquired: true };
-  });
-  if (!lock.acquired) {
-    if (lock.result?.busy) throw new Error(lock.result.reason);
-    return lock.result;
-  }
-
-  let episode;
-  let statusWritten = false;
-  try {
-    const [studentSnapshot, episodeSnapshot, subscriptionSnapshot, history, topics, completedLessons] = await Promise.all([
-      studentRef.get(),
-      episodeRef.get(),
-      studentRef.collection('subscriptions').doc('current').get(),
-      getHistory(episodeRef),
-      getTopicSummaries(episodeRef),
-      getCompletedLessons(episodeRef),
-    ]);
-    if (!studentSnapshot.exists || !episodeSnapshot.exists) throw new Error('Student or active subject episode no longer exists.');
-    episode = episodeSnapshot.data();
-    if (episode.status !== 'active') throw new Error('The subject is not active for this student.');
-    const student = studentSnapshot.data();
-    const subject = String(episode.subjectKey ?? episode.subjectName ?? requestedSubject ?? '').trim();
-    if (!subject || (requestedSubject && requestedSubject !== subject)) throw new Error('The requested subject does not match the active subject episode.');
-    const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
-    const paid = await hasVerifiedPaidAccess({ db, studentId, subscription });
-
-    const pendingTrigger = ['initial', 'lesson'].includes(episode.exerciseGenerationPendingTrigger)
-      ? episode.exerciseGenerationPendingTrigger
-      : null;
-    const trigger = requestedReason === 'lesson' || pendingTrigger === 'lesson' ? 'lesson' : requestedReason;
-    const generationHistory = history;
-    const hasHistory = generationHistory.length > 0;
-    const generationMode = hasHistory ? 'weekly' : 'initial';
-    const latestCompletedLesson = [...completedLessons].sort((left, right) =>
-      timestampMillis(right.updatedAt) - timestampMillis(left.updatedAt)
-      || String(right.completedOn ?? '').localeCompare(String(left.completedOn ?? '')))[0] ?? null;
-    const sourceLessonId = requestedLessonId || episode.exerciseGenerationPendingLessonId
-      || (generationMode === 'initial' ? latestCompletedLesson?.id : null) || null;
-    const lesson = sourceLessonId ? completedLessons.find((item) => item.id === sourceLessonId) : null;
-    const sourceLessonSignature = requestedLessonSignature || episode.exerciseGenerationPendingLessonSignature
-      || (lesson ? triggerSignature(lesson) : null);
-    if (initialOnly && hasHistory && !(pendingTrigger === 'lesson' && sourceLessonId)) {
-      await episodeRef.set({ exerciseGenerationPending: false, updatedAt: new Date() }, { merge: true });
-      await requestRef.set({ status: 'skipped', reason: 'Initial generation already exists.', updatedAt: new Date() }, { merge: true });
-      await statusRef.set({ status: 'completed', message: 'Initial exercises already exist.', finishedAtMs: Date.now(), expiresAtMs: Date.now(), updatedAt: new Date() }, { merge: true });
-      statusWritten = true;
-      return { generated: false, reason: 'Initial generation already exists.' };
-    }
-    if (trigger !== 'lesson' && hasHistory) {
-      await requestRef.set({ status: 'skipped', reason: 'No initial generation is needed for this subject.', updatedAt: new Date() }, { merge: true });
-      await statusRef.set({ status: 'completed', message: 'No new initial generation was needed.', finishedAtMs: Date.now(), expiresAtMs: Date.now(), updatedAt: new Date() }, { merge: true });
-      statusWritten = true;
-      return { generated: false, reason: 'No new initial generation was needed.' };
-    }
-    const eligibleCompletedLessons = lesson ? [...completedLessons.filter((item) => item.id !== lesson.id), lesson] : completedLessons;
-    if (!eligibleCompletedLessons.length || (trigger === 'lesson' && !lesson)) {
-      await episodeRef.set({ exerciseGenerationPending: false, updatedAt: new Date() }, { merge: true });
-      await requestRef.set({ status: 'skipped', reason: 'A completed attended lesson with scores and a report is required.', updatedAt: new Date() }, { merge: true });
-      await statusRef.set({ status: 'failed', message: 'A completed attended lesson with scores and a report is required.', finishedAtMs: Date.now(), expiresAtMs: Date.now(), updatedAt: new Date() }, { merge: true });
+      sourceLessonId: episode.exe…2887 tokens truncated… required.', finishedAtMs: Date.now(), expiresAtMs: Date.now(), updatedAt: new Date() }, { merge: true });
       statusWritten = true;
       return { generated: false, reason: 'A completed attended lesson with scores and a report is required.' };
     }
@@ -593,6 +436,18 @@ const runAutomaticGeneration = async (requestData) => {
     const region = String(student.province ?? episode.province ?? '').trim();
     const papers = await getMatchingPapers({ db, subject, grade, region });
     if (papers.length < 2) {
+      logger.warn('Initial exercise generation is waiting for two analyzed source papers', {
+        studentId,
+        subjectInstanceId,
+        subject,
+        grade,
+        matchingAnalyzedPaperCount: papers.length,
+        paperRegions: papers.reduce((counts, paper) => {
+          const paperRegion = String(paper.region ?? 'unspecified').trim() || 'unspecified';
+          counts[paperRegion] = (counts[paperRegion] ?? 0) + 1;
+          return counts;
+        }, {}),
+      });
       await episodeRef.set({
         exerciseGenerationPending: true,
         exerciseGenerationPendingTrigger: trigger === 'lesson' ? 'lesson' : 'initial',

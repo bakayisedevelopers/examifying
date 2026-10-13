@@ -137,5 +137,6 @@ export {
   queueExerciseGenerationAfterLesson,
   queueInitialExerciseGenerationAfterSubscription,
   queuePendingInitialGenerationAfterPaperAnalysis,
+  retryPendingExerciseGenerations,
   runAutomaticExerciseGeneration,
 } from './exerciseGeneration.js';

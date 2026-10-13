@@ -62,3 +62,20 @@ export const resolveEmailAppUrl = (path = '/', profile = {}) => {
   }
   return target.toString();
 };
+
+const FIREBASE_EMAIL_URL_PATTERN = /https:\/\/examifying(?:-admin|-tutors|-teachers|-parents)?\.web\.app(?:\/[^\s"'<>)]*)?/gi;
+const FIREBASE_EMAIL_HOST_PATTERN = /examifying(?:-admin|-tutors|-teachers|-parents)?\.web\.app/gi;
+
+export const rewriteLegacyEmailPortalLinks = ({ html = '', text = '' }, profile = {}) => {
+  const body = `${html}\n${text}`;
+  const roleMatch = body.match(/https:\/\/examifying(?:-admin|-tutors|-teachers|-parents)?\.web\.app\/(student|admin|tutor|teacher|parent)(?=$|[/?#\s"'<>])/i);
+  const hasKnownRole = Object.hasOwn(PORTAL_URLS, profile.role)
+    || profile.isTeacher === true
+    || profile.isTeacher === 'true';
+  const resolvedProfile = hasKnownRole ? profile : { role: roleMatch?.[1]?.toLowerCase() || 'student' };
+  const portalHost = new URL(getEmailPortalBaseUrl(resolvedProfile)).host;
+  const rewrite = (value) => String(value || '')
+    .replace(FIREBASE_EMAIL_URL_PATTERN, (url) => resolveEmailAppUrl(url, resolvedProfile))
+    .replace(FIREBASE_EMAIL_HOST_PATTERN, portalHost);
+  return { html: rewrite(html), text: rewrite(text) };
+};

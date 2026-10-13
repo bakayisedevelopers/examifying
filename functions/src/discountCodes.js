@@ -139,6 +139,7 @@ export const createDiscountCode = onCall({ cpu: 'gcf_gen1' }, async (request) =>
               type: 'discount.offer',
               eventId: `discount-${code}`,
               to: settings.restrictedEmail,
+              profile: recipient,
               name: recipient.displayName || recipient.name || '',
               subject: `A ${settings.percentOff}% Examifying discount is available for you`,
               heading: 'You have a subscription offer',

@@ -265,7 +265,7 @@ export const getCompletedPeerMarkingWorkForTutor = onCall({ cpu: 'gcf_gen1' }, a
     .filter((item) => item.subject === subject && item.reviewImageUrl);
 });
 
-export const getPeerMarkingAssignmentsForTutor = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+export const getPeerMarkingAssignmentsForTutor = onCall({ cpu: 'gcf_gen1', cors: true }, async (request) => {
   const uid = request.auth?.uid;
   const { studentId, subject, subjectInstanceId } = request.data ?? {};
   if (!studentId || !subject || !subjectInstanceId) {

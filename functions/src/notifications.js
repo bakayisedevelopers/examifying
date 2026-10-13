@@ -62,6 +62,7 @@ const enqueueEmailForProfiles = async ({ profiles, type, eventId, contentFor }) 
       type,
       eventId,
       to: profile.email,
+      profile,
       name: profile.displayName || profile.name || '',
       ...content,
     });
@@ -373,6 +374,7 @@ export const notifyTutorAssignment = onDocumentWritten(
         type: 'tutor-assignment.student',
         eventId: event.id || event.params.subjectInstanceId,
         to: studentProfile?.email,
+        profile: studentProfile,
         name: studentProfile?.displayName || studentProfile?.name || '',
         subject: 'A tutor has been assigned to your subject',
         heading: 'Your tutor assignment is ready',
@@ -385,6 +387,7 @@ export const notifyTutorAssignment = onDocumentWritten(
         type: 'tutor-assignment.tutor',
         eventId: event.id || event.params.subjectInstanceId,
         to: tutorProfile?.email,
+        profile: tutorProfile,
         name: tutorProfile?.displayName || tutorProfile?.name || '',
         subject: 'A student has been assigned to you',
         heading: 'New student assignment',

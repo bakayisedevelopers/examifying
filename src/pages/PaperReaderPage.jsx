@@ -278,6 +278,7 @@ export const PaperReaderPage = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { profile, user, logout, toStudentPath, isParentWorkspace } = useStudentWorkspaceProfile();
+  const isPublicPaper = location.pathname.startsWith('/papers/');
   const { runOperation } = useOperationStatus();
   const [paper, setPaper] = useState(null);
   const [analysisActivity, setAnalysisActivity] = useState([]);
@@ -285,7 +286,7 @@ export const PaperReaderPage = () => {
   const [analysisActivityError, setAnalysisActivityError] = useState('');
   const [status, setStatus] = useState('Loading paper...');
   const [actionStatus, setActionStatus] = useState('');
-  const role = profile?.role ?? 'student';
+  const role = isPublicPaper ? 'public' : profile?.role ?? 'student';
   const initialPage = Math.max(1, Number(searchParams.get('page') ?? 1) || 1);
   const [pageNumber, setPageNumber] = useState(initialPage);
   const questionReference = searchParams.get('question') ?? '';
@@ -323,6 +324,10 @@ export const PaperReaderPage = () => {
   }, [paperId]);
 
   useEffect(() => {
+    if (isPublicPaper) {
+      setAnalysisActivityLoading(false);
+      return undefined;
+    }
     setAnalysisActivityLoading(true);
     setAnalysisActivityError('');
     return subscribeQuestionPaperAnalysisActivity(paperId, (activity) => {
@@ -332,7 +337,7 @@ export const PaperReaderPage = () => {
       setAnalysisActivityError(error?.message || 'Live analysis status could not be loaded.');
       setAnalysisActivityLoading(false);
     });
-  }, [paperId]);
+  }, [isPublicPaper, paperId]);
 
   const updatePage = (nextPage) => {
     const safePage = Math.max(1, nextPage);
@@ -345,6 +350,7 @@ export const PaperReaderPage = () => {
 
   const goBack = () => {
     if (window.history.state?.idx > 0) navigate(-1);
+    else if (isPublicPaper) navigate('/papers');
     else if (location.pathname.startsWith('/teacher')) navigate('/teacher/exercises');
     else if (isParentWorkspace) navigate(toStudentPath('/student'));
     else navigate(role === ROLES.TUTOR ? '/tutor/exercises' : '/student');
@@ -365,7 +371,7 @@ export const PaperReaderPage = () => {
     }
   };
 
-  if (role === ROLES.STUDENT || role === ROLES.TUTOR) {
+  if (isPublicPaper || role === ROLES.STUDENT || role === ROLES.TUTOR) {
     return <StudentFullPagePdf paper={paper} documentUrl={visibleDocumentUrl} documentTitle={documentTitle} pageNumber={pageNumber} questionReference={questionReference} status={visibleDocumentStatus} onPageChange={updatePage} onBack={goBack} />;
   }
 

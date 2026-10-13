@@ -98,8 +98,21 @@ export const RoleLandingPage = ({ portal }) => {
                 Sign in to the {config.label.toLowerCase()} portal
                 <ArrowRight className="h-4 w-4" />
               </Link>
+              {portal !== 'admin' ? (
+                <Link
+                  to="/papers"
+                  className="group inline-flex items-center gap-2 rounded-xl border border-lime-300/30 bg-gradient-to-br from-slate-900/90 via-slate-900/80 to-emerald-950/70 px-6 py-3.5 text-sm font-bold text-lime-100 shadow-[0_10px_30px_rgba(16,185,129,0.12)] transition hover:-translate-y-0.5 hover:border-lime-300/60 hover:bg-lime-400/10 hover:shadow-[0_14px_34px_rgba(16,185,129,0.2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300"
+                >
+                  <BookOpen className="h-4 w-4 text-lime-300 transition-transform group-hover:-rotate-6" aria-hidden="true" />
+                  Browse past papers
+                  <ArrowRight className="h-4 w-4 text-emerald-200 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+                </Link>
+              ) : null}
               {signupPath ? (
-                <Link to={signupPath} className="btn-secondary px-6 py-3.5">Create a {config.label.toLowerCase()} account</Link>
+                <Link to={signupPath} className="group inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-6 py-3.5 text-sm font-semibold text-slate-200 backdrop-blur transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/10 hover:text-white">
+                  Create a {config.label.toLowerCase()} account
+                  <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+                </Link>
               ) : (
                 <p className="self-center text-sm text-slate-400">Accounts are issued by the Examifying platform owner.</p>
               )}

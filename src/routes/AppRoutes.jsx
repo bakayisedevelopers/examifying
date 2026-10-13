@@ -71,6 +71,8 @@ export const AppRoutes = () => {
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/policies" element={<PoliciesPage />} />
     </Route>
+    <Route path="/papers" element={<PastExamPapersPage />} />
+    <Route path="/papers/:paperId" element={<PaperReaderPage />} />
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.STUDENT]} />}>
       <Route path="/student/onboarding" element={<StudentOnboardingPage />} />

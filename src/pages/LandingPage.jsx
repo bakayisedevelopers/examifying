@@ -118,6 +118,14 @@ export const LandingPage = () => {
               >
                 <span>Log in</span>
               </Link>
+              <Link
+                to="/papers"
+                className="group inline-flex items-center gap-2 rounded-full border border-emerald-300/30 bg-gradient-to-r from-slate-900/90 to-emerald-950/70 px-6 py-4 text-sm font-bold text-emerald-100 shadow-[0_8px_25px_rgba(16,185,129,0.12)] backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-300/60 hover:shadow-[0_12px_30px_rgba(16,185,129,0.2)]"
+              >
+                <BookOpen className="h-4 w-4 text-lime-300 transition-transform group-hover:-rotate-6" aria-hidden="true" />
+                Browse past papers
+                <ArrowUpRight className="h-4 w-4 text-emerald-200" aria-hidden="true" />
+              </Link>
             </div>
 
             {/* Core Rules Checklist */}
@@ -479,9 +487,6 @@ export const LandingPage = () => {
               <div>
                 <span className="flex items-center gap-2 bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400 bg-clip-text text-xl font-black tracking-tight text-transparent">
                   Examifying
-                  <span className="rounded bg-lime-400/15 border border-lime-400/30 px-1.5 py-0.5 text-[10px] font-bold text-lime-400 uppercase tracking-widest">
-                    Maths
-                  </span>
                 </span>
               </div>
             </div>

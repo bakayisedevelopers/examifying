@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { ChevronDown, ChevronRight, Download, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
+import { Logo } from '../components/common/Logo';
 import { LoadingState } from '../components/common/LoadingState';
 import { SectionHeader } from '../components/common/SectionHeader';
 import { useStudentWorkspaceProfile } from '../hooks/useStudentWorkspaceProfile';
@@ -256,6 +257,7 @@ const PaperAnalysisStatus = ({ paper }) => {
 const canQueuePaperAnalysis = (paper) => paper?.analysisStatus !== 'Analyzing';
 const reanalysisButtonLabel = (paper) => paper?.analysisStatus === 'Failed' ? 'Retry analysis' : 'Run analysis again';
 const canManagePaperAnalysis = (role) => role === ROLES.ADMIN || role === ROLES.TUTOR;
+const canUploadPapers = (role) => role === ROLES.ADMIN;
 const canStopPaperAnalysis = (paper) =>
   paper?.analysisStatus === 'Analyzing' || Boolean(paper?.activeAnalysisRunId || paper?.queuedAnalysisRunId);
 const makeAnalysisRetryPatch = () => ({
@@ -309,8 +311,27 @@ const getPaperSearchText = (paper) => [
   ...Object.values(paper.paperMetadata ?? {}),
 ].filter(Boolean).join(' ').toLowerCase();
 
+const PublicPaperShell = ({ children }) => (
+  <div className="min-h-screen bg-slate-950 text-slate-100">
+    <header className="sticky top-0 z-30 border-b border-lime-500/20 bg-slate-950/90 shadow-[0_4px_25px_rgba(0,0,0,0.4)] backdrop-blur">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <Link to="/" aria-label="Examifying home" className="rounded-xl transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lime-300">
+          <Logo />
+        </Link>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <Link to="/login" className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold text-slate-300 transition hover:border-lime-300/40 hover:text-white sm:text-sm">Sign in</Link>
+          <Link to="/signup" className="rounded-full bg-gradient-to-r from-lime-300 to-emerald-300 px-4 py-2 text-xs font-bold text-slate-950 shadow-[0_0_18px_rgba(163,230,53,0.18)] transition hover:brightness-110 sm:text-sm">Create account</Link>
+        </div>
+      </div>
+    </header>
+    <main className="mx-auto max-w-7xl space-y-6 px-4 py-7 sm:px-6 sm:py-9">{children}</main>
+  </div>
+);
+
 export const PastExamPapersPage = () => {
   const { profile, user, logout, isParentWorkspace, toStudentPath } = useStudentWorkspaceProfile();
+  const location = useLocation();
+  const isPublicCatalog = location.pathname === '/papers';
   const { runOperation } = useOperationStatus();
   const [papers, setPapers] = useState([]);
   const [isLoadingPapers, setIsLoadingPapers] = useState(true);
@@ -348,6 +369,8 @@ export const PastExamPapersPage = () => {
   });
   const [studentFilterOverrides, setStudentFilterOverrides] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [downloadingDocument, setDownloadingDocument] = useState('');
+  const [downloadStatus, setDownloadStatus] = useState('');
   const [editingPaper, setEditingPaper] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [topicResolverOpen, setTopicResolverOpen] = useState(false);
@@ -375,11 +398,14 @@ export const PastExamPapersPage = () => {
     return () => { document.body.style.overflow = previousOverflow; };
   }, [topicResolverOpen]);
 
-  const role = useMemo(() => profile?.role ?? ROLES.STUDENT, [profile]);
-  const paperPath = (paperId) => isParentWorkspace
-    ? toStudentPath(`/student/papers/${paperId}`)
-    : `/${role}/papers/${paperId}`;
-  const memoAccess = useStudentExercisePaperAccess(profile?.uid ?? user?.uid, role === ROLES.STUDENT);
+  const role = useMemo(() => isPublicCatalog ? ROLES.STUDENT : profile?.role ?? ROLES.STUDENT, [isPublicCatalog, profile]);
+  const routeRole = location.pathname.startsWith('/teacher') ? 'teacher' : role;
+  const paperPath = (paperId) => isPublicCatalog
+    ? `/papers/${paperId}`
+    : isParentWorkspace
+      ? toStudentPath(`/student/papers/${paperId}`)
+      : `/${routeRole}/papers/${paperId}`;
+  const memoAccess = useStudentExercisePaperAccess(profile?.uid ?? user?.uid, role === ROLES.STUDENT && !isPublicCatalog);
   useEffect(() => {
     if (role !== ROLES.ADMIN) return undefined;
     let active = true;
@@ -430,6 +456,7 @@ export const PastExamPapersPage = () => {
     return getUserSubjects(profile);
   }, [profile, role]);
   const visibleSubjects = allowedSubjects.length ? allowedSubjects : SUBJECTS;
+  const usesStudentCatalog = isPublicCatalog || [ROLES.STUDENT, ROLES.PARENT, ROLES.TUTOR, 'teacher'].includes(role);
   const isStudentExploring = Boolean(searchTerm.trim()) || Object.keys(studentFilterOverrides).length > 0;
   const studentFilterValues = { subject: 'all', grade: 'all', year: 'all', region: 'all', month: 'all', paperNumber: 'all', ...studentFilterOverrides };
 
@@ -495,7 +522,7 @@ export const PastExamPapersPage = () => {
       Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
       getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
 
-    if (role === ROLES.STUDENT) {
+    if (usesStudentCatalog) {
       const matchingPapers = orderedPapers
         .filter((paper) => {
           const selectedSubject = studentFilterOverrides.subject ?? 'all';
@@ -511,16 +538,16 @@ export const PastExamPapersPage = () => {
           return matchesSubject && matchesGrade && matchesYear && matchesRegion && matchesMonth && matchesPaperNumber && matchesSearch;
         });
 
-      return isStudentExploring ? matchingPapers : orderedPapers.slice(0, 20);
+      return matchingPapers;
     }
 
     return orderedPapers
       .filter((paper) => role !== ROLES.PARENT || !visibleSubjects.length || visibleSubjects.includes(getPaperSubject(paper)))
       .filter((paper) => filters.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(filters.subject))
       .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
-  }, [papers, role, visibleSubjects, filters, isStudentExploring, studentFilterOverrides, searchTerm]);
+  }, [papers, role, visibleSubjects, filters, studentFilterOverrides, searchTerm, usesStudentCatalog]);
   const paperCatalogSections = useMemo(() => {
-    if (![ROLES.STUDENT, ROLES.TUTOR, 'teacher'].includes(role)) return [];
+    if (!usesStudentCatalog) return [];
     const subjects = new Map();
     visiblePapers.forEach((paper) => {
       const subject = getPaperSubject(paper) || 'Other subjects';
@@ -550,7 +577,7 @@ export const PastExamPapersPage = () => {
             || left.grade.localeCompare(right.grade)),
       }))
       .sort((left, right) => left.subject.localeCompare(right.subject));
-  }, [role, visiblePapers]);
+  }, [usesStudentCatalog, visiblePapers]);
   const adminPaperGroups = useMemo(() => {
     const groups = { analyzing: [], analyzed: [], failed: [], waiting: [], review: [] };
     const orderedPapers = [...papers].sort((left, right) =>
@@ -965,6 +992,10 @@ export const PastExamPapersPage = () => {
   const handleEditSubmit = async (event) => {
     event.preventDefault();
     if (!editingPaper || !editForm) return;
+    if (!canUploadPapers(role) && (editForm.paperFile || editForm.memoFile)) {
+      setStatus('Only administrators can upload or replace paper files.');
+      return;
+    }
     try {
       await runOperation({ operationName: 'Updating paper and uploaded documents', successMessage: 'The paper was updated successfully.' }, async () => {
       setStatus(`Updating ${editingPaper.displayName || editingPaper.paperFileName || 'paper'}...`);
@@ -1031,6 +1062,7 @@ export const PastExamPapersPage = () => {
   };
 
   const saveReviewedPaper = async ({ row, index, total }) => {
+    if (!canUploadPapers(role)) throw new Error('Only administrators can upload past-paper files.');
     setStatus(`Uploading paper ${index + 1}/${total}: ${row.paperFile.name}`);
     const uploads = await uploadQuestionPaperDocuments({
       paperFile: row.paperFile,
@@ -1065,6 +1097,10 @@ export const PastExamPapersPage = () => {
 
   const handleSingleSubmit = async (event) => {
     event.preventDefault();
+    if (!canUploadPapers(role)) {
+      setStatus('Only administrators can upload past-paper files.');
+      return;
+    }
     if (!singleForm.paperFile) {
       setStatus('Choose a question paper first.');
       return;
@@ -1326,10 +1362,38 @@ export const PastExamPapersPage = () => {
     return details.length ? `${base} (${details.join(' · ')})` : base;
   };
 
+  const downloadPaperDocument = async (paper, type) => {
+    const url = type === 'memo' ? paper.memoUrl : paper.paperUrl;
+    const downloadKey = `${paper.id}:${type}`;
+    if (!url || downloadingDocument) return;
+    setDownloadingDocument(downloadKey);
+    setDownloadStatus('');
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`The file server returned ${response.status}.`);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const sourceName = type === 'memo' ? paper.memoFileName : paper.paperFileName;
+      const fallbackName = getCatalogDocumentTitle(paper, type).replace(/[\\/:*?"<>|]+/g, '-');
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = sourceName || `${fallbackName}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      setDownloadStatus(`${type === 'memo' ? 'Memo' : 'Paper'} download started.`);
+    } catch (error) {
+      setDownloadStatus(`Could not download this file. ${error.message || 'Please try again.'}`);
+    } finally {
+      setDownloadingDocument('');
+    }
+  };
+
   const renderCatalogOpenAction = (paper, type) => {
     const url = type === 'memo' ? paper.memoUrl : paper.paperUrl;
     if (!url) return <span className="text-xs text-slate-500">Unavailable</span>;
-    if (role === ROLES.STUDENT && type === 'memo' && memoAccess.isMemoLocked(paper.id)) {
+    if (!isPublicCatalog && role === ROLES.STUDENT && type === 'memo' && memoAccess.isMemoLocked(paper.id)) {
       const message = memoAccess.error
         ? 'Memo unavailable until submission status can be checked'
         : memoAccess.isLoading
@@ -1337,18 +1401,36 @@ export const PastExamPapersPage = () => {
           : 'Submit today’s work to unlock memo';
       return <span className="text-xs font-medium text-slate-400" role="status" title={message}>{memoAccess.isLoading ? 'Checking…' : 'Locked'}</span>;
     }
+    const downloadKey = `${paper.id}:${type}`;
     return (
-      <Link
-        className="px-2 py-2 text-sm font-semibold text-lime-300 transition hover:text-lime-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300"
-        to={`${paperPath(paper.id)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
-        aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
-      >
-        Open
-      </Link>
+      <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2">
+        <Link
+          className="inline-flex items-center rounded-lg border border-lime-300/20 bg-lime-300/5 px-2.5 py-2 text-xs font-bold text-lime-200 transition hover:border-lime-300/50 hover:bg-lime-300/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 sm:px-3 sm:text-sm"
+          to={`${paperPath(paper.id)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
+          aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
+        >
+          Open
+        </Link>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-900/70 px-2.5 py-2 text-xs font-semibold text-slate-200 transition hover:border-emerald-300/40 hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-wait disabled:opacity-60 sm:px-3 sm:text-sm"
+          onClick={() => downloadPaperDocument(paper, type)}
+          disabled={Boolean(downloadingDocument)}
+          aria-label={`Download ${getCatalogDocumentTitle(paper, type)}`}
+          aria-busy={downloadingDocument === downloadKey}
+        >
+          <Download className="h-3.5 w-3.5" aria-hidden="true" />
+          {downloadingDocument === downloadKey ? 'Preparing…' : 'Download'}
+        </button>
+      </div>
     );
   };
 
   const handleBulkSubmit = async () => {
+    if (!canUploadPapers(role)) {
+      setStatus('Only administrators can upload past-paper files.');
+      return;
+    }
     if (!bulkRows.length) {
       setStatus('Choose bulk files first.');
       return;
@@ -1391,18 +1473,18 @@ export const PastExamPapersPage = () => {
     </div>
   );
 
-  return (
-    <AppShell title="Past exam papers" subtitle={canManagePaperAnalysis(role) ? 'Browse, upload, and manage question papers for analysis.' : 'Browse question papers and memoranda for your subjects.'} role={role} user={profile} onLogout={logout}>
+  const pageContent = (
+    <>
       <SectionHeader
         eyebrow="Repository"
         title="Question papers"
-        description={role === ROLES.STUDENT
+        description={usesStudentCatalog
           ? isStudentExploring
             ? 'Search and filter all Examifying question papers.'
-            : 'Showing recent papers across all subjects. Search or filter to explore the full Examifying collection.'
+            : 'Browse all Examifying question papers and memoranda. Search or filter to narrow the collection.'
           : role === ROLES.ADMIN
             ? 'Review papers grouped by analysis status. Each section has separate filters.'
-            : 'Browse papers across all subjects. Use filters to narrow by subject or year.'}
+            : 'Browse papers across all subjects. Use filters to narrow the collection.'}
       />
       {role === ROLES.ADMIN ? (
         <section className="panel mb-4 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Question-paper analysis queue controls">
@@ -1673,7 +1755,7 @@ export const PastExamPapersPage = () => {
           ) : null}
         </div>
       ) : null}
-      {role === ROLES.STUDENT ? (
+      {usesStudentCatalog ? (
         <div className="panel grid gap-3 p-4">
           <label className="relative block">
             <span className="sr-only">Search all question papers</span>
@@ -1734,7 +1816,7 @@ export const PastExamPapersPage = () => {
           </select>
         </div>
       ) : null}
-      {role === ROLES.STUDENT && !isStudentExploring ? <p className="text-xs text-slate-500">Showing up to 20 recent papers across all subjects. Search or select a filter to browse all matching results.</p> : null}
+      {downloadStatus ? <p className={`rounded-xl border px-4 py-3 text-sm ${downloadStatus.startsWith('Could not') ? 'border-rose-300/30 bg-rose-300/10 text-rose-100' : 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100'}`} role="status">{downloadStatus}</p> : null}
 
       {role === ROLES.ADMIN ? (
         <div className="space-y-4">
@@ -1856,7 +1938,7 @@ export const PastExamPapersPage = () => {
             );
           })}
         </div>
-      ) : [ROLES.STUDENT, ROLES.TUTOR, 'teacher'].includes(role) ? (
+      ) : usesStudentCatalog ? (
         paperCatalogSections.length ? (
           <div className="space-y-6">
             {paperCatalogSections.map((subjectSection) => (
@@ -1876,7 +1958,7 @@ export const PastExamPapersPage = () => {
                           <thead className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
                             <tr>
                               <th scope="col" className="px-3 py-3 sm:px-4">Title</th>
-                              <th scope="col" className="w-24 px-3 py-3 text-right sm:w-28 sm:px-4">Action</th>
+                              <th scope="col" className="w-44 px-3 py-3 text-right sm:w-52 sm:px-4">Action</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800/90">
@@ -1912,7 +1994,7 @@ export const PastExamPapersPage = () => {
         </div>
       )}
 
-      {canManagePaperAnalysis(role) ? <section className="panel space-y-5 p-6">
+      {canUploadPapers(role) ? <section className="panel space-y-5 p-6">
         <div className="flex flex-wrap gap-2">
           <button type="button" className={uploadTab === 'single' ? 'btn-primary' : 'btn-secondary'} onClick={() => setUploadTab('single')}>Single upload</button>
           <button type="button" className={uploadTab === 'bulk' ? 'btn-primary' : 'btn-secondary'} onClick={() => setUploadTab('bulk')}>Bulk upload</button>
@@ -2016,9 +2098,11 @@ export const PastExamPapersPage = () => {
             </div>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <UploadFields value={editForm} onChange={(patch) => setEditForm((current) => ({ ...current, ...patch }))} subjects={visibleSubjects} />
-              <label className="md:col-span-2"><span className="label">Replace question paper optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setEditForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} /><span className="mt-1 block text-xs text-slate-500">PDF only. Current: {editingPaper.paperFileName || 'No paper file name stored'}</span></label>
-              <label className="md:col-span-2"><span className="label">Replace memorandum optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setEditForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null, removeMemo: false }))} /><span className="mt-1 block text-xs text-slate-500">PDF only. Current: {editingPaper.memoFileName || 'No memo uploaded'}</span></label>
-              {editingPaper.memoUrl ? <label className="md:col-span-2 flex items-center gap-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={editForm.removeMemo} onChange={(event) => setEditForm((current) => ({ ...current, removeMemo: event.target.checked, memoFile: event.target.checked ? null : current.memoFile }))} /> Remove current memorandum</label> : null}
+              {canUploadPapers(role) ? <>
+                <label className="md:col-span-2"><span className="label">Replace question paper optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setEditForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} /><span className="mt-1 block text-xs text-slate-500">PDF only. Current: {editingPaper.paperFileName || 'No paper file name stored'}</span></label>
+                <label className="md:col-span-2"><span className="label">Replace memorandum optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setEditForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null, removeMemo: false }))} /><span className="mt-1 block text-xs text-slate-500">PDF only. Current: {editingPaper.memoFileName || 'No memo uploaded'}</span></label>
+                {editingPaper.memoUrl ? <label className="md:col-span-2 flex items-center gap-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={editForm.removeMemo} onChange={(event) => setEditForm((current) => ({ ...current, removeMemo: event.target.checked, memoFile: event.target.checked ? null : current.memoFile }))} /> Remove current memorandum</label> : null}
+              </> : null}
               <div className="flex flex-wrap gap-3 md:col-span-2">
                 <button type="submit" className="btn-primary">Save metadata changes</button>
                 {canManagePaperAnalysis(role) && canQueuePaperAnalysis(editingPaper) ? <button type="button" className="btn-secondary" onClick={() => queuePaperReanalysis(editingPaper).then(closeEditPaper).catch((error) => setStatus(error.message || 'Could not retry analysis.'))}>{reanalysisButtonLabel(editingPaper)}</button> : null}
@@ -2187,6 +2271,12 @@ export const PastExamPapersPage = () => {
           </section>
         </div>
       ) : null}
+    </>
+  );
+  if (isPublicCatalog) return <PublicPaperShell>{pageContent}</PublicPaperShell>;
+  return (
+    <AppShell title="Past exam papers" subtitle={canUploadPapers(role) ? 'Browse, upload, and manage question papers for analysis.' : 'Browse question papers and memoranda across all subjects.'} role={role} user={profile} onLogout={logout}>
+      {pageContent}
     </AppShell>
   );
 };

@@ -293,7 +293,7 @@ service cloud.firestore {
       allow read: if canReadEpisode(resource.data.studentId, resource.data.subjectInstanceId);
     }
     match /questionPapers/{paperId} {
-      allow read: if signedIn();
+      allow read: if true;
       allow write: if isAdmin() || (signedIn() && profile(request.auth.uid).role in ['tutor', 'teacher']);
       match /{document=**} { allow read: if signedIn(); allow write: if false; }
     }

@@ -40,8 +40,8 @@ service firebase.storage {
 
     match /questionPaperAnalysis/{allPaths=**} { allow read, write: if false; }
     match /questionPapers/{uploaderId}/{allPaths=**} {
-      allow read: if signedIn();
-      allow write: if signedIn() && (request.auth.uid == uploaderId || isAdmin());
+      allow read: if true;
+      allow write: if isAdmin();
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/submissions/{fileName} {
       allow read: if signedIn() && (request.auth.uid == studentId || isParentOf(studentId) || isStaff(studentId, subjectInstanceId)

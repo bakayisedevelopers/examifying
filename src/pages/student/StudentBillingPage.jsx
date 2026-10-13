@@ -4,18 +4,17 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
-import { AuthorizationChargeDisclosure } from '../../components/billing/AuthorizationChargeDisclosure';
 import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { generateExercisePlanIfEligible, getActiveSubjectsForStudent, getStudentAccessState } from '../../services/firestoreService';
-import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
+import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
 import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
 export const StudentBillingPage = () => {
   const { profile, logout, refreshProfile, setProfileCompletionStatus } = useAuth();
-  const { runOperation, closeOperationStatus } = useOperationStatus();
+  const { runOperation } = useOperationStatus();
   const location = useLocation();
   const navigate = useNavigate();
   const subscriptionState = useStudentSubscriptionState(profile);
@@ -26,8 +25,6 @@ export const StudentBillingPage = () => {
   const [paymentVerificationMessage, setPaymentVerificationMessage] = useState('');
   const [pendingCheckoutReference, setPendingCheckoutReference] = useState('');
   const [isStartingSubscription, setIsStartingSubscription] = useState(false);
-  const [pendingAuthorizationCheckout, setPendingAuthorizationCheckout] = useState(null);
-  const [isCancellingAuthorizationCheckout, setIsCancellingAuthorizationCheckout] = useState(false);
 
   const lastVerifiedReferenceRef = useRef(null);
   const params = new URLSearchParams(location.search);
@@ -112,19 +109,21 @@ export const StudentBillingPage = () => {
 
       if (verification?.status === 'success') {
         await completeStudentAccessFlow(reference, verification);
-        try {
-          await setProfileCompletionStatus('paid_incomplete');
-        } catch {
-          setPaymentVerificationState('processing');
-          setPaymentVerificationMessage('Your payment was verified, but we could not finish preparing your profile. Sign in again or retry verification to continue.');
-          setStatus('Your payment is confirmed. Profile setup will be checked again automatically when you sign in.');
-          return 'processing';
+        const needsOnboarding = location.pathname === '/student/onboarding'
+          || ['unpaid_incomplete', 'paid_incomplete'].includes(profile?.profileCompletionStatus);
+        if (needsOnboarding) {
+          try {
+            await setProfileCompletionStatus('paid_incomplete');
+          } catch {
+            setPaymentVerificationState('processing');
+            setPaymentVerificationMessage('Your payment was verified, but we could not finish preparing your profile. Sign in again or retry verification to continue.');
+            setStatus('Your payment is confirmed. Profile setup will be checked again automatically when you sign in.');
+            return 'processing';
+          }
         }
         setPaymentVerificationState('success');
         setPaymentVerificationMessage('Your subscription is active. Exercise generation may continue while any remaining requirements are completed.');
         setPendingCheckoutReference('');
-        setPendingAuthorizationCheckout(null);
-        window.setTimeout(() => navigate('/student/onboarding', { replace: true, state: { paymentVerified: true } }), 1600);
         return 'success';
       }
 
@@ -168,18 +167,19 @@ export const StudentBillingPage = () => {
     } finally {
       setIsVerifyingPayment(false);
     }
-  }, [completeStudentAccessFlow, location.pathname, navigate, profile?.uid, setProfileCompletionStatus]);
+  }, [completeStudentAccessFlow, location.pathname, profile?.profileCompletionStatus, profile?.uid, setProfileCompletionStatus]);
 
   const handleContinue = async (selection) => {
     if (!profile?.uid) return;
     setIsStartingSubscription(true);
     setStatus('');
+    let redirectingToPaystack = false;
     try {
-      const result = await runOperation({ operationName: 'Starting subscription checkout', successMessage: 'The subscription request is ready.' }, () => initializeSubscriptionPayment({
+      const result = await initializeSubscriptionPayment({
         studentId: profile.uid,
         ...selection,
         callbackUrl: `${window.location.origin}/student/billing`,
-      }));
+      });
       if (result.freeCheckout) {
         await completeStudentAccessFlow(result.reference);
         navigate(location.pathname, { replace: true });
@@ -201,43 +201,22 @@ export const StudentBillingPage = () => {
         setStatus(result.renewalCancelled
           ? `Your ${result.quote.planName} subscription remains active until ${formatRenewalDate(result.renewalDate)}. Resume renewal in subscription management to keep it after that date.`
           : `Your ${result.quote.planName} subscription is already active.`);
-      } else if (result.requiresAuthorizationDisclosure && result.authorizationUrl) {
-        setPendingAuthorizationCheckout(result);
       } else if (result.authorizationUrl) {
-        window.location.href = result.authorizationUrl;
+        redirectingToPaystack = true;
+        window.location.assign(result.authorizationUrl);
       } else {
         throw new Error('Could not start subscription checkout.');
       }
     } catch (error) {
       const pendingReference = error?.details?.pendingReference;
       if (pendingReference) {
-        closeOperationStatus();
         setPendingCheckoutReference(pendingReference);
         setPaymentVerificationState('processing');
         setPaymentVerificationMessage('A previous Paystack payment has not reached a final status. Check its status before trying another checkout.');
       }
       setStatus(error?.message || 'Could not start subscription checkout.');
     } finally {
-      setIsStartingSubscription(false);
-    }
-  };
-
-  const cancelAuthorizationCheckout = async () => {
-    if (!pendingAuthorizationCheckout?.reference || !profile?.uid) return;
-    setIsCancellingAuthorizationCheckout(true);
-    try {
-      const result = await runOperation({ operationName: 'Closing pending checkout', successMessage: 'The checkout status was confirmed.' }, () => cancelSubscriptionPaymentCheckout({ studentId: profile.uid, reference: pendingAuthorizationCheckout.reference }));
-      if (result.paymentSucceeded) {
-        closeOperationStatus();
-        await verifyPaymentReference(pendingAuthorizationCheckout.reference);
-        return;
-      }
-      setPendingAuthorizationCheckout(null);
-      setStatus('Checkout closed. If you did not complete the Paystack payment, the reserved discount will be released after Paystack confirms the transaction was abandoned.');
-    } catch (error) {
-      setStatus(error?.message || 'Could not close the pending checkout.');
-    } finally {
-      setIsCancellingAuthorizationCheckout(false);
+      if (!redirectingToPaystack) setIsStartingSubscription(false);
     }
   };
 
@@ -285,6 +264,7 @@ export const StudentBillingPage = () => {
           studentId={profile.uid}
           subscriptionState={subscriptionState}
           onStateChange={(nextState) => setStudentSubscriptionState(profile.uid, nextState)}
+          isCheckoutSubmitting={isStartingSubscription}
           onContinuePayment={() => {
             const selection = subscriptionState.pendingPlan || subscriptionState;
             handleContinue({
@@ -296,13 +276,7 @@ export const StudentBillingPage = () => {
           }}
         />
       ) : null}
-      <AuthorizationChargeDisclosure
-        checkout={pendingAuthorizationCheckout}
-        isCancelling={isCancellingAuthorizationCheckout}
-        onContinue={() => { if (pendingAuthorizationCheckout?.authorizationUrl) window.location.assign(pendingAuthorizationCheckout.authorizationUrl); }}
-        onCancel={cancelAuthorizationCheckout}
-      />
-      {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}-${initialSelection.discountCode}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment || paymentVerificationState === 'processing'} initialSelection={initialSelection} initialDiscountCode={initialSelection.discountCode} studentId={profile.uid} mobileSwipe /> : null}
+      {subscriptionState ? <SubscriptionPlanSelector key={`${initialSelection.planId}-${initialSelection.billingPeriod}-${initialSelection.subjectCount}-${initialSelection.discountCode}`} onContinue={handleContinue} isSubmitting={isStartingSubscription || isVerifyingPayment || paymentVerificationState === 'processing'} initialSelection={initialSelection} initialDiscountCode={initialSelection.discountCode} studentId={profile.uid} mobileSwipe submitLabel="Checkout" /> : null}
       <div className="mt-5 space-y-3">
         {status ? <div role="status" className="panel p-4 text-sm text-slate-700">{status}</div> : null}
       </div>
@@ -316,12 +290,15 @@ export const StudentBillingPage = () => {
           setPaymentVerificationMessage('');
           setPendingCheckoutReference('');
           setStatus('');
-          navigate(profile?.profileCompletionStatus === 'paid_incomplete'
-            ? '/student/onboarding'
-            : location.pathname, { replace: true, state: profile?.profileCompletionStatus === 'paid_incomplete' ? { paymentVerified: true } : undefined });
+          const continueOnboarding = location.pathname === '/student/onboarding'
+            || ['unpaid_incomplete', 'paid_incomplete'].includes(profile?.profileCompletionStatus);
+          navigate(continueOnboarding ? '/student/onboarding' : location.pathname, {
+            replace: true,
+            state: continueOnboarding ? { paymentVerified: true } : undefined,
+          });
         }}
         onRetry={() => {
-          const reference = pendingCheckoutReference || params.get('reference') || params.get('trxref') || pendingAuthorizationCheckout?.reference;
+          const reference = pendingCheckoutReference || params.get('reference') || params.get('trxref');
           if (reference) void verifyPaymentReference(reference);
         }}
         retryLabel={paymentVerificationState === 'processing' ? 'Check payment status' : 'Retry verification'}

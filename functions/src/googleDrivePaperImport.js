@@ -277,16 +277,100 @@ const loadExistingQuestionPapers = async () => {
   for (let index = 0; index < DRIVE_PAPER_SUBJECT_QUERY_VALUES.length; index += 30) {
     subjectChunks.push(DRIVE_PAPER_SUBJECT_QUERY_VALUES.slice(index, index + 30));
   }
-  const snapshots = await Promise.all(subjectChunks.map((subjectValues) => (
+  const projection = [
+    'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
+    'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'paperMetadata',
+    'displayName', 'paperTitle', 'source', 'driveFileId', 'driveImport', 'analysisStatus',
+  ];
+  const snapshots = await Promise.all([
+    ...subjectChunks.map((subjectValues) => (
     db.collection('questionPapers').where('subject', 'in', subjectValues).select(
-      'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
-      'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'source', 'driveFileId', 'driveImport',
-      'analysisStatus',
+      ...projection,
     ).get()
-  )));
+    )),
+    db.collection('questionPapers').where('source', '==', 'google_drive').select(...projection).get(),
+  ]);
   const uniquePapers = new Map();
   snapshots.forEach((snapshot) => snapshot.docs.forEach((doc) => uniquePapers.set(doc.id, { id: doc.id, ...doc.data() })));
   return [...uniquePapers.values()];
+};
+
+const loadPaperForDriveFile = async ({ item, includeFileNameAndHash = false }) => {
+  const db = getDb();
+  const collection = db.collection('questionPapers');
+  const projection = [
+    'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
+    'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'paperMetadata',
+    'displayName', 'paperTitle', 'source', 'driveFileId', 'driveImport', 'analysisStatus',
+  ];
+  const targetIds = [...new Set([
+    item.tracking?.targetPaperId,
+    item.tracking?.duplicateTargetPaperId,
+  ].map((id) => String(id ?? '').trim()).filter(Boolean))];
+  const reads = [collection.where('driveFileId', '==', item.file.id).select(...projection).get()];
+  if (targetIds.length) {
+    reads.push(collection.where('__name__', 'in', targetIds).select(...projection).get());
+  }
+  if (includeFileNameAndHash) {
+    const memo = item.metadata.paperType === 'memo';
+    reads.push(collection.where(memo ? 'memoFileName' : 'paperFileName', '==', item.file.name).select(...projection).get());
+    if (item.contentSha256) {
+      reads.push(collection.where(memo ? 'memoSha256' : 'paperSha256', '==', item.contentSha256).select(...projection).get());
+    }
+  }
+  const snapshots = await Promise.all(reads);
+  const papers = new Map();
+  snapshots.forEach((snapshot) => snapshot.docs.forEach((doc) => papers.set(doc.id, { id: doc.id, ...doc.data() })));
+  return [...papers.values()];
+};
+
+const drivePaperMetadataPatch = ({ metadata, file, paperType, existing = {} }) => {
+  const displayName = [metadata.subject, metadata.grade, metadata.region, metadata.month, metadata.year, metadata.paperNumber]
+    .filter(Boolean)
+    .join(' • ');
+  const paperMetadata = {
+    ...(existing.paperMetadata ?? {}),
+    subject: metadata.subject,
+    grade: metadata.grade,
+    region: metadata.region,
+    province: metadata.region,
+    month: metadata.month,
+    year: metadata.year,
+    paperNumber: metadata.paperNumber,
+    language: metadata.language ?? '',
+    examSession: metadata.examSession ?? '',
+  };
+  return {
+    subject: metadata.subject,
+    grade: metadata.grade,
+    region: metadata.region,
+    province: metadata.region,
+    month: metadata.month,
+    year: metadata.year,
+    paperNumber: metadata.paperNumber,
+    language: metadata.language ?? '',
+    examSession: metadata.examSession ?? '',
+    session: metadata.examSession ?? '',
+    title: displayName,
+    paperName: displayName,
+    displayName,
+    paperTitle: displayName,
+    paperMetadata,
+    ...(paperType === 'memo' ? { memoFileName: file.name } : { paperFileName: file.name }),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+};
+
+const syncPaperMetadataFromDrive = async ({ paperId, metadata, file, paperType }) => {
+  const reference = getDb().collection('questionPapers').doc(paperId);
+  return getDb().runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists) return null;
+    const current = snapshot.data();
+    const patch = drivePaperMetadataPatch({ metadata, file, paperType, existing: current });
+    transaction.set(reference, patch, { merge: true });
+    return { ...current, ...patch };
+  });
 };
 
 const getFolderPaperPreview = async (folderId) => {
@@ -377,11 +461,18 @@ const createQuestionPaperIfAbsent = async ({ paperId, paperRecord }) => {
     const snapshot = await transaction.get(reference);
     if (snapshot.exists) {
       const existing = { id: snapshot.id, ...snapshot.data() };
-      return {
-        created: false,
-        sameDriveRecord: existing.source === 'google_drive' && existing.driveFileId === paperRecord.driveFileId,
-        existing,
-      };
+      const sameDriveRecord = existing.source === 'google_drive' && existing.driveFileId === paperRecord.driveFileId;
+      if (sameDriveRecord) {
+        const patch = drivePaperMetadataPatch({
+          metadata: paperRecord,
+          file: { name: paperRecord.paperFileName },
+          paperType: 'question',
+          existing,
+        });
+        transaction.set(reference, patch, { merge: true });
+        Object.assign(existing, patch);
+      }
+      return { created: false, sameDriveRecord, existing };
     }
     transaction.create(reference, {
       ...paperRecord,
@@ -405,6 +496,12 @@ const attachMemoIfMissing = async ({ paperId, memo, uploaded }) => {
       memoFileName: memo.file.name,
       memoMimeType: 'application/pdf',
       memoSha256: memo.contentSha256,
+      driveImport: {
+        ...(paper.driveImport ?? {}),
+        source: 'google_drive',
+        memoDriveFileId: memo.file.id,
+        memoSha256: memo.contentSha256,
+      },
       memoUpdatedAt: FieldValue.serverTimestamp(),
     });
     return { attached: true, paper: { ...paper, memoUrl: uploaded.url, memoSha256: memo.contentSha256 } };
@@ -458,6 +555,8 @@ const runDrivePaperImport = createDrivePaperImportRunner({
   readTracking,
   writeTracking,
   loadExistingPapers: loadExistingQuestionPapers,
+  loadPaperForDriveFile,
+  syncPaperMetadataFromDrive,
   downloadFile: (file, maxBytes) => driveRequest(
     `${DRIVE_API_BASE}/files/${encodeURIComponent(file.id)}?alt=media`,
     { download: true, maxBytes },

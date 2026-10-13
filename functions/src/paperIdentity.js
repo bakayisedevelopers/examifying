@@ -6,49 +6,33 @@ const normalizeIdentityText = (value) => String(value ?? '')
   .replace(/\s+/g, ' ')
   .trim();
 
-const regionAliases = new Map([
-  ['Eastern Cape', ['Eastern Cape', 'EC', 'Province of Eastern Cape']],
-  ['Free State', ['Free State', 'FS', 'Province of Free State']],
-  ['Gauteng', ['Gauteng', 'GP', 'Province of Gauteng']],
-  ['KwaZulu-Natal', ['KwaZulu-Natal', 'KwaZulu Natal', 'Kwa Zulu Natal', 'KZN', 'Province of KwaZulu-Natal']],
-  ['Limpopo', ['Limpopo', 'LP', 'Province of Limpopo']],
-  ['Mpumalanga', ['Mpumalanga', 'MP', 'Province of Mpumalanga']],
-  ['North West', ['North West', 'NW', 'Province of North West']],
-  ['Northern Cape', ['Northern Cape', 'NC', 'Province of Northern Cape']],
-  ['Western Cape', ['Western Cape', 'WC', 'Province of Western Cape']],
-  ['National', ['National']],
-].flatMap(([canonical, aliases]) => aliases.map((alias) => [
-  normalizeIdentityText(alias),
-  normalizeIdentityText(canonical),
-])));
-
-export const normalizePaperRegionIdentity = (value) => {
-  const normalized = normalizeIdentityText(value);
-  const withoutProvinceSuffix = normalized.replace(/\s+province$/, '').trim();
-  return regionAliases.get(normalized) ?? regionAliases.get(withoutProvinceSuffix) ?? normalized;
-};
+export const normalizePaperRegionIdentity = (value) => normalizeIdentityText(value);
 
 export const normalizePaperIdentityValue = (value, field) => field === 'region'
   ? normalizePaperRegionIdentity(value)
   : normalizeIdentityText(value);
 
-export const findVerifiedPaperRegionCorrection = ({ storedIdentity = {}, providedIdentity = {}, filenameIdentity = {} } = {}) => {
-  const nonRegionFields = ['subject', 'grade', 'month', 'year', 'paperNumber'];
-  const filenameRegion = String(filenameIdentity.region ?? '').trim();
-  if (!filenameRegion || !providedIdentity.region) return '';
+const firstText = (...values) => {
+  for (const value of values) {
+    const normalized = String(value ?? '').trim().replace(/\s+/g, ' ');
+    if (normalized) return normalized;
+  }
+  return '';
+};
 
-  const nonRegionIdentityMatches = nonRegionFields.every((field) => {
-    const filenameValue = normalizePaperIdentityValue(filenameIdentity[field], field);
-    return filenameValue
-      && filenameValue === normalizePaperIdentityValue(storedIdentity[field], field)
-      && filenameValue === normalizePaperIdentityValue(providedIdentity[field], field);
-  });
-  const providedRegionMatchesFile = normalizePaperIdentityValue(providedIdentity.region, 'region')
-    === normalizePaperIdentityValue(filenameRegion, 'region');
-  const storedRegionMatchesFile = normalizePaperIdentityValue(storedIdentity.region, 'region')
-    === normalizePaperIdentityValue(filenameRegion, 'region');
-
-  return nonRegionIdentityMatches && providedRegionMatchesFile && !storedRegionMatchesFile
-    ? filenameRegion
-    : '';
+// The PDF filename is the canonical identity source for every importer. The
+// sibling analysis JSON can fill optional or absent fields, followed by the
+// previous Firestore value for compatibility with older Drive schemas.
+export const resolveDrivePaperIdentity = ({
+  analysisIdentity = {},
+  filenameIdentity = {},
+  storedIdentity = {},
+} = {}) => {
+  const resolved = Object.fromEntries(['subject', 'grade', 'region', 'month', 'year', 'paperNumber', 'language', 'examSession'].map((field) => [
+    field,
+    firstText(filenameIdentity[field], analysisIdentity[field], storedIdentity[field]),
+  ]));
+  const year = Number(resolved.year);
+  if (Number.isInteger(year) && year > 0) resolved.year = year;
+  return resolved;
 };

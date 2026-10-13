@@ -1,49 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findVerifiedPaperRegionCorrection, normalizePaperIdentityValue, normalizePaperRegionIdentity } from './paperIdentity.js';
+import { normalizePaperIdentityValue, normalizePaperRegionIdentity, resolveDrivePaperIdentity } from './paperIdentity.js';
 
-test('paper region identity accepts only explicit South African province aliases', () => {
-  const aliases = [
-    ['EC', 'Eastern Cape'],
-    ['Province of Free State', 'Free State'],
-    ['Gauteng Province', 'Gauteng'],
-    ['KZN', 'KwaZulu-Natal'],
-    ['Limpopo Province', 'Limpopo'],
-    ['MP', 'Mpumalanga'],
-    ['North West Province', 'North West'],
-    ['NC', 'Northern Cape'],
-    ['Western Cape Province', 'Western Cape'],
-    ['National', 'National'],
-  ];
+test('paper region identity accepts arbitrary school, district, province, or national labels', () => {
+  assert.equal(normalizePaperRegionIdentity("St. Mary's Secondary"), 'st mary s secondary');
+  assert.equal(normalizePaperRegionIdentity('Gauteng'), 'gauteng');
+  assert.equal(normalizePaperIdentityValue('National', 'region'), 'national');
+});
 
-  aliases.forEach(([alias, canonical]) => {
-    assert.equal(normalizePaperRegionIdentity(alias), normalizePaperRegionIdentity(canonical));
+test('the validated Drive filename overrides Firestore and the analysis JSON identity', () => {
+  assert.deepEqual(resolveDrivePaperIdentity({
+    analysisIdentity: { subject: 'Mathematics', grade: 'Grade 12', region: 'Central High School' },
+    filenameIdentity: { subject: 'Mathematics', grade: 'Grade 12', region: 'Gauteng', month: 'November', year: 2024, paperNumber: 'Paper 1' },
+    storedIdentity: { subject: 'Maths', grade: 'Grade 11', region: 'Old School', month: 'June', year: 2023, paperNumber: 'Paper 2' },
+  }), {
+    subject: 'Mathematics',
+    grade: 'Grade 12',
+    region: 'Gauteng',
+    month: 'November',
+    year: 2024,
+    paperNumber: 'Paper 1',
+    language: '',
+    examSession: '',
   });
-  assert.notEqual(normalizePaperRegionIdentity('North West'), normalizePaperRegionIdentity('Western Cape'));
-  assert.equal(normalizePaperRegionIdentity('Regional'), 'regional');
-});
-
-test('paper identity normalization applies province aliases only to region fields', () => {
-  assert.equal(normalizePaperIdentityValue('KZN', 'region'), 'kwazulu natal');
-  assert.equal(normalizePaperIdentityValue('KZN', 'subject'), 'kzn');
-});
-
-test('a region correction is returned only when the stored record, JSON, and filename agree on every other identity field', () => {
-  const storedIdentity = {
-    subject: 'Mathematics', grade: 'Grade 12', region: 'Gauteng', month: 'November', year: 2024, paperNumber: 'Paper 1',
-  };
-  const providedIdentity = { ...storedIdentity, region: 'National' };
-  const filenameIdentity = { ...storedIdentity, region: 'National' };
-
-  assert.equal(findVerifiedPaperRegionCorrection({ storedIdentity, providedIdentity, filenameIdentity }), 'National');
-  assert.equal(findVerifiedPaperRegionCorrection({
-    storedIdentity,
-    providedIdentity: { ...providedIdentity, region: 'Eastern Cape' },
-    filenameIdentity,
-  }), '');
-  assert.equal(findVerifiedPaperRegionCorrection({
-    storedIdentity,
-    providedIdentity,
-    filenameIdentity: { ...filenameIdentity, grade: 'Grade 11' },
-  }), '');
 });

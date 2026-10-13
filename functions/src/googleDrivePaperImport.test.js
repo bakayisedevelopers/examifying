@@ -45,7 +45,7 @@ const createHarness = ({
   inspectExistingStorage = async () => null,
 } = {}) => {
   const tracking = new Map(Object.entries(priorTrackingByFileId));
-  const calls = { upload: [], create: [], attachMemo: [], logs: [] };
+  const calls = { upload: [], create: [], attachMemo: [], syncMetadata: [], logs: [] };
   const runner = createDrivePaperImportRunner({
     rootFolderId: 'configured-past-papers-folder',
     acquireLease: async () => ({ acquired: true, owner: 'lease-test' }),
@@ -54,6 +54,35 @@ const createHarness = ({
     readTracking: async (id) => tracking.get(id) ?? null,
     writeTracking: async (id, fields) => tracking.set(id, { ...(tracking.get(id) ?? {}), ...fields }),
     loadExistingPapers: async () => existingPapers,
+    loadPaperForDriveFile: async ({ item }) => existingPapers.filter((paper) => (
+      paper.driveFileId === item.file.id
+      || paper.driveImport?.paperDriveFileId === item.file.id
+      || paper.driveImport?.memoDriveFileId === item.file.id
+      || paper.id === tracking.get(item.file.id)?.targetPaperId
+      || paper.id === tracking.get(item.file.id)?.duplicateTargetPaperId
+    )),
+    syncPaperMetadataFromDrive: async ({ paper, metadata, file, paperType }) => {
+      const displayName = [metadata.subject, metadata.grade, metadata.region, metadata.month, metadata.year, metadata.paperNumber].join(' • ');
+      const patch = {
+        subject: metadata.subject,
+        grade: metadata.grade,
+        region: metadata.region,
+        province: metadata.region,
+        month: metadata.month,
+        year: metadata.year,
+        paperNumber: metadata.paperNumber,
+        language: metadata.language ?? '',
+        examSession: metadata.examSession ?? '',
+        session: metadata.examSession ?? '',
+        displayName,
+        paperTitle: displayName,
+        paperMetadata: { ...(paper.paperMetadata ?? {}), ...metadata },
+        ...(paperType === 'memo' ? { memoFileName: file.name } : { paperFileName: file.name }),
+      };
+      calls.syncMetadata.push({ paperId: paper.id, patch });
+      Object.assign(paper, patch);
+      return patch;
+    },
     downloadFile: async (file, maxBytes) => {
       await onDownload({ file, tracking, calls });
       return downloadFile(file, maxBytes);
@@ -103,8 +132,18 @@ test('parses question-paper and memo names with the exam month in the filename',
   assert.equal(memo.ok, true);
   assert.deepEqual(memo.metadata, question.metadata && {
     ...question.metadata,
+    region: 'GP',
     paperType: 'memo',
   });
+  assert.equal(paperIdentityKey(question.metadata), paperIdentityKey(memo.metadata));
+});
+
+test('accepts a free-form school or district in the region filename segment', () => {
+  const parsed = parseGoogleDrivePaperMetadata({
+    fileName: 'Mathematics - Grade 12 - Central High School, District 4 - November - 2024 - Paper 1.pdf',
+  });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.metadata.region, 'Central High School, District 4');
 });
 
 test('parses Accounting question papers and memos using the established metadata fields', () => {
@@ -192,9 +231,11 @@ test('file identity includes paper versus memo while the shared paper identity p
     paperNumber: 'Paper 1', paperType: 'question',
   };
   const memo = { ...question, paperType: 'memo' };
+  const schoolPaper = { ...question, region: 'Central High School' };
 
   assert.equal(paperIdentityKey(question), paperIdentityKey(memo));
   assert.notEqual(paperFileIdentityKey(question), paperFileIdentityKey(memo));
+  assert.notEqual(paperIdentityKey(question), paperIdentityKey(schoolPaper));
 });
 
 test('a missing filename month is logged and skipped for review without uploading', async () => {
@@ -394,6 +435,127 @@ test('an existing record with no month is uncertain rather than treated as an id
   }), { status: 'uncertain', fields: ['month'] });
 });
 
+test('free-form school regions distinguish papers while province aliases still match', () => {
+  const incoming = parseGoogleDrivePaperMetadata({
+    fileName: 'Mathematics - Grade 12 - Central High School - November - 2024 - Paper 1.pdf',
+  }).metadata;
+  assert.deepEqual(comparePaperMetadata(incoming, {
+    subject: 'Mathematics',
+    grade: 'Grade 12',
+    region: 'Gauteng',
+    year: 2024,
+    month: 'November',
+    paperNumber: 'Paper 1',
+  }), { status: 'different', field: 'region' });
+
+  assert.deepEqual(comparePaperMetadata({ ...incoming, region: 'GP' }, {
+    subject: 'Mathematics',
+    grade: 'Grade 12',
+    region: 'Gauteng',
+    year: 2024,
+    month: 'November',
+    paperNumber: 'Paper 1',
+  }), { status: 'match' });
+});
+
+test('imports a school paper separately from a National paper with the same year and paper number', async () => {
+  const file = paperFile('drive-school-specific-paper', 'Natural Sciences - Grade 7 - Laerskool Dalview - November - 2021 - Paper 1.pdf');
+  const nationalPaper = {
+    id: 'existing-national-paper',
+    source: 'google_drive',
+    subject: 'Natural Sciences',
+    grade: 'Grade 7',
+    region: 'National',
+    year: 2021,
+    month: 'November',
+    paperNumber: 'Paper 1',
+    paperFileName: 'Natural Sciences - Grade 7 - National - November - 2021 - Paper 1.pdf',
+    paperUrl: 'https://firebasestorage.googleapis.com/v0/b/example/o/questionPapers%2Fnational-paper',
+    paperSha256: sha256Buffer(Buffer.from('national paper contents')),
+  };
+  const { runner, calls } = createHarness({
+    files: [file],
+    existingPapers: [nationalPaper],
+    downloadExisting: async () => Buffer.from('national paper contents'),
+  });
+
+  const result = await runner();
+
+  assert.equal(result.importedFiles, 1);
+  assert.equal(result.reviewFiles, 0);
+  assert.equal(calls.create.length, 1);
+  assert.equal(calls.create[0].paperRecord.region, 'Laerskool Dalview');
+});
+
+test('a linked Drive file updates stale Firestore identity from its current filename', async () => {
+  const file = paperFile('drive-renamed-paper', 'Mathematics - Grade 11 - Central High School - June - 2023 - Paper 2.pdf');
+  const existing = {
+    id: 'google-drive-linked-paper',
+    source: 'google_drive',
+    driveFileId: file.id,
+    subject: 'Mathematics',
+    grade: 'Grade 12',
+    region: 'Gauteng',
+    year: 2024,
+    month: 'November',
+    paperNumber: 'Paper 1',
+    paperFileName: 'Mathematics - Grade 12 - Gauteng - November - 2024 - Paper 1.pdf',
+    paperUrl: 'https://firebasestorage.googleapis.com/v0/b/example/o/questionPapers%2Fuser%2Fpaper',
+    paperSha256: sha256Buffer(pdfBuffer),
+    memoUrl: '',
+  };
+  const { runner, calls } = createHarness({ files: [file], existingPapers: [existing] });
+  const result = await runner();
+
+  assert.equal(result.importedFiles, 1);
+  assert.equal(existing.grade, 'Grade 11');
+  assert.equal(existing.region, 'Central High School');
+  assert.equal(existing.year, 2023);
+  assert.equal(existing.month, 'June');
+  assert.equal(existing.paperNumber, 'Paper 2');
+  assert.equal(existing.paperFileName, file.name);
+  assert.equal(calls.syncMetadata.length, 1);
+  assert.equal(calls.upload.length, 0);
+  assert.equal(calls.create.length, 0);
+});
+
+test('a tracked unchanged Drive file still restores stale Firestore metadata without downloading again', async () => {
+  const file = paperFile('drive-stable-paper');
+  const existing = {
+    id: 'google-drive-stable-paper',
+    source: 'google_drive',
+    driveFileId: file.id,
+    subject: 'Mathematics',
+    grade: 'Grade 11',
+    region: 'Old School',
+    year: 2023,
+    month: 'June',
+    paperNumber: 'Paper 2',
+    paperUrl: 'https://firebasestorage.googleapis.com/v0/b/example/o/questionPapers%2Fuser%2Fpaper',
+  };
+  const tracking = {
+    importStatus: 'imported',
+    driveFingerprint: getDriveFileFingerprint(file),
+    sourceFilename: file.name,
+    targetPaperId: existing.id,
+  };
+  const { runner, calls } = createHarness({
+    files: [file],
+    existingPapers: [existing],
+    priorTrackingByFileId: { [file.id]: tracking },
+  });
+  const result = await runner();
+
+  assert.equal(result.skippedFiles, 1);
+  assert.equal(existing.grade, 'Grade 12');
+  assert.equal(existing.region, 'National');
+  assert.equal(existing.year, 2024);
+  assert.equal(existing.month, 'November');
+  assert.equal(existing.paperNumber, 'Paper 1');
+  assert.equal(calls.upload.length, 0);
+  assert.equal(calls.syncMetadata.length, 1);
+});
+
 test('a missing memo is attached to the matched paper without creating or reanalyzing a paper record', async () => {
   const memo = paperFile('drive-memo-1', 'Mathematics - Grade 12 - National - November - 2024 - Paper 1 - Memo.pdf');
   const existing = {
@@ -478,6 +640,121 @@ test('reviewed Drive files stay skipped until an administrator explicitly rechec
   assert.equal(recheck.importedFiles, 1);
   assert.equal(tracking.get(file.id).importStatus, 'imported');
   assert.equal(calls.upload.length, 1);
+});
+
+test('automatically retries prior reviews caused only by the removed region filename rule', async () => {
+  const file = paperFile('drive-old-region-review', 'Mathematics - Grade 12 - Central High School - November - 2024 - Paper 1.pdf');
+  const { runner, calls, tracking } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        reviewReason: 'The province or National designation is missing or invalid in its expected filename position.',
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.legacyRegionReviewRetries, 1);
+  assert.equal(result.importedFiles, 1);
+  assert.equal(tracking.get(file.id).importStatus, 'imported');
+  assert.ok(calls.logs.some(([message]) => message.includes('obsolete region filename rule')));
+  assert.equal(calls.upload.length, 1);
+});
+
+test('prior region reviews still stay skipped when the current parser rejects the filename structure', async () => {
+  const file = paperFile('drive-old-region-invalid', 'Mathematics - Grade 12 - Central High School - 2024 - Paper 1.pdf');
+  const { runner, calls } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        reviewReason: 'The province or National designation is missing or invalid in its expected filename position.',
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.legacyRegionReviewRetries, 0);
+  assert.equal(result.reviewSkippedFiles, 1);
+  assert.equal(result.importedFiles, 0);
+  assert.equal(calls.upload.length, 0);
+});
+
+test('retries a prior content conflict when the existing paper differs only by region', async () => {
+  const file = paperFile('drive-school-region-conflict', 'Natural Sciences - Grade 7 - Laerskool Dalview - November - 2021 - Paper 1.pdf');
+  const nationalPaper = {
+    id: 'existing-national-paper',
+    subject: 'Natural Sciences',
+    grade: 'Grade 7',
+    region: 'National',
+    year: 2021,
+    month: 'November',
+    paperNumber: 'Paper 1',
+    paperFileName: 'Natural Sciences - Grade 7 - National - November - 2021 - Paper 1.pdf',
+    paperUrl: 'https://firebasestorage.googleapis.com/v0/b/example/o/questionPapers%2Fnational-paper',
+  };
+  const { runner, calls, tracking } = createHarness({
+    files: [file],
+    existingPapers: [nationalPaper],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        reviewReason: 'Paper metadata matches an existing record, but the PDF contents differ. The existing record was left unchanged.',
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.regionIdentityReviewRetries, 1);
+  assert.equal(result.importedFiles, 1);
+  assert.equal(result.reviewFiles, 0);
+  assert.equal(tracking.get(file.id).importStatus, 'imported');
+  assert.equal(calls.create.length, 1);
+  assert.equal(calls.create[0].paperRecord.region, 'Laerskool Dalview');
+});
+
+test('keeps same-region content conflicts in review without retrying every scan', async () => {
+  const file = paperFile('drive-same-region-content-conflict');
+  const existingPaper = {
+    id: 'existing-national-paper',
+    subject: 'Mathematics',
+    grade: 'Grade 12',
+    region: 'National',
+    year: 2024,
+    month: 'November',
+    paperNumber: 'Paper 1',
+    paperFileName: file.name,
+    paperUrl: 'https://firebasestorage.googleapis.com/v0/b/example/o/questionPapers%2Fexisting-paper',
+  };
+  const { runner, calls } = createHarness({
+    files: [file],
+    existingPapers: [existingPaper],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        reviewReason: 'Paper metadata matches an existing record, but the PDF contents differ. The existing record was left unchanged.',
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.regionIdentityReviewRetries, 0);
+  assert.equal(result.reviewSkippedFiles, 1);
+  assert.equal(result.importedFiles, 0);
+  assert.equal(calls.upload.length, 0);
 });
 
 test('one failed file does not block a later valid file in the same scan', async () => {

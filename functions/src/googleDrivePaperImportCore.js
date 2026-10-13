@@ -24,19 +24,6 @@ const findTextMatches = (segment, patterns) => patterns
   .filter(({ pattern }) => pattern.test(normalizeWords(segment)))
   .map(({ value }) => value);
 
-const PROVINCE_PATTERNS = [
-  { value: 'Eastern Cape', pattern: /\b(?:eastern cape|ec)\b/ },
-  { value: 'Free State', pattern: /\b(?:free state|fs)\b/ },
-  { value: 'Gauteng', pattern: /\b(?:gauteng|gp)\b/ },
-  { value: 'KwaZulu-Natal', pattern: /\b(?:kwazulu natal|kwa zulu natal|kzn)\b/ },
-  { value: 'Limpopo', pattern: /\b(?:limpopo|lp)\b/ },
-  { value: 'Mpumalanga', pattern: /\b(?:mpumalanga|mp)\b/ },
-  { value: 'North West', pattern: /\b(?:north west|nw)\b/ },
-  { value: 'Northern Cape', pattern: /\b(?:northern cape|nc)\b/ },
-  { value: 'Western Cape', pattern: /\b(?:western cape|wc)\b/ },
-  { value: 'National', pattern: /\bnational\b/ },
-];
-
 const MONTH_PATTERNS = [
   { value: 'January', pattern: /\b(?:january|jan)\b/ },
   { value: 'February', pattern: /\b(?:february|feb)\b/ },
@@ -51,6 +38,22 @@ const MONTH_PATTERNS = [
   { value: 'November', pattern: /\b(?:november|nov)\b/ },
   { value: 'December', pattern: /\b(?:december|dec)\b/ },
 ];
+
+// Region labels are free-form, but common province aliases should still pair.
+// Keeping the normalized label in identity prevents school papers from
+// colliding with a National or province-wide paper with the same title.
+const REGION_ALIASES = new Map([
+  ['eastern cape', 'eastern cape'], ['ec', 'eastern cape'], ['province of eastern cape', 'eastern cape'],
+  ['free state', 'free state'], ['fs', 'free state'], ['province of free state', 'free state'],
+  ['gauteng', 'gauteng'], ['gp', 'gauteng'], ['province of gauteng', 'gauteng'],
+  ['kwazulu natal', 'kwazulu natal'], ['kzn', 'kwazulu natal'], ['province of kwazulu natal', 'kwazulu natal'],
+  ['limpopo', 'limpopo'], ['lp', 'limpopo'], ['province of limpopo', 'limpopo'],
+  ['mpumalanga', 'mpumalanga'], ['mp', 'mpumalanga'], ['province of mpumalanga', 'mpumalanga'],
+  ['north west', 'north west'], ['nw', 'north west'], ['province of north west', 'north west'],
+  ['northern cape', 'northern cape'], ['nc', 'northern cape'], ['province of northern cape', 'northern cape'],
+  ['western cape', 'western cape'], ['wc', 'western cape'], ['province of western cape', 'western cape'],
+  ['national', 'national'],
+]);
 
 const LANGUAGE_PATTERNS = [
   { value: 'Afrikaans', pattern: /\b(?:afrikaans|afr)\b/ },
@@ -88,6 +91,10 @@ const parseFilenameField = ({ segments, index, parser, label, errors }) => {
 };
 
 const parseSubject = (segment) => getDrivePaperSubjectCandidates(segment);
+const parseRegion = (segment) => {
+  const value = String(segment ?? '').trim().replace(/\s+/g, ' ');
+  return value ? [value] : [];
+};
 
 const parseYear = (segment) => {
   const normalized = normalizeWords(segment);
@@ -124,15 +131,15 @@ export const parseGoogleDrivePaperMetadata = ({ fileName } = {}) => {
   const region = parseFilenameField({
     segments: nameSegments,
     index: 2,
-    parser: (segment) => findTextMatches(segment, PROVINCE_PATTERNS),
-    label: 'province or National designation',
+    parser: parseRegion,
+    label: 'region',
     errors,
   });
   const month = parseFilenameField({
     segments: nameSegments,
     index: 3,
     parser: (segment) => findTextMatches(segment, MONTH_PATTERNS),
-    label: 'exam month after the province or National designation',
+    label: 'exam month after the region',
     errors,
   });
   const yearText = parseFilenameField({ segments: nameSegments, index: 4, parser: parseYear, label: 'year', errors });
@@ -172,7 +179,7 @@ export const parseGoogleDrivePaperMetadata = ({ fileName } = {}) => {
   }
 
   if (!month || /ambiguous/i.test(errors.find((error) => error.includes('exam month')) ?? '')) {
-    errors.push('The exam month must appear in the filename between the province or National designation and the year; it is not inferred from Drive dates or folders.');
+    errors.push('The exam month must appear in the filename between the region and the year; it is not inferred from Drive dates or folders.');
   }
   if (errors.length) return { ok: false, reason: unique(errors).join(' ') };
 
@@ -203,7 +210,7 @@ const canonicalSubject = (value) => canonicalDrivePaperSubject(value);
 
 const canonicalRegion = (value) => {
   const normalized = normalizeWords(value);
-  return findTextMatches(normalized, PROVINCE_PATTERNS)[0] ?? normalized;
+  return REGION_ALIASES.get(normalized) ?? normalized;
 };
 
 const canonicalGrade = (value) => parseGrade(value)[0] ?? normalizeWords(value);
@@ -239,6 +246,8 @@ export const comparePaperMetadata = (incoming = {}, existingPaper = {}) => {
   };
   const uncertainFields = [];
 
+  // Any non-empty region is allowed; its value distinguishes school-specific
+  // papers from National or province-wide papers with otherwise matching titles.
   for (const field of ['subject', 'grade', 'region', 'month', 'year', 'paperNumber']) {
     if (!incoming[field] || !existing[field]) uncertainFields.push(field);
     else if (field === 'subject') {
@@ -494,6 +503,74 @@ const matchingRecordsFor = (metadata, papers) => papers
   .map((paper) => ({ paper, comparison: comparePaperMetadata(metadata, paper) }))
   .filter(({ comparison }) => comparison.status !== 'different');
 
+const uniquePapers = (papers) => [...new Map(papers.filter(Boolean).map((paper) => [paper.id, paper])).values()];
+
+const existingPaperForDriveItem = ({ item, papers }) => {
+  const fileId = String(item.file.id ?? '');
+  const trackedIds = new Set([
+    item.tracking?.targetPaperId,
+    item.tracking?.duplicateTargetPaperId,
+  ].map((id) => String(id ?? '').trim()).filter(Boolean));
+  const linked = uniquePapers(papers.filter((paper) => (
+    trackedIds.has(String(paper.id))
+    || paper.id === getDrivePaperId(fileId)
+    || paper.driveFileId === fileId
+    || paper.driveImport?.paperDriveFileId === fileId
+    || paper.driveImport?.memoDriveFileId === fileId
+  )));
+  if (linked.length) return { matches: linked, source: 'drive_link' };
+
+  const isMemo = item.metadata.paperType === 'memo';
+  const fileName = String(item.file.name ?? '').trim().toLocaleLowerCase();
+  const fileNameMatches = uniquePapers(papers.filter((paper) => (
+    String((isMemo ? paper.memoFileName : paper.paperFileName) ?? '').trim().toLocaleLowerCase() === fileName
+  )));
+  if (fileNameMatches.length) return { matches: fileNameMatches, source: 'filename' };
+
+  const contentHash = String(item.contentSha256 ?? '');
+  if (contentHash) {
+    const hashMatches = uniquePapers(papers.filter((paper) => (
+      String((isMemo ? paper.memoSha256 ?? paper.driveImport?.memoSha256 : paper.paperSha256 ?? paper.driveImport?.paperSha256) ?? '') === contentHash
+    )));
+    if (hashMatches.length) return { matches: hashMatches, source: 'content_hash' };
+  }
+
+  return { matches: matchingRecordsFor(item.metadata, papers), source: 'metadata' };
+};
+
+const driveMetadataPatch = ({ metadata, file, paperType }) => {
+  const displayName = displayNameFor(metadata);
+  const paperMetadata = {
+    subject: metadata.subject,
+    grade: metadata.grade,
+    region: metadata.region,
+    province: metadata.region,
+    month: metadata.month,
+    year: metadata.year,
+    paperNumber: metadata.paperNumber,
+    language: metadata.language ?? '',
+    examSession: metadata.examSession ?? '',
+  };
+  return {
+    subject: metadata.subject,
+    grade: metadata.grade,
+    region: metadata.region,
+    province: metadata.region,
+    month: metadata.month,
+    year: metadata.year,
+    paperNumber: metadata.paperNumber,
+    language: metadata.language ?? '',
+    examSession: metadata.examSession ?? '',
+    session: metadata.examSession ?? '',
+    title: displayName,
+    paperName: displayName,
+    displayName,
+    paperTitle: displayName,
+    paperMetadata,
+    ...(paperType === 'memo' ? { memoFileName: file.name } : { paperFileName: file.name }),
+  };
+};
+
 const normalizePaperFileType = (value) => {
   const normalized = normalizeWords(value);
   if (/^(?:memo|memorandum)$/.test(normalized)) return 'memo';
@@ -508,7 +585,7 @@ const inferPaperFileTypeFromStoragePath = (objectPath = '') => {
 };
 
 const compareStoredFile = async ({ item, paper, paperType, inspectExistingStorage, downloadExisting }) => {
-  if (paperFileIdentityKey(item.metadata) !== paperFileIdentityKey({
+  if (fileIdentityKeyWithoutRegion(item.metadata) !== fileIdentityKeyWithoutRegion({
     ...getExistingPaperMetadata(paper),
     paperType,
   })) {
@@ -543,6 +620,8 @@ const displayNameFor = (metadata) => [metadata.subject, metadata.grade, metadata
   .filter(Boolean)
   .join(' • ');
 
+const fileIdentityKeyWithoutRegion = (metadata) => paperFileIdentityKey({ ...metadata, region: '' });
+
 const createStatusWriter = ({ writeTracking, now }) => async (item, importStatus, patch = {}) => {
   const fields = {
     ...trackingFieldsFor(item, now),
@@ -571,6 +650,11 @@ export const createDrivePaperImportRunner = (dependencies) => {
     readTracking,
     writeTracking,
     loadExistingPapers,
+    loadPaperForDriveFile = async () => [],
+    syncPaperMetadataFromDrive = async ({ paper, metadata, file, paperType }) => Object.assign(
+      paper,
+      driveMetadataPatch({ metadata, file, paperType }),
+    ),
     downloadFile,
     downloadExisting,
     inspectExistingStorage = async () => null,
@@ -610,12 +694,30 @@ export const createDrivePaperImportRunner = (dependencies) => {
       failedFiles: 0,
       skippedFiles: 0,
       reviewSkippedFiles: 0,
+      legacyRegionReviewRetries: 0,
+      regionIdentityReviewRetries: 0,
     };
     const writeStatus = createStatusWriter({ writeTracking, now });
 
     const markReview = async (item, reason) => {
       await writeStatus(item, 'review', { reviewReason: reason, errorSummary: reason });
       summary.reviewFiles += 1;
+    };
+
+    const syncKnownDriveMetadata = async (item) => {
+      const linkedPapers = await loadPaperForDriveFile({ item });
+      const papers = Array.isArray(linkedPapers) ? linkedPapers : [linkedPapers];
+      const resolution = existingPaperForDriveItem({ item, papers });
+      if (resolution.source !== 'drive_link' || resolution.matches.length !== 1) return false;
+      await syncPaperMetadataFromDrive({
+        paper: resolution.matches[0],
+        paperId: resolution.matches[0].id,
+        metadata: item.metadata,
+        file: item.file,
+        contentSha256: '',
+        paperType: item.metadata.paperType,
+      });
+      return true;
     };
 
     try {
@@ -675,21 +777,7 @@ export const createDrivePaperImportRunner = (dependencies) => {
         };
 
         const retryingReview = retryReviewIds.has(file.id) && tracking?.importStatus === 'review';
-        if (tracking?.driveFingerprint && tracking.driveFingerprint !== item.fingerprint && !retryingReview) {
-          await markReview(item, 'This Drive file changed after it was seen. The stored Firebase paper was left untouched; review the new Drive revision manually.');
-          continue;
-        }
-        if (tracking && tracking.driveFingerprint === item.fingerprint && terminalStatuses.has(tracking.importStatus) && !retryingReview) {
-          summary.skippedFiles += 1;
-          if (tracking.importStatus === 'review') {
-            summary.reviewSkippedFiles += 1;
-            logger.info('Drive file remains in review; it was skipped until an administrator rechecks it', {
-              driveFileId: file.id,
-              reviewReason: safeErrorSummary(tracking.reviewReason ?? tracking.errorSummary ?? ''),
-            });
-          }
-          continue;
-        }
+        const filenameChanged = Boolean(tracking?.sourceFilename && tracking.sourceFilename !== file.name);
         if (isDrivePaperImportActive(tracking, now())) {
           summary.skippedFiles += 1;
           logger.info('Drive file already has an active import status; skipping this attempt', {
@@ -701,6 +789,11 @@ export const createDrivePaperImportRunner = (dependencies) => {
 
         const parsed = parseGoogleDrivePaperMetadata({ fileName: file.name, folderPath: file.folderPath });
         if (!parsed.ok) {
+          if (tracking?.importStatus === 'review' && tracking.driveFingerprint === item.fingerprint && !filenameChanged && !retryingReview) {
+            summary.skippedFiles += 1;
+            summary.reviewSkippedFiles += 1;
+            continue;
+          }
           item.metadata = null;
           await writeStatus(item, 'review', {
             retryCount: Number(tracking?.retryCount ?? 0),
@@ -716,6 +809,64 @@ export const createDrivePaperImportRunner = (dependencies) => {
           continue;
         }
         item.metadata = parsed.metadata;
+
+        // Older importer revisions rejected free-form school/district regions.
+        // Recheck those records automatically once the current filename parser
+        // accepts the complete filename; other review reasons still require an
+        // administrator to explicitly select the file for recheck.
+        const previousReviewReason = String(tracking?.reviewReason ?? tracking?.errorSummary ?? '');
+        const retryingLegacyRegionReview = !retryingReview && tracking?.importStatus === 'review'
+          && /province or National designation is missing or invalid in its expected filename position/i.test(previousReviewReason);
+        let retryingRegionIdentityReview = false;
+        if (!retryingReview && !retryingLegacyRegionReview && tracking?.importStatus === 'review'
+          && previousReviewReason === 'Paper metadata matches an existing record, but the PDF contents differ. The existing record was left unchanged.') {
+          try {
+            if (!existingPapers) existingPapers = await loadExistingPapers();
+            retryingRegionIdentityReview = existingPaperForDriveItem({ item, papers: existingPapers }).matches.length === 0;
+          } catch (error) {
+            logger.warn('Could not confirm whether a reviewed Drive paper conflicted only on its region identity', {
+              driveFileId: file.id,
+              error: safeErrorSummary(error),
+            });
+          }
+        }
+        if (retryingLegacyRegionReview) {
+          summary.legacyRegionReviewRetries += 1;
+          logger.info('Drive file is being rechecked after the obsolete region filename rule was removed', {
+            driveFileId: file.id,
+            filename: file.name,
+          });
+        }
+        if (retryingRegionIdentityReview) {
+          summary.regionIdentityReviewRetries += 1;
+          logger.info('Drive file is being rechecked because the previous identity match came from a different region label', {
+            driveFileId: file.id,
+            filename: file.name,
+          });
+        }
+
+        if (tracking && tracking.driveFingerprint === item.fingerprint && terminalStatuses.has(tracking.importStatus)
+          && !filenameChanged && !retryingReview && !retryingLegacyRegionReview && !retryingRegionIdentityReview) {
+          try {
+            await syncKnownDriveMetadata(item);
+          } catch (error) {
+            summary.failedFiles += 1;
+            logger.warn('Drive filename metadata could not be synchronized to the linked Firestore paper', {
+              driveFileId: file.id,
+              paperId: tracking.targetPaperId ?? tracking.duplicateTargetPaperId ?? '',
+              error: safeErrorSummary(error),
+            });
+          }
+          summary.skippedFiles += 1;
+          if (tracking.importStatus === 'review') {
+            summary.reviewSkippedFiles += 1;
+            logger.info('Drive file remains in review; it was skipped until an administrator rechecks it', {
+              driveFileId: file.id,
+              reviewReason: safeErrorSummary(tracking.reviewReason ?? tracking.errorSummary ?? ''),
+            });
+          }
+          continue;
+        }
 
         try {
           const declaredSize = Number(file.size ?? 0);
@@ -770,7 +921,17 @@ export const createDrivePaperImportRunner = (dependencies) => {
       for await (const item of candidates()) {
         try {
           if (!existingPapers) existingPapers = await loadExistingPapers();
-          const possibleMatches = matchingRecordsFor(item.metadata, existingPapers);
+          const linkedPapers = await loadPaperForDriveFile({ item });
+          existingPapers = uniquePapers([...existingPapers, ...(Array.isArray(linkedPapers) ? linkedPapers : [linkedPapers])]);
+          let resolution = existingPaperForDriveItem({ item, papers: existingPapers });
+          if (!resolution.matches.length) {
+            const fallbackPapers = await loadPaperForDriveFile({ item, includeFileNameAndHash: true });
+            existingPapers = uniquePapers([...existingPapers, ...(Array.isArray(fallbackPapers) ? fallbackPapers : [fallbackPapers])]);
+            resolution = existingPaperForDriveItem({ item, papers: existingPapers });
+          }
+          const possibleMatches = resolution.source === 'metadata'
+            ? resolution.matches
+            : resolution.matches.map((paper) => ({ paper, comparison: { status: 'match' } }));
           const exactMatches = possibleMatches.filter(({ comparison }) => comparison.status === 'match');
           const uncertainMatches = possibleMatches.filter(({ comparison }) => comparison.status === 'uncertain');
 
@@ -783,6 +944,17 @@ export const createDrivePaperImportRunner = (dependencies) => {
           }
 
           const existingPaper = exactMatches[0]?.paper;
+          if (existingPaper) {
+            const patch = await syncPaperMetadataFromDrive({
+              paper: existingPaper,
+              paperId: existingPaper.id,
+              metadata: item.metadata,
+              file: item.file,
+              contentSha256: item.contentSha256,
+              paperType: item.metadata.paperType,
+            });
+            if (patch && typeof patch === 'object') Object.assign(existingPaper, patch);
+          }
           if (item.metadata.paperType === 'memo') {
             if (!existingPaper) {
               const reason = 'Waiting for a matching question-paper record before attaching this memo.';
@@ -873,11 +1045,23 @@ export const createDrivePaperImportRunner = (dependencies) => {
             subject: metadata.subject,
             grade: metadata.grade,
             region: metadata.region,
+            province: metadata.region,
             year: metadata.year,
             month: metadata.month,
             paperNumber: metadata.paperNumber,
             ...(metadata.language ? { language: metadata.language } : {}),
-            ...(metadata.examSession ? { examSession: metadata.examSession } : {}),
+            ...(metadata.examSession ? { examSession: metadata.examSession, session: metadata.examSession } : {}),
+            paperMetadata: {
+              subject: metadata.subject,
+              grade: metadata.grade,
+              region: metadata.region,
+              province: metadata.region,
+              year: metadata.year,
+              month: metadata.month,
+              paperNumber: metadata.paperNumber,
+              language: metadata.language ?? '',
+              examSession: metadata.examSession ?? '',
+            },
             paperUrl: uploaded.url,
             memoUrl: '',
             paperFileName: item.file.name,
@@ -886,6 +1070,8 @@ export const createDrivePaperImportRunner = (dependencies) => {
             memoMimeType: '',
             paperSha256: item.contentSha256,
             memoSha256: '',
+            title: displayName,
+            paperName: displayName,
             displayName,
             paperTitle: displayName,
             copyNumber: 0,

@@ -11,14 +11,13 @@ export const needsAuthorizationForZeroCostCheckout = ({
   planId,
   currentPaidSubscription = false,
   hasReusableAuthorization = false,
-  discountPercent,
-  billingDuration,
 }) => {
   if (amountDue === null || amountDue === undefined) return false;
   if (toMinorUnits(amountDue) !== 0 || !PAID_PLAN_IDS.has(planId)
     || currentPaidSubscription || hasReusableAuthorization) return false;
-  // A permanent 100% subscription has no future paid renewal to authorize.
-  return !(Number(discountPercent) === 100 && billingDuration === 'recurring');
+  // A zero-cost paid checkout still needs a reusable card authorization. The
+  // discount may change later, and the saved authorization supports renewals.
+  return true;
 };
 
 export const getNextActualSubscriptionCharge = ({

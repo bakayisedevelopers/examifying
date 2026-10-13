@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { useAuth } from '../../hooks/useAuth';
-import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
 import { ROLES } from '../../lib/constants';
 import { getTutorBillingSummary } from '../../services/firestoreService';
@@ -15,7 +14,6 @@ import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '..
 
 export const ProfileBillingPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
-  const { runOperation } = useOperationStatus();
   const navigate = useNavigate();
   const location = useLocation();
   const [summary, setSummary] = useState(null);
@@ -27,12 +25,13 @@ export const ProfileBillingPage = ({ role }) => {
   const continueSubscription = async (selection) => {
     setSubscriptionStatus('');
     setIsStartingSubscription(true);
+    let redirectingToPaystack = false;
     try {
-      const result = await runOperation({ operationName: 'Starting subscription checkout', successMessage: 'The subscription request is ready.' }, () => initializeSubscriptionPayment({
+      const result = await initializeSubscriptionPayment({
         studentId: profile.uid,
         ...selection,
         callbackUrl: `${window.location.origin}/student/billing`,
-      }));
+      });
       if (result.freeCheckout) {
         const refreshedProfile = await refreshProfile(profile.uid);
         await refreshStudentSubscriptionState(refreshedProfile || profile);
@@ -63,14 +62,15 @@ export const ProfileBillingPage = ({ role }) => {
           ? `${result.quote.planName} remains active until ${new Date(result.renewalDate).toLocaleDateString()}. Resume renewal in subscription management to keep it after that date.`
           : `${result.quote.planName} is already active.`);
       } else if (result.authorizationUrl) {
-        window.location.href = result.authorizationUrl;
+        redirectingToPaystack = true;
+        window.location.assign(result.authorizationUrl);
       } else {
         throw new Error('Could not start subscription checkout.');
       }
     } catch (error) {
       setSubscriptionStatus(error?.message || 'Could not start subscription checkout.');
     } finally {
-      setIsStartingSubscription(false);
+      if (!redirectingToPaystack) setIsStartingSubscription(false);
     }
   };
 
@@ -99,6 +99,7 @@ export const ProfileBillingPage = ({ role }) => {
             studentId={profile.uid}
             subscriptionState={subscriptionState}
             onStateChange={(nextState) => setStudentSubscriptionState(profile.uid, nextState)}
+            isCheckoutSubmitting={isStartingSubscription}
             onContinuePayment={() => {
               const selection = subscriptionState.pendingPlan || subscriptionState;
               continueSubscription({
@@ -121,6 +122,7 @@ export const ProfileBillingPage = ({ role }) => {
           }}
           onContinue={continueSubscription}
           isSubmitting={isStartingSubscription}
+          submitLabel="Checkout"
           initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || subscriptionState.pendingPlan?.discountCode || ''}
         /> : null}
         {subscriptionStatus ? <div role="status" className="panel mt-5 p-4 text-sm">{subscriptionStatus}</div> : null}

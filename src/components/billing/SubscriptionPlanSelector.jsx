@@ -28,6 +28,7 @@ const PlanCard = ({
   discountCode,
   mobileSwipe,
   isSubmitting,
+  submitLabel,
   onSelect,
   onContinue,
 }) => {
@@ -203,7 +204,7 @@ const PlanCard = ({
             });
           }}
         >
-          {isSubmitting ? 'Please wait…' : 'Continue to checkout'}
+          {isSubmitting ? 'Please wait…' : submitLabel}
         </button>
       ) : null}
     </article>
@@ -218,6 +219,7 @@ export const SubscriptionPlanSelector = ({
   studentId = null,
   initialDiscountCode = '',
   allowDiscountInput = false,
+  submitLabel = 'Continue to checkout',
 }) => {
   const [planId, setPlanId] = useState(['circle', 'personalized'].includes(initialSelection.planId)
     ? initialSelection.planId
@@ -289,6 +291,7 @@ export const SubscriptionPlanSelector = ({
             discountCode={discountCode}
             mobileSwipe={mobileSwipe}
             isSubmitting={isSubmitting}
+            submitLabel={submitLabel}
             onSelect={setPlanId}
             onContinue={onContinue}
           />

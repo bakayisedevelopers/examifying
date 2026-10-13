@@ -6,7 +6,7 @@ import {
   needsAuthorizationForZeroCostCheckout,
 } from './paystackPricingCore.js';
 
-test('zero-cost recurring paid offers require R1 authorization only when future collection is needed', () => {
+test('zero-cost paid offers require R1 authorization when no reusable card is saved', () => {
   const base = {
     planId: 'personalized',
     amountDue: 0,
@@ -14,7 +14,7 @@ test('zero-cost recurring paid offers require R1 authorization only when future 
     billingDuration: 'fixed_months',
   };
   assert.equal(needsAuthorizationForZeroCostCheckout(base), true);
-  assert.equal(needsAuthorizationForZeroCostCheckout({ ...base, billingDuration: 'recurring' }), false);
+  assert.equal(needsAuthorizationForZeroCostCheckout({ ...base, billingDuration: 'recurring' }), true);
   assert.equal(needsAuthorizationForZeroCostCheckout({ ...base, hasReusableAuthorization: true }), false);
   assert.equal(needsAuthorizationForZeroCostCheckout({ ...base, currentPaidSubscription: true }), false);
   assert.equal(needsAuthorizationForZeroCostCheckout({ ...base, planId: 'free' }), false);

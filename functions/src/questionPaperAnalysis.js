@@ -9,15 +9,12 @@ import { createCanvas } from '@napi-rs/canvas';
 import { PDFDocument } from 'pdf-lib';
 import { getDb, storage, taskQueue } from './admin.js';
 import { mergeGlobalTopicLabels, normalizeGeneratedTopicLabel, normalizeStoredTopicLabel } from './globalTopicCatalog.js';
-import { findVerifiedPaperRegionCorrection, normalizePaperIdentityValue } from './paperIdentity.js';
+import { normalizePaperIdentityValue, resolveDrivePaperIdentity } from './paperIdentity.js';
 import { parseGoogleDrivePaperMetadata } from './googleDrivePaperImportCore.js';
 import { callKiloVisionWithFallback } from './kilo.js';
 import { callGeminiGenerateContent } from './gemini.js';
 import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 import {
-  downloadDriveJsonFile,
-  findDrivePastPaperGradeFolder,
-  listDriveJsonFilesInGradeFolder,
   readDriveQuestionPaperAnalysisJson,
   summarizeDriveJsonError,
   writeDriveTopicsJson,
@@ -321,34 +318,45 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
   const maxPapers = Math.max(1, Math.min(50, Math.floor(Number(request.data?.maxPapers) || 50)));
   const requestedPaperIdSet = requestedPaperIds ? new Set(requestedPaperIds) : null;
   const db = getDb();
-  const folder = await findDrivePastPaperGradeFolder({ subject, grade });
-  if (!folder) throw new HttpsError('failed-precondition', `No ${grade} Drive folder for ${subject} exists under the configured past-papers root.`);
-  const jsonFiles = await listDriveJsonFilesInGradeFolder(folder.id);
-  const jsonByName = new Map();
-  jsonFiles.forEach((file) => {
-    const key = String(file.name ?? '').trim().toLocaleLowerCase();
-    const matches = jsonByName.get(key) ?? [];
-    matches.push(file);
-    jsonByName.set(key, matches);
+  const paperProjection = [
+    'subject', 'grade', 'region', 'province', 'month', 'year', 'paperNumber', 'language', 'examSession', 'session',
+    'paperMetadata', 'paperUrl', 'paperFileName', 'analysisStatus', 'availableForGeneration', 'activeAnalysisRunId',
+    'queuedAnalysisRunId', 'analysisRevision', 'driveAnalysisJsonStatus',
+  ];
+  const paperSnapshots = [];
+  if (requestedPaperIds) {
+    for (let index = 0; index < requestedPaperIds.length; index += 30) {
+      const ids = requestedPaperIds.slice(index, index + 30);
+      const snapshot = await db.collection('questionPapers').where('__name__', 'in', ids).select(...paperProjection).get();
+      paperSnapshots.push(...snapshot.docs);
+    }
+  } else {
+    const snapshot = await db.collection('questionPapers').select(...paperProjection).get();
+    paperSnapshots.push(...snapshot.docs);
+  }
+  const controlSnapshot = await paperAnalysisControlRef().get();
+  const candidates = paperSnapshots.filter((snapshot) => {
+    const paper = snapshot.data();
+    const filenameMetadata = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
+    const filenameMatchesRequestedGroup = filenameMetadata.ok
+      ? filenameMetadata.metadata.subject === subject && filenameMetadata.metadata.grade === grade
+      : paper.subject === subject && paper.grade === grade;
+    return paper.paperUrl && paper.analysisStatus !== ANALYZED
+      && paper.analysisStatus !== ANALYZING && !paper.activeAnalysisRunId && !paper.queuedAnalysisRunId
+      && (!requestedPaperIdSet || requestedPaperIdSet.has(snapshot.id))
+      && (requestedPaperIdSet || filenameMatchesRequestedGroup)
+      && (!onlyWaiting || paper.analysisStatus === WAITING_FOR_DRIVE_JSON || paper.driveAnalysisJsonStatus === 'review_required')
+      && /\.pdf$/i.test(String(paper.paperFileName ?? ''));
   });
-  const [papersSnapshot, gradeSnapshot, controlSnapshot] = await Promise.all([
-    db.collection('questionPapers').where('subject', '==', subject).select(
-      'subject', 'grade', 'paperUrl', 'paperFileName', 'analysisStatus', 'availableForGeneration',
-      'activeAnalysisRunId', 'queuedAnalysisRunId', 'analysisRevision',
-    ).get(),
-    db.collection('subjects').doc(subject).collection('grades').doc(grade).get(),
-    paperAnalysisControlRef().get(),
-  ]);
-  const topicOptions = sanitizeAnalysisTopicOptions(gradeSnapshot.data()?.topics, gradeSnapshot.data()?.topicMetadata);
-  const candidates = papersSnapshot.docs
-    .filter((snapshot) => {
-      const paper = snapshot.data();
-      return paper.grade === grade && paper.paperUrl && paper.analysisStatus !== ANALYZED
-        && paper.analysisStatus !== ANALYZING && !paper.activeAnalysisRunId && !paper.queuedAnalysisRunId
-        && (!requestedPaperIdSet || requestedPaperIdSet.has(snapshot.id))
-        && (!onlyWaiting || paper.analysisStatus === WAITING_FOR_DRIVE_JSON || paper.driveAnalysisJsonStatus === 'review_required')
-        && /\.pdf$/i.test(String(paper.paperFileName ?? ''));
-    });
+  const topicOptionsByGroup = new Map();
+  const getTopicOptions = async (driveSubject, driveGrade) => {
+    const key = `${driveSubject}\u0000${driveGrade}`;
+    if (topicOptionsByGroup.has(key)) return topicOptionsByGroup.get(key);
+    const gradeSnapshot = await db.collection('subjects').doc(driveSubject).collection('grades').doc(driveGrade).get();
+    const topicOptions = sanitizeAnalysisTopicOptions(gradeSnapshot.data()?.topics, gradeSnapshot.data()?.topicMetadata);
+    topicOptionsByGroup.set(key, topicOptions);
+    return topicOptions;
+  };
   let checkedCount = 0;
   let queuedCount = 0;
   let reviewCount = 0;
@@ -360,49 +368,56 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
     if (queuedCount >= maxPapers) break;
     processedCount += 1;
     const paper = paperSnapshot.data();
-    const jsonName = String(paper.paperFileName).replace(/\.pdf$/i, '.json').toLocaleLowerCase();
-    const matchingFiles = jsonByName.get(jsonName) ?? [];
-    if (matchingFiles.length > 1) {
+    const filenameParse = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
+    if (!filenameParse.ok) {
       reviewCount += 1;
       await paperSnapshot.ref.set({
         driveAnalysisJsonStatus: 'review_required',
-        driveAnalysisJsonReviewReason: `More than one ${jsonName} file exists in the subject and grade Drive folder.`,
+        driveAnalysisJsonReviewReason: `The Drive PDF filename does not follow the required paper naming structure. ${filenameParse.reason}`,
         analysisStage: 'Review required',
         analysisProgressMessage: 'Matching Drive JSON needs review before analysis can continue.',
         updatedAt: new Date(),
       }, { merge: true });
       continue;
     }
-    if (!matchingFiles.length) {
+    checkedCount += 1;
+    let driveJsonResult;
+    try {
+      driveJsonResult = await readDriveQuestionPaperAnalysisJson(paper);
+    } catch (error) {
+      const reason = summarizeDriveJsonError(error);
+      if (error?.code === 'ambiguous') {
+        reviewCount += 1;
+        await paperSnapshot.ref.set({
+          driveAnalysisJsonStatus: 'review_required',
+          driveAnalysisJsonReviewReason: reason,
+          analysisStage: 'Review required',
+          analysisProgressMessage: 'Matching Drive JSON needs review before analysis can continue.',
+          updatedAt: new Date(),
+        }, { merge: true });
+      } else {
+        errorCount += 1;
+        logger.warn('Legacy Drive analysis JSON download failed for one paper', {
+          uid,
+          paperId: paperSnapshot.id,
+          error: reason,
+        });
+      }
+      continue;
+    }
+    if (!driveJsonResult.found) {
       skippedCount += 1;
       continue;
     }
 
-    checkedCount += 1;
-    const file = matchingFiles[0];
-    let text;
+    let validatedAnalysis;
     try {
-      text = await downloadDriveJsonFile(file.id);
-    } catch (error) {
-      errorCount += 1;
-      logger.warn('Legacy Drive analysis JSON download failed for one paper', {
-        uid,
-        paperId: paperSnapshot.id,
-        fileId: file.id,
-        error: summarizeDriveJsonError(error),
-      });
-      continue;
-    }
-    let verifiedRegionCorrection = '';
-    try {
-      const validatedAnalysis = parseDriveAnalysisJson({
-        text,
+      validatedAnalysis = parseDriveAnalysisJson({
+        text: driveJsonResult.text,
         paper,
         paperId: paperSnapshot.id,
-        topicOptions,
-        allowFilenameRegionCorrection: true,
+        topicOptions: await getTopicOptions(filenameParse.metadata.subject, filenameParse.metadata.grade),
       });
-      verifiedRegionCorrection = validatedAnalysis.paperIdentityCorrection?.region ?? '';
     } catch (error) {
       reviewCount += 1;
       const reason = summarizeDriveJsonError(error);
@@ -420,15 +435,11 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
         const currentSnapshot = await transaction.get(paperSnapshot.ref);
         if (!currentSnapshot.exists) return false;
         const current = currentSnapshot.data();
-        const currentIdentity = paperIdentityForAnalysisJson(current);
-        const candidateIdentity = paperIdentityForAnalysisJson(paper);
-        const identityChanged = ['subject', 'grade', 'region', 'month', 'year', 'paperNumber'].some((field) => (
-          normalizePaperIdentityValue(currentIdentity[field], field) !== normalizePaperIdentityValue(candidateIdentity[field], field)
-        ));
-        if (identityChanged) return false;
         if (current.analysisStatus === ANALYZED || current.analysisStatus === ANALYZING
           || current.activeAnalysisRunId || current.queuedAnalysisRunId) return false;
+        const identityPatch = drivePaperIdentityPatch(validatedAnalysis.drivePaperIdentity, current);
         transaction.set(paperSnapshot.ref, {
+          ...identityPatch,
           analysisStatus: ANALYZING,
           analysisSource: 'checking_drive_json',
           analysisStage: 'Queued',
@@ -441,11 +452,6 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
           questions: [],
           topics: [],
           questionCount: 0,
-          paperMetadata: verifiedRegionCorrection ? { region: verifiedRegionCorrection } : {},
-          ...(verifiedRegionCorrection ? {
-            region: verifiedRegionCorrection,
-            ...(current.province !== undefined ? { province: verifiedRegionCorrection } : {}),
-          } : {}),
           paperAnalysisSummary: '',
           paperDocumentAnalysis: '',
           paperDocumentAnalysisModel: '',
@@ -457,18 +463,7 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
         }, { merge: true });
         return true;
       });
-      if (queued) {
-        queuedCount += 1;
-        if (verifiedRegionCorrection) {
-          logger.info('Corrected a paper region after the Drive PDF filename and analysis JSON agreed', {
-            uid,
-            paperId: paperSnapshot.id,
-            previousRegion: String(paper.region ?? paper.province ?? paper.paperMetadata?.region ?? ''),
-            region: verifiedRegionCorrection,
-            paperFileName: String(paper.paperFileName ?? ''),
-          });
-        }
-      }
+      if (queued) queuedCount += 1;
       else skippedCount += 1;
     } catch (error) {
       const reason = summarizeDriveJsonError(error);
@@ -476,7 +471,7 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
       logger.warn('Could not queue a validated legacy Drive analysis JSON file', {
         uid,
         paperId: paperSnapshot.id,
-        fileId: file.id,
+        fileId: driveJsonResult?.file?.id ?? '',
         error: reason,
       });
     }
@@ -922,10 +917,42 @@ const paperIdentityForAnalysisJson = (paper = {}) => {
     month: paper.month ?? metadata.month ?? '',
     year: paper.year ?? metadata.year ?? '',
     paperNumber: paper.paperNumber ?? metadata.paperNumber ?? '',
+    language: paper.language ?? metadata.language ?? '',
+    examSession: paper.examSession ?? paper.session ?? metadata.examSession ?? metadata.session ?? '',
   };
 };
 
-const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [], allowFilenameRegionCorrection = false }) => {
+const drivePaperIdentityPatch = (identity = {}, paper = {}) => {
+  const displayName = [identity.subject, identity.grade, identity.region, identity.month, identity.year, identity.paperNumber]
+    .filter(Boolean)
+    .join(' • ');
+  const paperMetadata = {
+    ...(paper.paperMetadata ?? {}),
+    ...identity,
+    province: identity.region,
+    language: identity.language ?? '',
+    examSession: identity.examSession ?? '',
+  };
+  return {
+    subject: identity.subject,
+    grade: identity.grade,
+    region: identity.region,
+    province: identity.region,
+    month: identity.month,
+    year: identity.year,
+    paperNumber: identity.paperNumber,
+    language: identity.language ?? '',
+    examSession: identity.examSession ?? '',
+    session: identity.examSession ?? '',
+    title: displayName,
+    paperName: displayName,
+    paperTitle: displayName,
+    displayName,
+    paperMetadata,
+  };
+};
+
+const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [] }) => {
   let source;
   try {
     source = JSON.parse(text);
@@ -936,25 +963,20 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [], allow
     throw new Error('The matching Drive analysis JSON must use schemaVersion 1 and include paper and analysis objects.');
   }
 
-  const expected = paperIdentityForAnalysisJson(paper);
+  const storedIdentity = paperIdentityForAnalysisJson(paper);
   const provided = source.paper;
-  let verifiedRegionCorrection = '';
-  if (allowFilenameRegionCorrection) {
-    const filenameMetadata = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
-    if (filenameMetadata.ok) {
-      verifiedRegionCorrection = findVerifiedPaperRegionCorrection({
-        storedIdentity: expected,
-        providedIdentity: provided,
-        filenameIdentity: filenameMetadata.metadata,
-      });
-      if (verifiedRegionCorrection) expected.region = verifiedRegionCorrection;
-    }
+  const filenameParse = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
+  if (!filenameParse.ok) {
+    throw new Error(`The Drive PDF filename does not follow the required paper naming structure. ${filenameParse.reason}`);
   }
+  const drivePaperIdentity = resolveDrivePaperIdentity({
+    analysisIdentity: provided,
+    filenameIdentity: filenameParse.metadata,
+    storedIdentity,
+  });
   for (const field of ['subject', 'grade', 'region', 'month', 'year', 'paperNumber']) {
-    const left = normalizePaperIdentityValue(expected[field], field);
-    const right = normalizePaperIdentityValue(provided[field], field);
-    if (!left || !right || left !== right) {
-      throw new Error(`The Drive analysis JSON ${field} does not match the stored paper record.`);
+    if (!normalizePaperIdentityValue(drivePaperIdentity[field], field)) {
+      throw new Error(`The Drive analysis JSON and PDF filename are missing paper ${field} metadata.`);
     }
   }
 
@@ -1001,7 +1023,7 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [], allow
       },
       index,
       paperId,
-      fallbackSubject: paper.subject,
+      fallbackSubject: drivePaperIdentity.subject,
     });
     return question;
   });
@@ -1026,11 +1048,10 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [], allow
     summary,
     readabilityNotes,
   };
-  const analysisPaper = verifiedRegionCorrection
-    ? { ...paper, region: verifiedRegionCorrection, paperMetadata: { ...(paper.paperMetadata ?? {}), region: verifiedRegionCorrection } }
-    : paper;
+  const identityPatch = drivePaperIdentityPatch(drivePaperIdentity, paper);
+  const analysisPaper = { ...paper, ...identityPatch };
   const analysis = buildAnalysisFromBatches({ paperId, paper: analysisPaper, batches: [batch], models: [], topicOptions });
-  return verifiedRegionCorrection ? { ...analysis, paperIdentityCorrection: { region: verifiedRegionCorrection } } : analysis;
+  return { ...analysis, drivePaperIdentity };
 };
 
 const syncDriveTopicFileAfterAnalysis = async ({ subject, grade }) => {
@@ -1087,8 +1108,12 @@ const persistQuestionPaperAnalysis = async ({
     ...analysis.topics,
     ...analysis.questions.flatMap((question) => question.topics ?? []),
   ];
-  if (active.paper.subject && active.paper.grade && analyzedTopicLabels.length) {
-    await mergeGlobalTopicLabels(getDb(), active.paper.subject, active.paper.grade, analyzedTopicLabels, {
+  const driveIdentity = source === 'google_drive_json' ? sourceDetails.drivePaperIdentity : null;
+  const identityPatch = driveIdentity ? drivePaperIdentityPatch(driveIdentity, active.paper) : {};
+  const targetSubject = driveIdentity?.subject ?? active.paper.subject;
+  const targetGrade = driveIdentity?.grade ?? active.paper.grade;
+  if (targetSubject && targetGrade && analyzedTopicLabels.length) {
+    await mergeGlobalTopicLabels(getDb(), targetSubject, targetGrade, analyzedTopicLabels, {
       topicMetadata: analysis.topicMetadata,
     });
   }
@@ -1107,6 +1132,7 @@ const persistQuestionPaperAnalysis = async ({
     updatedAt: completedAt,
   }, { merge: true });
   await active.paperRef.set({
+    ...identityPatch,
     analysisStatus: ANALYZED,
     analysisStage: 'Completed',
     analysisSource: source,
@@ -1119,7 +1145,12 @@ const persistQuestionPaperAnalysis = async ({
     analysisSourceDriveJsonRevision: sourceDetails.file?.version ?? '',
     analysisSourceDriveJsonSha256: sourceDetails.jsonSha256 ?? '',
     availableForGeneration: analysis.questions.length > 0,
-    paperMetadata: analysis.metadata,
+    paperMetadata: {
+      ...(active.paper.paperMetadata ?? {}),
+      ...(identityPatch.paperMetadata ?? {}),
+      ...analysis.metadata,
+      ...(driveIdentity ?? {}),
+    },
     questions: analysis.questions,
     questionCount: analysis.questions.length,
     topics: analysis.topics,
@@ -1150,7 +1181,7 @@ const persistQuestionPaperAnalysis = async ({
     analysisCompletedAt: completedAt,
     updatedAt: completedAt,
   }, { merge: true });
-  await syncDriveTopicFileAfterAnalysis({ subject: active.paper.subject, grade: active.paper.grade });
+  await syncDriveTopicFileAfterAnalysis({ subject: targetSubject, grade: targetGrade });
   return completedAt;
 };
 
@@ -1413,6 +1444,20 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
     let driveJsonAnalysis = null;
     try {
       driveJsonResult = await readDriveQuestionPaperAnalysisJson(paper);
+      if (!driveJsonResult.found && driveJsonResult.reason === 'paper_filename_invalid') {
+        driveJsonStatus = 'review_required';
+        driveJsonReviewReason = `The Drive PDF filename does not follow the required paper naming structure. ${driveJsonResult.filenameReason}`;
+        await runRef.set({ driveAnalysisJsonStatus: driveJsonStatus, driveAnalysisJsonReviewReason: driveJsonReviewReason, updatedAt: new Date() }, { merge: true });
+        await paperRef.set({
+          driveAnalysisJsonStatus: driveJsonStatus,
+          driveAnalysisJsonReviewReason: driveJsonReviewReason,
+          analysisStage: 'Review required',
+          analysisProgressMessage: 'The Drive PDF filename needs review before analysis can continue.',
+          updatedAt: new Date(),
+        }, { merge: true });
+        await markRunFailed({ paperId, runId, error: new Error(driveJsonReviewReason) });
+        return;
+      }
       if (driveJsonResult.found) {
         try {
           driveJsonAnalysis = parseDriveAnalysisJson({
@@ -1483,6 +1528,7 @@ export const prepareQuestionPaperAnalysis = onTaskDispatched(TASK_OPTIONS, async
         driveJsonStatus: 'used',
         file: driveJsonResult.file,
         jsonSha256,
+        drivePaperIdentity: driveJsonAnalysis.drivePaperIdentity,
       };
       await runRef.set({
         status: 'Structuring',

@@ -1,4 +1,4 @@
-import { safeErrorSummary } from './googleDrivePaperImportCore.js';
+import { parseGoogleDrivePaperMetadata, safeErrorSummary } from './googleDrivePaperImportCore.js';
 
 const DRIVE_ROOT_ENV = 'GOOGLE_DRIVE_PAPERS_ROOT_ID';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
@@ -194,7 +194,10 @@ const findUniqueNamedJsonFile = async (folderId, fileName) => {
 };
 
 export const readDriveQuestionPaperAnalysisJson = async (paper) => {
-  const folder = await findDrivePastPaperGradeFolder({ subject: paper?.subject, grade: paper?.grade });
+  const filenameMetadata = parseGoogleDrivePaperMetadata({ fileName: paper?.paperFileName });
+  if (!filenameMetadata.ok) return { found: false, reason: 'paper_filename_invalid', filenameReason: filenameMetadata.reason };
+  const identity = filenameMetadata.ok ? filenameMetadata.metadata : paper;
+  const folder = await findDrivePastPaperGradeFolder({ subject: identity?.subject, grade: identity?.grade });
   if (!folder) return { found: false, reason: 'grade_folder_not_found' };
   const originalFileName = String(paper?.paperFileName ?? '').trim();
   if (!originalFileName || !/\.pdf$/i.test(originalFileName)) return { found: false, reason: 'paper_filename_unavailable' };

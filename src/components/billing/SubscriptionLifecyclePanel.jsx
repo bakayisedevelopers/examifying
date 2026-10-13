@@ -22,6 +22,7 @@ export const SubscriptionLifecyclePanel = ({
   subscriptionState,
   onStateChange,
   onContinuePayment,
+  isCheckoutSubmitting = false,
 }) => {
   const { runOperation } = useOperationStatus();
   const [busyAction, setBusyAction] = useState('');
@@ -181,9 +182,9 @@ export const SubscriptionLifecyclePanel = ({
             </button>
           ) : null}
           {isPastDue && !verificationPending && !paymentNeedsReview && onContinuePayment ? (
-            <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={onContinuePayment} disabled={Boolean(busyAction)}>
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={onContinuePayment} disabled={Boolean(busyAction) || isCheckoutSubmitting}>
               <CalendarClock className="h-4 w-4" aria-hidden="true" />
-              Pay with another method
+              {isCheckoutSubmitting ? 'Please wait…' : 'Pay with another method'}
             </button>
           ) : null}
         </div>

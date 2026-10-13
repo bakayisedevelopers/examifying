@@ -76,13 +76,16 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   ] : getNavigationForRole(effectiveRole, effectiveRole === 'teacher');
   const isUnpaidStudent = effectiveRole === ROLES.STUDENT
     && !['paid_incomplete', 'paid_completed'].includes(account.profileCompletionStatus);
+  const isAccountSetupIncomplete = account.accountSetupStatus === 'required';
   const isStudentProfileIncomplete = effectiveRole === ROLES.STUDENT && account.profileCompletionStatus === 'paid_incomplete';
   const isTutorProfileIncomplete = ['tutor', 'teacher'].includes(effectiveRole) && account.profileCompletionStatus !== 'completed';
-  const onboardingLocked = isUnpaidStudent || isStudentProfileIncomplete || isTutorProfileIncomplete;
-  const onboardingPath = effectiveRole === ROLES.STUDENT
+  const onboardingLocked = isAccountSetupIncomplete || isUnpaidStudent || isStudentProfileIncomplete || isTutorProfileIncomplete;
+  const onboardingPath = isAccountSetupIncomplete
+    ? effectiveRole === ROLES.STUDENT ? '/student/account-setup' : effectiveRole === 'teacher' ? '/teacher/account-setup' : '/tutor/account-setup'
+    : effectiveRole === ROLES.STUDENT
     ? '/student/onboarding'
     : effectiveRole === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding';
-  const navigation = isParentWorkspace ? roleNavigation : isUnpaidStudent
+  const navigation = isAccountSetupIncomplete ? [] : isParentWorkspace ? roleNavigation : isUnpaidStudent
     ? [{ to: '/student/papers', label: 'Browse past papers', icon: BookOpen }]
     : onboardingLocked ? [] : roleNavigation;
   const homePath = isParentWorkspace ? `${childBasePath}/home` : onboardingLocked ? onboardingPath : isFreeStudent ? '/student/papers' : `/${effectiveRole}`;

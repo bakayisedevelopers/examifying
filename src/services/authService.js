@@ -8,15 +8,17 @@ import {
   updatePassword,
   deleteUser,
 } from 'firebase/auth';
-import { deleteDoc, deleteField, doc, getDoc as firebaseGetDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, deleteField, doc, getDoc as firebaseGetDoc, runTransaction, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
 import { mockUsers } from '../data/mockData';
 import { normalizeWhatsAppNumber } from '../utils/whatsapp';
+import { LEGAL_POLICY_VERSION } from '../lib/legalPolicyVersion';
 import { trackFirestoreRead } from './performanceTelemetry';
 
 const provider = isFirebaseConfigured ? new GoogleAuthProvider() : null;
+provider?.addScope('email');
 const profileRequests = new Map();
 
 export const loginWithEmail = async ({ email, password }) => {
@@ -60,6 +62,7 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
     emailLowercase: (credential.user.email || email.trim()).toLowerCase(),
     displayName: fullName.trim(),
     role,
+    accountSetupStatus: 'completed',
     marketingEmailOptIn,
     termsAccepted: true,
     termsAcceptedAt: serverTimestamp(),
@@ -92,6 +95,70 @@ export const registerWithEmail = async ({ fullName, email, password, role, extra
   }
 };
 
+export const registerWithGoogle = async ({ role, marketingEmailOptIn = false } = {}) => {
+  if (!auth || !db) throw new Error('Firebase is not configured. Please set up environment variables.');
+  if (!['student', 'tutor', 'teacher', 'parent'].includes(role)) throw new Error('Choose a valid account type.');
+
+  const credential = await signInWithPopup(auth, provider);
+  if (!credential.user.email) {
+    await signOut(auth);
+    throw new Error('Google did not provide an email address. Allow email sharing in Google and try again.');
+  }
+  const profileRef = doc(db, collections.users, credential.user.uid);
+  const effectiveRole = role === 'teacher' ? 'tutor' : role;
+  const isTeacher = role === 'teacher';
+  const setupRequired = ['student', 'tutor', 'teacher'].includes(role);
+  const initialProfile = {
+    uid: credential.user.uid,
+    email: credential.user.email || '',
+    emailLowercase: (credential.user.email || '').toLowerCase(),
+    displayName: credential.user.displayName?.trim() || '',
+    photoURL: credential.user.photoURL || '',
+    role: effectiveRole,
+    isTeacher,
+    accountSetupStatus: setupRequired ? 'required' : 'completed',
+    marketingEmailOptIn: marketingEmailOptIn === true,
+    termsAccepted: true,
+    termsAcceptedAt: serverTimestamp(),
+    termsVersion: LEGAL_POLICY_VERSION,
+    privacyNoticeAcknowledged: true,
+    privacyNoticeAcknowledgedAt: serverTimestamp(),
+    privacyNoticeVersion: LEGAL_POLICY_VERSION,
+    createdAt: serverTimestamp(),
+    ...(effectiveRole === 'student' ? {
+      paymentCompleted: false,
+      subscriptionStatus: 'pending',
+      profileCompletionStatus: 'unpaid_incomplete',
+    } : {}),
+    ...(effectiveRole === 'tutor' ? {
+      profileCompletionStatus: 'incomplete',
+      subject: null,
+      subjects: [],
+    } : {}),
+  };
+
+  try {
+    const created = await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(profileRef);
+      if (snapshot.exists()) return false;
+      transaction.set(profileRef, initialProfile);
+      return true;
+    });
+    profileRequests.delete(credential.user.uid);
+    const profileSnapshot = await firebaseGetDoc(profileRef);
+    const profile = profileSnapshot.exists() ? profileSnapshot.data() : null;
+    if (!profile) throw new Error('Your Google account was signed in, but its Examify profile could not be loaded. Please try again.');
+    return { user: credential.user, profile, created };
+  } catch (error) {
+    try {
+      await signOut(auth);
+    } catch {
+      // Keep the original profile creation error if sign-out also fails.
+    }
+    throw error;
+  }
+};
+
 export const updateStudentOnboarding = async ({ uid, previousYearMark }) => {
   if (!isFirebaseConfigured) {
     return { uid, previousYearMark, latestMark: previousYearMark, paymentCompleted: false, subscriptionStatus: 'pending' };
@@ -116,6 +183,50 @@ export const signInWithGoogle = async () => {
     throw new Error('This login has no Examify profile. Contact an administrator to restore the account link.');
   }
   return { user: credential.user, profile };
+};
+
+export const completeAccountSetup = async ({ uid, displayName, grade, province, school, whatsappNumber } = {}) => {
+  if (!isFirebaseConfigured || !auth?.currentUser || auth.currentUser.uid !== uid) {
+    throw new Error('Sign in to the account you are setting up.');
+  }
+  const profile = await getUserProfile(uid);
+  if (!profile || profile.accountSetupStatus !== 'required') throw new Error('This account does not need setup details.');
+  const isStudent = profile.role === 'student';
+  const isTutor = profile.role === 'tutor' || profile.role === 'teacher' || profile.isTeacher === true || profile.isTeacher === 'true';
+  if (!isStudent && !isTutor) throw new Error('This account does not support additional setup details.');
+
+  const cleanName = String(displayName || '').trim();
+  if (!cleanName) throw new Error('Enter your full name.');
+  const normalizedWhatsAppNumber = normalizeWhatsAppNumber(whatsappNumber);
+  const updates = {
+    displayName: cleanName,
+    accountSetupStatus: 'completed',
+    updatedAt: serverTimestamp(),
+  };
+
+  if (isStudent) {
+    if (!grade || grade === 'Select Grade') throw new Error('Choose your grade.');
+    if (!province || province === 'National') throw new Error('Choose your province.');
+    const cleanSchool = String(school || '').trim();
+    if (!cleanSchool) throw new Error('Enter your school name.');
+    if (!functions) throw new Error('Firebase Functions are not configured. Please try again later.');
+    await httpsCallable(functions, 'changeStudentGrade')({ studentId: uid, newGrade: grade, restoreSubjectInstanceIds: [] });
+    updates.province = province;
+    updates.school = cleanSchool;
+    updates.whatsappNumber = normalizedWhatsAppNumber;
+  } else {
+    if (profile.isTeacher === true || profile.isTeacher === 'true' || profile.role === 'teacher') {
+      const cleanSchool = String(school || '').trim();
+      if (!cleanSchool) throw new Error('Enter the school you teach at.');
+      updates.school = cleanSchool;
+    }
+    if (!functions) throw new Error('Firebase Functions are not configured. Please try again later.');
+    await httpsCallable(functions, 'saveTutorWhatsAppNumber')({ whatsappNumber: normalizedWhatsAppNumber });
+  }
+
+  await updateProfile(auth.currentUser, { displayName: cleanName });
+  await updateDoc(doc(db, collections.users, uid), updates);
+  return { uid, ...updates };
 };
 
 export const getUserProfile = async (uid) => {

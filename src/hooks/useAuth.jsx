@@ -3,8 +3,10 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '../firebase/config';
 import {
   getUserProfile,
+  completeAccountSetup as saveAccountSetup,
   loginWithEmail,
   logout,
+  registerWithGoogle as createGoogleAccount,
   registerWithEmail,
   signInWithGoogle,
   updateStudentOnboarding,
@@ -64,7 +66,12 @@ export const AuthProvider = ({ children }) => {
       try {
         const profile = await getUserProfile(firebaseUser.uid);
         const resolvedProfile = await resolveOnboardingProfile(profile);
-        setState({ user: firebaseUser, profile: resolvedProfile, loading: false, error: null });
+        setState((current) => {
+          if (!resolvedProfile && current.user?.uid === firebaseUser.uid && current.profile?.uid === firebaseUser.uid) {
+            return { ...current, loading: false, error: null };
+          }
+          return { user: firebaseUser, profile: resolvedProfile, loading: false, error: null };
+        });
         if (resolvedProfile?.role === 'student' && !getCachedStudentSubscriptionState(resolvedProfile.uid)) {
           void loadStudentSubscriptionState(resolvedProfile, { maxAgeMs: 30_000 });
         }
@@ -93,6 +100,20 @@ export const AuthProvider = ({ children }) => {
       const resolvedProfile = await resolveOnboardingProfile(result.profile);
       setState({ user: result.user, profile: resolvedProfile, loading: false, error: null });
       return { ...result, profile: resolvedProfile };
+    },
+    registerWithGoogle: async (payload) => {
+      const result = await createGoogleAccount(payload);
+      queryClient.clear();
+      const resolvedProfile = await resolveOnboardingProfile(result.profile);
+      setState({ user: result.user, profile: resolvedProfile, loading: false, error: null });
+      return { ...result, profile: resolvedProfile };
+    },
+    completeAccountSetup: async (payload) => {
+      const result = await saveAccountSetup(payload);
+      const profile = await getUserProfile(result.uid);
+      const resolvedProfile = await resolveOnboardingProfile(profile);
+      setState((current) => ({ ...current, profile: resolvedProfile, loading: false, error: null }));
+      return resolvedProfile;
     },
     updateStudentOnboarding: async (payload) => {
       const updated = await updateStudentOnboarding(payload);

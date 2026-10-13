@@ -21,6 +21,13 @@ export const ProtectedRoute = ({ allowedRoles }) => {
     return <Navigate to={`/${profile.role}`} replace />;
   }
 
+  const accountSetupPath = profile.role === ROLES.STUDENT ? '/student/account-setup'
+    : getPortalForProfile(profile) === 'teacher' ? '/teacher/account-setup' : '/tutor/account-setup';
+  const isAccountSetup = location.pathname === accountSetupPath;
+  if (profile.accountSetupStatus === 'required' && !isAccountSetup) {
+    return <Navigate to={accountSetupPath} replace />;
+  }
+
   if (profile.role === ROLES.STUDENT) {
     const status = ['unpaid_incomplete', 'paid_incomplete', 'paid_completed'].includes(profile.profileCompletionStatus)
       ? profile.profileCompletionStatus
@@ -30,10 +37,10 @@ export const ProtectedRoute = ({ allowedRoles }) => {
     const isPastPapers = location.pathname === '/student/papers' || location.pathname.startsWith('/student/papers/');
     const isProfile = location.pathname === '/student/profile' || location.pathname.startsWith('/student/profile/');
 
-    if (status === 'unpaid_incomplete' && !isOnboarding && !isBilling && !isPastPapers && !isProfile) {
+    if (status === 'unpaid_incomplete' && !isOnboarding && !isBilling && !isPastPapers && !isProfile && !isAccountSetup) {
       return <Navigate to="/student/onboarding" replace />;
     }
-    if (status === 'paid_incomplete' && !isOnboarding && !isBilling && !isProfile) {
+    if (status === 'paid_incomplete' && !isOnboarding && !isBilling && !isProfile && !isAccountSetup) {
       return <Navigate to="/student/onboarding" replace />;
     }
     if (status === 'paid_completed' && isOnboarding) {
@@ -47,7 +54,7 @@ export const ProtectedRoute = ({ allowedRoles }) => {
     const onboardingPath = `${homePath}/onboarding`;
     const isOnboarding = location.pathname === onboardingPath;
     const isProfile = location.pathname === `${homePath}/profile` || location.pathname.startsWith(`${homePath}/profile/`);
-    if (profile.profileCompletionStatus !== 'completed' && !isOnboarding && !isProfile) {
+    if (profile.profileCompletionStatus !== 'completed' && !isOnboarding && !isProfile && !isAccountSetup) {
       return <Navigate to={onboardingPath} replace />;
     }
   }

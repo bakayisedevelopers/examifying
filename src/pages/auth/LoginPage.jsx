@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Logo } from '../../components/common/Logo';
+import { GoogleSignInButton } from '../../components/common/GoogleSignInButton';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, getSignupPathForPortal, isProfileAllowedOnPortal } from '../../utils/portal';
 
 export const LoginPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, logout } = useAuth();
+  const { login, loginWithGoogle, logout } = useAuth();
   const { runOperation } = useOperationStatus();
   const [form, setForm] = useState({ email: '', password: '' });
   const [status, setStatus] = useState('');
@@ -22,6 +23,11 @@ export const LoginPage = () => {
 
   const redirectByRole = (profile) => {
     const selection = new URLSearchParams(location.search);
+    if (profile.accountSetupStatus === 'required') {
+      navigate(profile.role === 'student' ? '/student/account-setup'
+        : getPortalForProfile(profile) === 'teacher' ? '/teacher/account-setup' : '/tutor/account-setup');
+      return;
+    }
     if (profile.role === 'student') {
       if (profile.profileCompletionStatus === 'unpaid_incomplete') {
         navigate(`/student/billing${selection.size ? `?${selection.toString()}` : ''}`);
@@ -71,6 +77,27 @@ export const LoginPage = () => {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    setIsLoggingIn(true);
+    setStatus('');
+    setAccountPortal(null);
+    try {
+      const result = await runOperation({ operationName: 'Signing in with Google', successMessage: 'Signed in successfully.', autoDismissMs: 650 }, loginWithGoogle);
+      if (!isProfileAllowedOnPortal(result.profile, portal)) {
+        const correctPortal = getPortalForProfile(result.profile);
+        await logout();
+        setAccountPortal(correctPortal);
+        setStatus(`This account does not have access to the ${portalConfig.label.toLowerCase()} site.`);
+        return;
+      }
+      redirectByRole(result.profile);
+    } catch (error) {
+      setStatus(error.message || 'Google sign in failed.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
   return (
     <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-lg items-center justify-center px-4 py-12 lg:px-6">
       <form onSubmit={handleSubmit} className="panel w-full space-y-5 p-8 border border-slate-800 bg-slate-900/90 shadow-2xl">
@@ -80,6 +107,8 @@ export const LoginPage = () => {
           <p className="mt-2 text-sm text-slate-400">Use the account linked to your {portalConfig.audience.toLowerCase()} access.</p>
           <Logo className="mt-4" />
         </div>
+        <GoogleSignInButton onClick={handleGoogleLogin} disabled={isLoggingIn}>{isLoggingIn ? 'Please wait…' : 'Continue with Google'}</GoogleSignInButton>
+        <div className="flex items-center gap-3 text-xs uppercase tracking-widest text-slate-500"><span className="h-px flex-1 bg-slate-700" /><span>or use email</span><span className="h-px flex-1 bg-slate-700" /></div>
         <label className="block">
           <span className="label">Email</span>
           <input type="email" autoComplete="email" className="input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} disabled={isLoggingIn} required />

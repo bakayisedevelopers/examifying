@@ -4,16 +4,17 @@ import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { Logo } from '../../components/common/Logo';
+import { GoogleSignInButton } from '../../components/common/GoogleSignInButton';
 import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 import { LEGAL_POLICY_VERSION } from '../../lib/legalPolicyVersion';
-import { getPortal, getPortalConfig, getPortalForProfile } from '../../utils/portal';
+import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, isProfileAllowedOnPortal } from '../../utils/portal';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const portal = getPortal();
   const portalConfig = getPortalConfig(portal);
-  const { register, profile, loading } = useAuth();
+  const { register, registerWithGoogle, profile, loading, logout } = useAuth();
   const { runOperation } = useOperationStatus();
   const [creating, setCreating] = useState(false);
 
@@ -31,8 +32,8 @@ export const SignupPage = () => {
     marketingEmailOptIn: false,
   });
 
-  const [acceptedPolicies, setAcceptedPolicies] = useState(false);
   const [status, setStatus] = useState('');
+  const [accountPortal, setAccountPortal] = useState(null);
   const pendingDiscountCode = new URLSearchParams(location.search).get('discountCode')?.toUpperCase() || '';
 
   if (portal === 'admin') return <Navigate to="/login" replace />;
@@ -42,6 +43,11 @@ export const SignupPage = () => {
   }
 
   if (profile?.role) {
+    if (profile.accountSetupStatus === 'required') {
+      const setupPath = profile.role === ROLES.STUDENT ? '/student/account-setup'
+        : getPortalForProfile(profile) === 'teacher' ? '/teacher/account-setup' : '/tutor/account-setup';
+      return <Navigate to={setupPath} replace />;
+    }
     const selection = new URLSearchParams(location.search);
     if (profile.role === ROLES.STUDENT) {
       if (profile.profileCompletionStatus === 'paid_incomplete') return <Navigate to="/student/onboarding" replace />;
@@ -134,8 +140,8 @@ export const SignupPage = () => {
         password: form.password,
         role: effectiveRole,
         legalAcceptance: {
-          termsAccepted: acceptedPolicies,
-          privacyNoticeAcknowledged: acceptedPolicies,
+          termsAccepted: true,
+          privacyNoticeAcknowledged: true,
           version: LEGAL_POLICY_VERSION,
         },
         extraProfile: {
@@ -175,6 +181,45 @@ export const SignupPage = () => {
     }
   };
 
+  const handleGoogleSignUp = async () => {
+    setCreating(true);
+    setStatus('');
+    setAccountPortal(null);
+    try {
+      if (form.role !== portalConfig.signupRole) throw new Error(`This site only creates ${portalConfig.label.toLowerCase()} accounts.`);
+      const result = await runOperation({ operationName: 'Creating your account with Google', successMessage: 'Your account was created.', autoDismissMs: 650 }, () => registerWithGoogle({
+        role: form.role,
+        marketingEmailOptIn: form.marketingEmailOptIn,
+      }));
+      if (!isProfileAllowedOnPortal(result.profile, portal)) {
+        const correctPortal = getPortalForProfile(result.profile);
+        await logout();
+        setAccountPortal(correctPortal);
+        setStatus(`This Google account already belongs to the ${getPortalConfig(correctPortal).label.toLowerCase()} site.`);
+        return;
+      }
+      const createdProfile = result.profile;
+      if (createdProfile.accountSetupStatus === 'required') {
+        navigate(createdProfile.role === ROLES.STUDENT ? '/student/account-setup'
+          : getPortalForProfile(createdProfile) === 'teacher' ? '/teacher/account-setup' : '/tutor/account-setup');
+      } else if (createdProfile.role === ROLES.STUDENT) {
+        const selection = new URLSearchParams(location.search);
+        if (!selection.has('planId')) selection.set('planId', selection.has('discountCode') ? 'circle' : 'free');
+        if (!selection.has('billingPeriod')) selection.set('billingPeriod', 'monthly');
+        if (!selection.has('subjectCount')) selection.set('subjectCount', '1');
+        navigate(`/student/billing?${selection.toString()}`);
+      } else if (['tutor', 'teacher'].includes(createdProfile.role)) {
+        navigate(getPortalForProfile(createdProfile) === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding');
+      } else {
+        navigate('/parent');
+      }
+    } catch (error) {
+      setStatus(error.message || 'Google sign up failed.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12 lg:px-6">
       <form onSubmit={handleSubmit} className="panel w-full grid gap-5 p-8 md:grid-cols-2 border border-slate-800 bg-slate-900/90 shadow-2xl">
@@ -187,6 +232,27 @@ export const SignupPage = () => {
           </h2>
           <Logo className="mt-4" />
           {pendingDiscountCode ? <p className="mt-4 rounded-xl border border-lime-400/20 bg-lime-400/5 p-3 text-sm text-lime-200">Discount code <span className="font-mono font-bold">{pendingDiscountCode}</span> will be checked securely in checkout after account creation.</p> : null}
+        </div>
+
+        <div className="md:col-span-2 space-y-4">
+          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-xs text-slate-300 sm:text-sm">
+            <input
+              type="checkbox"
+              checked={form.marketingEmailOptIn}
+              onChange={(event) => setForm((current) => ({ ...current, marketingEmailOptIn: event.target.checked }))}
+              className="mt-1 accent-lime-400"
+            />
+            <span>Email me occasional discount offers and product updates. This is optional and off by default; your choice is saved when you sign up and can be changed later in Settings. Essential account and payment emails are separate.</span>
+          </label>
+          <p className="text-xs leading-5 text-slate-400">
+            By creating an account with email or Google, you agree to Examifying{' '}
+            <Link to="/policies#terms" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Terms of Use</Link>,{' '}
+            <Link to="/policies#refunds" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Refund Policy</Link>, and acknowledge our{' '}
+            <Link to="/policies#privacy" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">Privacy Policy</Link>.
+          </p>
+          {form.role === ROLES.STUDENT ? <p className="text-xs leading-5 text-slate-400">If you are under 18, your parent, legal guardian, or another competent person must have given the consent or other lawful basis required to process your information before you create an account.</p> : null}
+          <GoogleSignInButton onClick={handleGoogleSignUp} disabled={creating}>{creating ? 'Please wait…' : 'Sign up with Google'}</GoogleSignInButton>
+          <div className="flex items-center gap-3 text-xs uppercase tracking-widest text-slate-500"><span className="h-px flex-1 bg-slate-700" /><span>or use email</span><span className="h-px flex-1 bg-slate-700" /></div>
         </div>
 
         <label className="block">
@@ -261,51 +327,17 @@ export const SignupPage = () => {
           </label>
         ) : null}
 
-        <label className="md:col-span-2 flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-xs sm:text-sm text-slate-300">
-          <input
-            type="checkbox"
-            checked={form.marketingEmailOptIn}
-            onChange={(event) => setForm((current) => ({ ...current, marketingEmailOptIn: event.target.checked }))}
-            className="mt-1 accent-lime-400"
-          />
-          <span>
-            Email me occasional discount offers and product updates. This is optional, is off by default, and can be changed later in Settings. Essential account and payment emails are separate.
-          </span>
-        </label>
-
-        <div className="md:col-span-2 flex items-start gap-3 text-xs sm:text-sm text-slate-400">
-          <input
-            type="checkbox"
-            checked={acceptedPolicies}
-            onChange={(e) => setAcceptedPolicies(e.target.checked)}
-            className="mt-1 accent-lime-400"
-            required
-          />
-          <p>
-            By creating an account you agree to Examifying{' '}
-            <Link to="/policies#terms" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
-              Terms of Use
-            </Link>,{' '}
-            <Link to="/policies#refunds" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
-              Refund Policy
-            </Link>, and acknowledge our{' '}
-            <Link to="/policies#privacy" className="font-semibold text-lime-400 hover:text-lime-300 hover:underline">
-              Privacy Policy
-            </Link>.
-            {form.role === ROLES.STUDENT ? <span className="mt-2 block">A student under 18 must have prior consent from a parent, legal guardian, or other competent person before an account is created.</span> : null}
-          </p>
-        </div>
-
         <div className="md:col-span-2">
           <button
             type="submit"
             className="btn-primary w-full"
-            disabled={(!acceptedPolicies || form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim() || !form.whatsappNumber.trim())) || ([ROLES.TUTOR, 'teacher'].includes(form.role) && !form.whatsappNumber.trim()) || (form.role === 'teacher' && !form.school.trim())) || creating}
+            disabled={(form.fullName.trim() === '' || form.email.trim() === '' || form.password.trim() === '' || (form.role === ROLES.STUDENT && (form.grade.trim() === 'Select Grade' || form.province.trim() === 'National' || !form.school.trim() || !form.whatsappNumber.trim())) || ([ROLES.TUTOR, 'teacher'].includes(form.role) && !form.whatsappNumber.trim()) || (form.role === 'teacher' && !form.school.trim())) || creating}
           >
             {creating ? 'Creating account...' : 'Create account'}
           </button>
 
           {status ? <p className="mt-3 text-sm text-rose-500">{status}</p> : null}
+          {accountPortal ? <a href={getPortalSiteUrl(accountPortal)} className="mt-3 block text-center text-sm font-semibold text-lime-400 hover:text-lime-300 hover:underline">Go to the {getPortalConfig(accountPortal).label.toLowerCase()} site</a> : null}
 
           <p className="mt-4 text-sm text-slate-400 text-center">
             Already have an account?{' '}

@@ -12,7 +12,7 @@ export const MarketingLayout = () => {
   const signupPath = getSignupPathForPortal(portal, signupParams.toString());
   const studentContentUrl = getPortalSiteUrl('student');
   const showQuickAccess = !['teacher', 'tutor'].includes(portal);
-  const methodHref = portal === 'student' ? '/#method' : `${studentContentUrl}/#method`;
+  const methodHref = portal === 'student' ? '/#method' : portal === 'parent' ? '/#parent-method' : `${studentContentUrl}/#method`;
   const pricingHref = portal === 'student' ? '/#pricing' : portal === 'parent' ? '#parent-pricing' : `${studentContentUrl}/#pricing`;
   const homePath = profile?.role
     ? (getPortalForProfile(profile) === 'teacher' ? '/teacher' : `/${profile.role}`)

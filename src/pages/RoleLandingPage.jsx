@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ArrowRight, BookOpen, CheckCircle2, FileCheck2, GraduationCap, LockKeyhole, ShieldCheck, Users } from 'lucide-react';
 import { Link, Navigate, useLocation } from 'react-router-dom';
 import { Logo } from '../components/common/Logo';
@@ -55,7 +56,10 @@ const formatRand = (amount) => new Intl.NumberFormat('en-ZA', {
 }).format(amount);
 
 const ParentIndicativePricing = () => {
-  const subjectCounts = Array.from({ length: 20 }, (_, index) => index + 1);
+  const [studentCount, setStudentCount] = useState(1);
+  const [subjectCount, setSubjectCount] = useState(1);
+  const studentOptions = Array.from({ length: 20 }, (_, index) => index + 1);
+  const subjectOptions = Array.from({ length: 20 }, (_, index) => index + 1);
   const plans = [
     { id: 'circle', name: 'Circle', extra: 'R49 for each additional subject' },
     { id: 'personalized', name: 'Personalized', extra: 'R599 for each additional subject' },
@@ -66,40 +70,57 @@ const ParentIndicativePricing = () => {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-300">Indicative pricing</p>
-          <h2 id="parent-pricing-title" className="mt-2 text-2xl font-black text-white sm:text-3xl">Monthly cost per student</h2>
+          <h2 id="parent-pricing-title" className="mt-2 text-2xl font-black text-white sm:text-3xl">Estimate your family&apos;s monthly cost</h2>
         </div>
-        <p className="max-w-xl text-sm leading-6 text-slate-300">Each child has an individual subscription. These amounts show how the monthly price changes with the number of subjects.</p>
+        <p className="max-w-xl text-sm leading-6 text-slate-300">Subscriptions stay separate for each child. Choose the number of students and subjects per student to compare estimated plan costs.</p>
       </div>
-      <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
-        <table className="w-full min-w-[34rem] border-collapse text-left text-sm">
-          <thead className="bg-slate-950/80 text-slate-300">
-            <tr>
-              <th scope="col" className="px-4 py-3 font-semibold">Subjects for one student</th>
-              {plans.map((plan) => <th key={plan.id} scope="col" className="px-4 py-3 font-semibold text-lime-200">{plan.name}</th>)}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-white/5 bg-slate-950/35">
-            {subjectCounts.map((subjectCount) => (
-              <tr key={subjectCount}>
-                <th scope="row" className="px-4 py-3 font-medium text-white">{subjectCount} {subjectCount === 1 ? 'subject' : 'subjects'}</th>
-                {plans.map((plan) => (
-                  <td key={plan.id} className="px-4 py-3 font-semibold text-slate-100">
-                    {formatRand(calculateSubscriptionQuote({ planId: plan.id, billingPeriod: 'monthly', subjectCount }).monthlyAmount)}
-                    <span className="ml-1 text-xs font-normal text-slate-400">/ month</span>
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-6 grid gap-4 rounded-2xl border border-white/10 bg-slate-950/35 p-4 sm:grid-cols-2">
+        <label className="block">
+          <span className="label text-slate-200">Number of students</span>
+          <select className="input" value={studentCount} onChange={(event) => setStudentCount(Number(event.target.value))}>
+            {studentOptions.map((count) => <option key={count} value={count}>{count} {count === 1 ? 'student' : 'students'}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="label text-slate-200">Subjects per student</span>
+          <select className="input" value={subjectCount} onChange={(event) => setSubjectCount(Number(event.target.value))}>
+            {subjectOptions.map((count) => <option key={count} value={count}>{count} {count === 1 ? 'subject' : 'subjects'}</option>)}
+          </select>
+        </label>
       </div>
-      <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
-        {plans.map((plan) => <p key={plan.id}><span className="font-semibold text-slate-300">{plan.name}:</span> {plan.extra} per student each month.</p>)}
+      <div className="mt-5 grid gap-4 sm:grid-cols-2">
+        {plans.map((plan) => {
+          const monthlyPerStudent = calculateSubscriptionQuote({ planId: plan.id, billingPeriod: 'monthly', subjectCount }).monthlyAmount;
+          return <article key={plan.id} className="rounded-2xl border border-lime-300/20 bg-slate-950/50 p-5">
+            <p className="text-sm font-bold text-lime-200">{plan.name}</p>
+            <p className="mt-2 text-3xl font-black text-white">{formatRand(monthlyPerStudent * studentCount)}<span className="ml-1 text-sm font-medium text-slate-400">/ month total</span></p>
+            <p className="mt-2 text-sm text-slate-300">{formatRand(monthlyPerStudent)} per student × {studentCount} {studentCount === 1 ? 'student' : 'students'}</p>
+            <p className="mt-3 text-xs text-slate-400">{plan.extra} per student each month.</p>
+          </article>;
+        })}
       </div>
-      <p className="mt-4 text-xs leading-5 text-slate-500">Indicative only. Choose a child’s plan and subject count in that child’s subscription settings.</p>
+      <p className="mt-4 text-xs leading-5 text-slate-500">Indicative only. Each child&apos;s actual plan and subject count are selected separately in that child&apos;s subscription settings.</p>
     </section>
   );
 };
+
+const ParentMethodSection = () => (
+  <section id="parent-method" aria-labelledby="parent-method-title" className="mt-12 scroll-mt-24 rounded-3xl border border-lime-300/20 bg-slate-900/70 p-5 sm:p-8">
+    <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-300">The Examifying method</p>
+    <h2 id="parent-method-title" className="mt-2 text-2xl font-black text-white sm:text-3xl">A steady cycle of practice, review, and tutor guidance</h2>
+    <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">Each child practises Mathematics topics their tutor has covered, submits handwritten work, and reviews assigned peer work. Tutors use those activities to see what is understood and guide the next learning steps.</p>
+    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+      {[
+        ['Daily practice', 'Children work through the exercise available for the day and upload their answers.'],
+        ['Peer review', 'Students review allocated work using the provided marking guidance.'],
+        ['Tutor guidance', 'Tutors review student work, peer marking, and topic understanding.'],
+      ].map(([title, description]) => <article key={title} className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+        <h3 className="font-semibold text-lime-200">{title}</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-400">{description}</p>
+      </article>)}
+    </div>
+  </section>
+);
 
 const getDashboardPath = (profile) => {
   if (getPortalForProfile(profile) === 'teacher') return '/teacher';
@@ -205,7 +226,10 @@ export const RoleLandingPage = ({ portal }) => {
             ) : null}
           </aside>
         </div>
-        {portal === 'parent' ? <ParentIndicativePricing /> : null}
+        {portal === 'parent' ? <>
+          <ParentMethodSection />
+          <ParentIndicativePricing />
+        </> : null}
       </div>
     </main>
   );

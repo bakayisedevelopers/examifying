@@ -76,11 +76,14 @@ export const PoliciesPage = () => {
             may access information needed to operate and protect the service.
           </p>
           <p className="text-slate-600">
-            A person under 18 is a child for POPIA purposes. A student under 18 may use Examifying only after a parent,
-            legal guardian, or other competent person has reviewed these terms and the Privacy Policy and given the prior
-            consent required by law. A parent or guardian who creates or links a student account confirms they have
-            authority to act for that child. Contact us if consent is withdrawn or an account was created without the
-            required permission.
+            A person under 18 is a child for POPIA purposes. A student under 18 may use Examifying only when the prior
+            consent or other lawful basis required to process that child’s information is in place. A parent or guardian
+            who links a student or creates a student profile confirms they are authorised to act for that child and must
+            keep the child’s account information accurate. A profile created by a parent may use a system-created
+            placeholder email address formed from the child’s name and the parent’s email name; that address is not a
+            mailbox and does not create a student sign-in account.
+            Contact us if authority is withdrawn, consent is withdrawn where consent is the applicable basis, or a profile
+            was created without the required permission.
           </p>
 
           <h3 className="font-semibold text-slate-900">2. Learning features, AI, and peer marking</h3>
@@ -111,6 +114,15 @@ export const PoliciesPage = () => {
             shown in your account. A cancellation ordinarily stops future renewals while access continues to the end of
             the paid period, unless the checkout or applicable law provides otherwise. Nothing in these terms removes a
             right that cannot lawfully be excluded.
+          </p>
+          <p className="text-slate-600">
+            A parent with access to a linked student may choose or manage that student’s subscription and initiate a
+            payment on the student’s behalf. The subscription, payment, refund, and any reusable card authorisation are
+            recorded against the student’s account so the student’s subscription history remains together. The person
+            making the payment may provide a name, email address, and phone number for Paystack to identify the payer and
+            process the transaction. A parent can view the linked student’s payment history through the parent workspace.
+            Refund requests and their outcomes are recorded with the student payment record; a refund is returned through
+            the original payment channel where the provider supports it and applicable rules allow it.
           </p>
 
           <h3 className="font-semibold text-slate-900">4. User content and acceptable use</h3>
@@ -151,6 +163,12 @@ export const PoliciesPage = () => {
             under the applicable checkout terms and consumer law. If a payment succeeded but the subscription did not
             activate, contact us with the payment reference. Statutory rights are not limited by this policy.
           </p>
+          <p className="text-slate-600">
+            A parent may submit a refund enquiry for a payment they made on behalf of a linked student. We associate the
+            enquiry, decision, and any refund status with the student’s payment record and communicate with the parent
+            payer or student as appropriate. A displayed refund status records the transaction’s progress; it does not
+            mean the funds have reached the original payment method until the payment provider confirms completion.
+          </p>
         </PolicySection>
 
         <PolicySection id="privacy" title="Privacy Policy">
@@ -163,11 +181,12 @@ export const PoliciesPage = () => {
 
           <h3 className="font-semibold text-slate-900">1. Information we process</h3>
           <PolicyList items={[
-            'Account and contact details: name, email address, Firebase account identifier, account role, school, grade, province, and (for student accounts) WhatsApp number.',
+            'Account and contact details: name, email address, Firebase account identifier, sign-in provider, profile photo when supplied by Google, account role, school, grade, province, and (for student accounts) WhatsApp number.',
+            'Parent-created learner profiles: a child’s name, grade, province, school, contact details supplied by the parent, the parent-to-student link, and any system-created placeholder email formed from the child’s name and the parent’s email name. A placeholder email is an identifier only and is not an authenticated mailbox or student login.',
             'Education and tutoring records: subjects, topics, marks, understanding scores, completed lessons, schedules, attendance, tutor notes and reports, exercise history, marking activity, and progress records.',
             'Content and files: question-paper PDFs and extracted indexes, student answer images, tutor marks documents or proof, and text or images submitted for OCR, analysis, marking, or support.',
             'Parent, tutor, and staff relationships: linked parent/student accounts, tutor assignments, access history needed to manage those relationships, and tutor agreement details.',
-            'Subscription and payment records: selected plan, subject count, amount, discount, billing and renewal dates, transaction references and status, and Paystack authorization details returned for recurring payments. Examifying does not receive or store a full card number or card security code, but it stores the reusable authorization token and limited card metadata such as last four digits, expiry, card type, and bank when Paystack provides them.',
+            'Subscription and payment records: the student whose subscription is paid for, the payer and their relationship to that student, selected plan, subject count, amount, discount, billing and renewal dates, transaction references, payment and refund statuses, and Paystack authorisation details returned for recurring payments. Paystack receives payer details such as name, email address, and phone number when provided. Examifying does not receive or store a full card number or card security code, but it stores the reusable authorisation token with the student subscription and limited card metadata such as last four digits, expiry, card type, and bank when Paystack provides them.',
             'Notification preferences: your in-app and email choices by notification type, plus your separate optional marketing email opt-in.',
             'Device and service data: browser and user-agent details, push-notification token and permission state, timestamps, operational logs, and technical information processed by Firebase or other service providers.',
           ]} />
@@ -176,12 +195,30 @@ export const PoliciesPage = () => {
             administrator managing the service, and providers that confirm sign-in or payment events. Please provide
             accurate information and avoid uploading personal information that is not needed for the learning task.
           </p>
+          <p className="text-slate-600">
+            Information marked as required during registration or account setup is needed to create the role-specific
+            account and provide its core features; if it is not provided, the account setup or related service may not
+            continue. Marketing email permission is optional. Signing up records acceptance of the current Terms of Use
+            and acknowledgement of this Privacy Policy, while the separate optional marketing choice is stored as
+            selected. Google supplies the basic account identity details shown during Google sign-in; Examifying does
+            not receive your Google password.
+          </p>
+          <p className="text-slate-600">
+            A parent can create a learner profile without creating a Firebase sign-in for the child. Where the parent
+            chooses an automatically generated email, Examifying forms it from the child’s name and the name before the
+            parent’s email @ sign, then stores it as a placeholder identifier only; it cannot
+            receive messages or be used to sign in. The parent can access and manage that profile through the parent
+            account. If the child later receives their own login, the profile information and learning history may remain
+            linked to that child account.
+          </p>
 
           <h3 className="font-semibold text-slate-900">2. Why we use it and lawful grounds</h3>
           <PolicyList items={[
             'Create and secure accounts, confirm roles, link parents and students, and provide the requested learning and tutoring service.',
+            'Allow an authorised parent to create a learner profile, manage the linked student’s settings, and access that student’s learning and subscription information. A parent-created profile may exist without a student authentication account until sign-in is separately established.',
             'Schedule lessons, assign exercises and peer-marking work, record results, and show educational progress to the student and authorised linked parent, tutor, teacher, or administrator.',
             'Process subscriptions and payments, verify transactions, prevent fraud, manage renewals, and keep records required for accounting or legal claims.',
+            'Associate a parent-initiated payment with the linked student whose subscription it pays for, retain payment and refund status in that student’s records, and manage any saved authorisation for that student’s future subscription billing.',
             'Run document extraction, past-paper analysis, topic resolution, and answer-image review requested as part of the service.',
             'Protect the service, investigate misuse, provide support, and maintain reliability.',
           ]} />
@@ -191,6 +228,13 @@ export const PoliciesPage = () => {
             information relates to a child, we process it only under an applicable section 35 basis, including prior
             consent from a competent person where required. Consent may be withdrawn; withdrawal does not undo processing
             already lawfully completed or processing that has another lawful ground.
+          </p>
+          <p className="text-slate-600">
+            When a parent pays for a linked student, the student remains the account holder for the subscription and the
+            payment record, while the parent’s payer details are used to initiate and confirm that transaction. We use
+            those details for payment administration, fraud prevention, support, refunds, and required accounting; we do
+            not use a parent’s payment details to advertise to the student. Optional discount and product emails are
+            controlled by the separate marketing preference and are not required to use the learning service.
           </p>
 
           <h3 className="font-semibold text-slate-900">3. AI and automated processing</h3>
@@ -212,6 +256,7 @@ export const PoliciesPage = () => {
           <h3 className="font-semibold text-slate-900">4. Who may receive information</h3>
           <PolicyList items={[
             'A student’s linked parent or guardian, assigned tutor or teacher, and authorised Examifying administrators may see records needed for their role.',
+            'An authorised parent may see and manage the linked student’s profile, learning progress, subscription, and payment/refund history. The student’s subscription and payment records remain associated with that student, even when a parent paid.',
             'An allocated peer reviewer may see the exercise and answer pages needed to complete peer marking.',
             'Google Firebase services provide authentication, database, file storage, hosting, backend functions, and push notifications.',
             'Resend delivers account, payment, tutor-assignment, and successful exercise-generation emails. It receives the recipient email address and the message details needed to deliver each notification. Discount-offer emails are sent only when the recipient has opted in to marketing email.',
@@ -240,8 +285,10 @@ export const PoliciesPage = () => {
           <p className="text-slate-600">
             The current in-app account deletion control removes the Firebase sign-in account and top-level profile, but
             does not automatically cascade through every nested learning, assignment, payment, notification, or uploaded
-            file record. To request access to, correction of, or deletion of related records, email the privacy contact.
-            We will verify the requester and handle the request under POPIA, including any lawful retention requirement.
+            file record. A parent-created learner profile without a student sign-in is not removed by deleting the parent’s
+            sign-in account. To request access to, correction of, or deletion of linked student or parent-created profile
+            records, email the privacy contact. We will verify the requester’s identity and authority and handle the
+            request under POPIA, including any lawful retention requirement.
           </p>
 
           <h3 className="font-semibold text-slate-900">7. Security and security compromises</h3>
@@ -303,6 +350,7 @@ export const PoliciesPage = () => {
 
           <p className="text-sm text-slate-500">
             Read the <a className={externalLinkClass} href="https://www.justice.gov.za/legislation/acts/2013-004.pdf" target="_blank" rel="noreferrer">Protection of Personal Information Act</a>,
+            {' '}<a className={externalLinkClass} href="https://inforegulator.org.za/guidance-notes/" target="_blank" rel="noreferrer">Information Regulator guidance</a>,
             {' '}<a className={externalLinkClass} href="https://firebase.google.com/support/privacy/" target="_blank" rel="noreferrer">Firebase privacy information</a>,
             {' '}<a className={externalLinkClass} href="https://paystack.com/za/terms" target="_blank" rel="noreferrer">Paystack terms and privacy information</a>, and
             {' '}<a className={externalLinkClass} href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noreferrer">Gemini API terms</a>.

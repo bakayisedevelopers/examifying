@@ -22,6 +22,7 @@ const StudentPeerReviewsPage = lazyNamed(() => import('../pages/student/StudentP
 const StudentBillingPage = lazyNamed(() => import('../pages/student/StudentBillingPage'), 'StudentBillingPage');
 const StudentOnboardingPage = lazyNamed(() => import('../pages/onboarding/StudentOnboardingPage'), 'StudentOnboardingPage');
 const TutorOnboardingPage = lazyNamed(() => import('../pages/onboarding/TutorOnboardingPage'), 'TutorOnboardingPage');
+const GoogleAccountSetupPage = lazyNamed(() => import('../pages/onboarding/GoogleAccountSetupPage'), 'GoogleAccountSetupPage');
 const StudentProfilePage = lazyNamed(() => import('../pages/student/StudentProfilePage'), 'StudentProfilePage');
 const TutorDashboardPage = lazyNamed(() => import('../pages/tutor/TutorDashboardPage'), 'TutorDashboardPage');
 const TutorStudentsPage = lazyNamed(() => import('../pages/tutor/TutorStudentsPage'), 'TutorStudentsPage');
@@ -75,6 +76,7 @@ export const AppRoutes = () => {
     <Route path="/papers/:paperId" element={<PaperReaderPage />} />
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.STUDENT]} />}>
+      <Route path="/student/account-setup" element={<GoogleAccountSetupPage role={ROLES.STUDENT} />} />
       <Route path="/student/onboarding" element={<StudentOnboardingPage />} />
       <Route path="/student" element={<StudentDashboardPage />} />
       <Route path="/student/billing" element={<StudentBillingPage />} />
@@ -128,6 +130,7 @@ export const AppRoutes = () => {
     </Route>
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
+      <Route path="/tutor/account-setup" element={<GoogleAccountSetupPage role={ROLES.TUTOR} />} />
       <Route path="/tutor/onboarding" element={<TutorOnboardingPage role={ROLES.TUTOR} />} />
       <Route path="/tutor" element={<TutorExercisesPage />} />
       <Route path="/tutor/students" element={<TutorDashboardPage />} />
@@ -153,6 +156,7 @@ export const AppRoutes = () => {
     </Route>
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
+      <Route path="/teacher/account-setup" element={<GoogleAccountSetupPage role="teacher" />} />
       <Route path="/teacher/onboarding" element={<TutorOnboardingPage role="teacher" />} />
       <Route path="/teacher" element={<TutorExercisesPage />} />
       <Route path="/teacher/students" element={<TutorDashboardPage />} />

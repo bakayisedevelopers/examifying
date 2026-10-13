@@ -56,16 +56,16 @@ export const MultiSelectDropdown = ({
     const checked = selectedValues.includes(choice.value);
     const atLimit = !checked && selectedValues.length >= maxSelections;
     return (
-      <label key={choice.value} className={`flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${checked ? 'bg-lime-50 text-slate-900' : 'text-slate-700 hover:bg-slate-50'} ${atLimit ? 'cursor-not-allowed opacity-50' : ''}`}>
+      <label key={choice.value} className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition ${checked ? 'border-lime-400/30 bg-lime-400/15 font-semibold text-lime-300 shadow-[0_0_15px_rgba(163,230,53,0.15)]' : 'border-transparent text-slate-200 hover:bg-slate-800/80 hover:text-slate-100'} ${atLimit ? 'cursor-not-allowed opacity-50' : ''}`}>
         <input
           type="checkbox"
           checked={checked}
           onChange={() => toggleChoice(choice.value)}
           disabled={disabled || atLimit}
-          className="h-4 w-4 rounded border-slate-400 accent-lime-600"
+          className="h-4 w-4 rounded border-slate-500 accent-lime-400"
         />
         <span className="min-w-0 flex-1">{choice.label}</span>
-        {checked ? <Check className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" /> : null}
+        {checked ? <Check className="h-4 w-4 shrink-0 text-lime-300" aria-hidden="true" /> : null}
       </label>
     );
   };
@@ -88,17 +88,17 @@ export const MultiSelectDropdown = ({
         <ChevronDown className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
       </button>
       {isOpen ? (
-        <div id={panelId} className="absolute z-30 mt-2 w-full min-w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+        <div id={panelId} className="absolute z-30 mt-2 w-full min-w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-xl shadow-black/40">
           <div className="max-h-64 overflow-y-auto p-2">
-            {!choices.length ? <p className="px-3 py-4 text-sm text-slate-500">{emptyMessage}</p> : [...groupedChoices.entries()].map(([group, items]) => (
+            {!choices.length ? <p className="px-3 py-4 text-sm text-slate-400">{emptyMessage}</p> : [...groupedChoices.entries()].map(([group, items]) => (
               <div key={group || 'ungrouped'} className="space-y-1">
-                {group ? <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">{group}</p> : null}
+                {group ? <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">{group}</p> : null}
                 {items.map(renderChoice)}
               </div>
             ))}
           </div>
-          <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-3 py-2.5">
-            {Number.isFinite(maxSelections) ? <span className="text-xs text-slate-500">{selectedValues.length} of {maxSelections} allowed</span> : <span className="text-xs text-slate-500">{selectedValues.length} selected</span>}
+          <div className="flex items-center justify-between gap-3 border-t border-slate-800 bg-slate-900 px-3 py-2.5">
+            {Number.isFinite(maxSelections) ? <span className="text-xs text-slate-300">{selectedValues.length} of {maxSelections} allowed</span> : <span className="text-xs text-slate-300">{selectedValues.length} selected</span>}
             <button type="button" className="btn-primary px-4 py-2 text-sm" onClick={() => setIsOpen(false)}>Done</button>
           </div>
         </div>

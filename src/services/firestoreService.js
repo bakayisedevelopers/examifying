@@ -52,7 +52,7 @@ import { buildLessonTopicScores } from './lessonPersistence';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
 import { queryClient } from '../lib/queryClient';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
-import { mergeParentStudentSubscriptionSummary } from '../utils/parentStudentSummary.js';
+import { mergeParentStudentSubscriptionSummary, summarizeParentStudentProgress } from '../utils/parentStudentSummary.js';
 
 const getDoc = (...args) => trackFirestoreRead('getDoc', () => firebaseGetDoc(...args));
 const getDocs = (...args) => trackFirestoreRead('getDocs', () => firebaseGetDocs(...args));
@@ -1553,20 +1553,38 @@ export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT, 
 export const getParentStudentSummary = async (student, subject = DEFAULT_SUBJECT) => {
   if (!student?.uid) return { ...getEffectiveSubscriptionState(), completedLessonsCount: 0, todayExercise: null };
   const subscription = await getStudentSubscriptionState(student);
-  const access = await getStudentEntitlementState(student, subject, null, subscription);
-  const episodes = await getActiveSubjectEpisodesForStudent(student.uid);
-  const [todayExerciseGroups, completedLessonGroups] = await Promise.all([
-    Promise.all(episodes.map((episode) => getTodayExercise(student.uid, episode.subjectKey || subject, episode))),
-    Promise.all(episodes.map((episode) => getCompletedLessons(
+  let episodes = [];
+  let episodeLookupUnavailable = false;
+  try {
+    episodes = await getActiveSubjectEpisodesForStudent(student.uid);
+  } catch {
+    episodeLookupUnavailable = true;
+  }
+
+  const [todayExerciseResults, completedLessonResults] = await Promise.all([
+    Promise.allSettled(episodes.map((episode) => getTodayExercise(student.uid, episode.subjectKey || subject, episode))),
+    Promise.allSettled(episodes.map((episode) => getCompletedLessons(
       student.uid,
       episode.subjectKey || subject,
       episode.id,
       episode,
     ))),
   ]);
-  return mergeParentStudentSubscriptionSummary(access, subscription, {
-    todayExercise: todayExerciseGroups.flat().sort((left, right) => String(left.subject ?? '').localeCompare(String(right.subject ?? '')))[0] ?? null,
-    completedLessonsCount: completedLessonGroups.flat().length,
+  const progress = summarizeParentStudentProgress({ todayExerciseResults, completedLessonResults });
+  const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
+  const subjectEpisode = episodes.find((episode) => (normalizeEligibleSubject(episode.subjectKey) ?? episode.subjectKey) === normalizedSubject) ?? null;
+  const subjectAccess = {
+    ...subscription,
+    subjectEpisode,
+    subjectInstanceId: subjectEpisode?.id ?? null,
+    subjectNotIncluded: subscription.paidSubscriptionActive === true && !subjectEpisode,
+    paymentRequired: subscription.paymentCompleted !== true,
+  };
+
+  return mergeParentStudentSubscriptionSummary(subjectAccess, subscription, {
+    ...progress,
+    todayExerciseUnavailable: progress.todayExerciseUnavailable || episodeLookupUnavailable,
+    completedLessonsUnavailable: progress.completedLessonsUnavailable || episodeLookupUnavailable,
   });
 };
 

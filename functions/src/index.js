@@ -13,6 +13,7 @@ export {
   reconcileUnfinalizedPaystackPaymentTask,
   reconcileUnfinalizedPaystackPayments,
   getAdminAuthorizationRefundIssues,
+  getAdminPaymentTransactions,
   getStudentSavedPaymentMethods,
   chargeStoredAuthorization,
   manageStudentSubscription,

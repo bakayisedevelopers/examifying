@@ -98,49 +98,56 @@ export const ParentDashboardPage = () => {
   useScreenLoadMetrics('Parent dashboard', 'parent', studentsLoaded);
 
   const loadStudents = useCallback(async () => {
-    if (!profile?.uid) {
-      setStudentsLoaded(true);
-      return [];
-    }
-    setStudentsLoaded(false);
+    if (!profile?.uid) return [];
+    let parentStudents;
     try {
-      const parentStudents = await getStudentsForParent(profile.uid);
-      
-      const enrichedStudents = await Promise.all(
-        parentStudents.map(async (student) => {
-          const accessState = await getParentStudentSummary(student);
-          return {
-            ...student,
-            completedLessonsCount: accessState.completedLessonsCount,
-            todayExercise: accessState.todayExercise,
-            paymentCompleted: accessState.paymentCompleted, 
-            subscriptionPlanId: accessState.subscriptionPlanId,
-            subscriptionPlanName: accessState.subscriptionPlanName,
-            subscriptionStatus: accessState.subscriptionStatus,
-            subscriptionBillingPeriod: accessState.subscriptionBillingPeriod,
-            subscriptionSubjectCount: accessState.subscriptionSubjectCount,
-            subscriptionRenewalDate: accessState.subscriptionRenewalDate,
-            requiresSubscriptionSelection: accessState.requiresSubscriptionSelection,
-            autoRenew: accessState.autoRenew,
-            cancelAtPeriodEnd: accessState.cancelAtPeriodEnd,
-            pendingPlan: accessState.pendingPlan,
-            pendingPlanReference: accessState.pendingPlanReference,
-            graceEndsAt: accessState.graceEndsAt,
-            renewalAttemptCount: accessState.renewalAttemptCount,
-            nextRenewalAttemptAt: accessState.nextRenewalAttemptAt,
-            manualPaymentRequired: accessState.manualPaymentRequired,
-            lastChargeStatus: accessState.lastChargeStatus,
-          };
-        })
-      );
-      
-      setStudents(enrichedStudents);
-      return enrichedStudents;
-    } catch {
-      return [];
-    } finally {
+      parentStudents = await getStudentsForParent(profile.uid);
+    } catch (loadError) {
+      setStatus(loadError?.message || 'Could not load linked students. Please try again.');
       setStudentsLoaded(true);
+      return [];
     }
+
+    const fallbackStudents = parentStudents.map((student) => ({
+      ...student,
+      summaryUnavailable: true,
+      completedLessonsCount: Number(student.completedLessonsCount || 0),
+      todayExercise: null,
+      paymentCompleted: student.paymentCompleted === true,
+      subscriptionPlanId: student.subscriptionPlanId || 'free',
+      subscriptionPlanName: student.subscriptionPlanName || 'Free',
+      subscriptionStatus: student.subscriptionStatus || 'pending',
+      subscriptionBillingPeriod: student.subscriptionBillingPeriod || null,
+      subscriptionSubjectCount: Number(student.subscriptionSubjectCount || 0),
+      subscriptionRenewalDate: student.subscriptionRenewalDate || null,
+      requiresSubscriptionSelection: student.requiresSubscriptionSelection ?? student.paymentCompleted !== true,
+      autoRenew: student.autoRenew === true,
+      cancelAtPeriodEnd: student.cancelAtPeriodEnd === true,
+      pendingPlan: student.pendingPlan || null,
+      pendingPlanReference: student.pendingPlanReference || null,
+      graceEndsAt: student.graceEndsAt || null,
+      renewalAttemptCount: Number(student.renewalAttemptCount || 0),
+      nextRenewalAttemptAt: student.nextRenewalAttemptAt || null,
+      manualPaymentRequired: student.manualPaymentRequired === true,
+      lastChargeStatus: student.lastChargeStatus || null,
+    }));
+    setStudents(fallbackStudents);
+    setStudentsLoaded(true);
+
+    const enrichedStudents = await Promise.all(parentStudents.map(async (student, index) => {
+      try {
+        const accessState = await getParentStudentSummary(student);
+        return {
+          ...fallbackStudents[index],
+          ...accessState,
+          summaryUnavailable: false,
+        };
+      } catch {
+        return fallbackStudents[index];
+      }
+    }));
+    setStudents(enrichedStudents);
+    return enrichedStudents;
   }, [profile?.uid]);
 
   const updateGroupSelection = useCallback((selection) => {
@@ -194,8 +201,10 @@ export const ParentDashboardPage = () => {
   }, [loadStudents, location.pathname, profile?.uid]);
 
   useEffect(() => {
-    loadStudents();
-  }, [loadStudents]);
+    if (!profile?.uid) return;
+    setStudentsLoaded(false);
+    void loadStudents();
+  }, [loadStudents, profile?.uid]);
 
   useEffect(() => {
     const code = new URLSearchParams(location.search).get('discountCode')?.trim().toUpperCase() || '';
@@ -617,10 +626,11 @@ export const ParentDashboardPage = () => {
                   <>
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Progress & Status</h4>
                     <div className="space-y-4 mb-6">
+                      {student.summaryUnavailable ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Student progress and subscription details could not be loaded. The linked student is still available; retry the status check below.</p> : null}
                       <div className="flex items-center gap-3">
                         <Activity className="w-5 h-5 text-brand-600" />
                         <div>
-                          <p className="text-sm font-medium text-slate-900">{student.completedLessonsCount} Completed Topics</p>
+                          <p className="text-sm font-medium text-slate-900">{student.summaryUnavailable ? 'Progress unavailable' : `${student.completedLessonsCount} Completed Topics`}</p>
                           <p className="text-xs text-slate-500">Starting Mark: {student.previousYearMark || 0}%</p>
                         </div>
                       </div>
@@ -629,7 +639,7 @@ export const ParentDashboardPage = () => {
                         <Calendar className={`w-5 h-5 ${student.todayExercise ? 'text-emerald-600' : 'text-slate-400'}`} />
                         <div>
                           <p className="text-sm font-medium text-slate-900">
-                            {student.todayExercise ? 'Today\'s Exercise Available' : 'No Exercise Today'}
+                            {student.summaryUnavailable ? 'Exercise status unavailable' : student.todayExercise ? 'Today\'s Exercise Available' : 'No Exercise Today'}
                           </p>
                           {student.todayExercise && (
                             <p className="text-xs text-slate-500 truncate max-w-[200px]" title={student.todayExercise.title}>
@@ -646,12 +656,14 @@ export const ParentDashboardPage = () => {
                   <Link to={`/parent/kids/${student.uid}`} className="btn-secondary mb-4 inline-flex w-full items-center justify-center">Open student workspace</Link>
                   <div className="flex justify-between items-center mb-4 text-sm">
                     <span className="text-slate-500">Subscription Status</span>
-                    <span className={`font-semibold px-2 py-1 rounded-md text-xs ${student.subscriptionStatus === 'past_due' ? 'bg-amber-50 text-amber-700' : student.paymentCompleted ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                      {student.subscriptionStatus === 'past_due' ? 'Payment due' : student.cancelAtPeriodEnd ? 'Ends this period' : student.paymentCompleted ? 'Active' : 'Free'}
+                    <span className={`font-semibold px-2 py-1 rounded-md text-xs ${student.summaryUnavailable ? 'bg-slate-100 text-slate-600' : student.subscriptionStatus === 'past_due' ? 'bg-amber-50 text-amber-700' : student.paymentCompleted ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                      {student.summaryUnavailable ? 'Status unavailable' : student.subscriptionStatus === 'past_due' ? 'Payment due' : student.cancelAtPeriodEnd ? 'Ends this period' : student.paymentCompleted ? 'Active' : 'Free'}
                     </span>
                   </div>
 
-                  {!student.paymentCompleted ? (
+                  {student.summaryUnavailable ? (
+                    <button className="btn-secondary w-full" onClick={() => void loadStudents()} disabled={loading}>Retry student status</button>
+                  ) : !student.paymentCompleted ? (
                     <button 
                       className="btn-primary w-full" 
                       onClick={() => setSubscriptionStudent(student)}

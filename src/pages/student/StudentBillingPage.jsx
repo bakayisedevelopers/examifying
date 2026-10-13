@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
+import { StudentPaymentHistory } from '../../components/billing/StudentPaymentHistory';
 import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
@@ -280,6 +281,7 @@ export const StudentBillingPage = () => {
       <div className="mt-5 space-y-3">
         {status ? <div role="status" className="panel p-4 text-sm text-slate-700">{status}</div> : null}
       </div>
+      {profile?.uid ? <div className="mt-5"><StudentPaymentHistory studentId={profile.uid} /></div> : null}
       <OperationStatusOverlay
         state={paymentVerificationState}
         operationName="Payment verification"

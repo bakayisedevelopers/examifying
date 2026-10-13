@@ -1,5 +1,6 @@
 import { httpsCallable } from 'firebase/functions';
-import { functions, isFirebaseConfigured } from '../firebase/config';
+import { collection, getDocs } from 'firebase/firestore';
+import { db, functions, isFirebaseConfigured } from '../firebase/config';
 import { calculateSubscriptionQuote } from '../utils/subscriptionPlans';
 import { trackDataRequest } from './performanceTelemetry';
 
@@ -65,6 +66,32 @@ export const getAdminAuthorizationRefundIssues = async () => {
   if (!isFirebaseConfigured) return { issues: [] };
   return trackDataRequest('Admin authorization refunds', async () => {
     const callable = httpsCallable(functions, 'getAdminAuthorizationRefundIssues');
+    const response = await callable();
+    return response.data;
+  });
+};
+
+export const getStudentPaymentTransactions = async (studentId) => {
+  if (!studentId || !isFirebaseConfigured || !db) return { transactions: [] };
+  return trackDataRequest('Student payment transactions', async () => {
+    const snapshot = await getDocs(collection(db, 'users', studentId, 'payments'));
+    const transactions = snapshot.docs.map((paymentDoc) => ({
+      ...paymentDoc.data(),
+      id: paymentDoc.id,
+      studentId,
+    }));
+    transactions.sort((left, right) => {
+      const timestamp = (value) => value?.toDate?.()?.getTime?.() ?? new Date(value || 0).getTime();
+      return timestamp(right.createdAt || right.paidAt) - timestamp(left.createdAt || left.paidAt);
+    });
+    return { transactions };
+  });
+};
+
+export const getAdminPaymentTransactions = async () => {
+  if (!isFirebaseConfigured) return { transactions: [] };
+  return trackDataRequest('Admin payment transactions', async () => {
+    const callable = httpsCallable(functions, 'getAdminPaymentTransactions');
     const response = await callable();
     return response.data;
   });

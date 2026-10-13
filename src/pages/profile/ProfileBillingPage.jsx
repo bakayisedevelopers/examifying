@@ -9,6 +9,7 @@ import { ROLES } from '../../lib/constants';
 import { getTutorBillingSummary } from '../../services/firestoreService';
 import { SubscriptionLifecyclePanel } from '../../components/billing/SubscriptionLifecyclePanel';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
+import { StudentPaymentHistory } from '../../components/billing/StudentPaymentHistory';
 import { initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
 import { refreshStudentSubscriptionState, setStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 
@@ -151,6 +152,7 @@ export const ProfileBillingPage = ({ role }) => {
           initialDiscountCode={new URLSearchParams(location.search).get('discountCode') || subscriptionState.pendingPlan?.discountCode || ''}
         /> : null}
         {subscriptionStatus ? <div role="status" className="panel mt-5 p-4 text-sm">{subscriptionStatus}</div> : null}
+        {isParentWorkspace ? <div className="mt-5"><StudentPaymentHistory studentId={profile.uid} /></div> : null}
       </AppShell>
     );
   }

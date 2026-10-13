@@ -2251,6 +2251,102 @@ export const getAdminAuthorizationRefundIssues = onCall({ cpu: 'gcf_gen1' }, asy
   return { issues };
 });
 
+export const getAdminPaymentTransactions = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const startedAt = Date.now();
+  const metrics = { firestoreReadOperations: 0, firestoreDocumentsReturned: 0 };
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in as an admin to view payment transactions.');
+  const db = getDb();
+  metrics.firestoreReadOperations += 1;
+  const adminSnapshot = await db.collection('users').doc(uid).get();
+  metrics.firestoreDocumentsReturned += adminSnapshot.exists ? 1 : 0;
+  if (!adminSnapshot.exists || adminSnapshot.data()?.role !== 'admin') {
+    throw new HttpsError('permission-denied', 'Only an admin can view payment transactions.');
+  }
+
+  metrics.firestoreReadOperations += 1;
+  const paymentSnapshot = await db.collectionGroup('payments').get();
+  metrics.firestoreDocumentsReturned += paymentSnapshot.size;
+  const records = paymentSnapshot.docs.map((snapshot) => {
+    const payment = snapshot.data();
+    const studentId = payment.studentId || snapshot.ref.parent.parent?.id || null;
+    const numberOrNull = (value) => value === null || value === undefined || value === ''
+      ? null
+      : (Number.isFinite(Number(value)) ? Number(value) : null);
+    const asIso = (value) => value?.toDate?.()?.toISOString?.()
+      ?? (value instanceof Date ? value.toISOString() : (typeof value === 'string' ? value : null));
+    return {
+      id: snapshot.id,
+      reference: payment.reference || snapshot.id,
+      studentId,
+      payerId: payment.payerId || null,
+      parentId: payment.parentId || null,
+      email: payment.email || null,
+      status: payment.status || 'unknown',
+      currency: payment.currency || 'ZAR',
+      amount: numberOrNull(payment.amount),
+      subscriptionAmountDue: numberOrNull(payment.subscriptionAmountDue),
+      authorizationOnly: payment.authorizationOnly === true,
+      authorizationChargeAmount: numberOrNull(payment.authorizationChargeAmount),
+      authorizationRefundStatus: payment.authorizationRefundStatus || null,
+      authorizationRefundProviderStatus: payment.authorizationRefundProviderStatus || null,
+      authorizationRefundId: payment.authorizationRefundId || null,
+      authorizationRefundAmount: numberOrNull(payment.authorizationRefundAmount),
+      authorizationRefundCurrency: payment.authorizationRefundCurrency || null,
+      authorizationRefundAttempts: Number(payment.authorizationRefundAttempts || 0),
+      authorizationRefundError: typeof payment.authorizationRefundError === 'string'
+        ? payment.authorizationRefundError.slice(0, 500)
+        : null,
+      authorizationRefundExpectedAt: asIso(payment.authorizationRefundExpectedAt),
+      authorizationRefundUpdatedAt: asIso(payment.authorizationRefundUpdatedAt),
+      createdAt: asIso(payment.createdAt),
+      updatedAt: asIso(payment.updatedAt),
+      paidAt: asIso(payment.paidAt),
+      planId: payment.planId || null,
+      planName: payment.planName || null,
+      billingPeriod: payment.billingPeriod || null,
+      subjectCount: numberOrNull(payment.subjectCount),
+      recurring: payment.recurring === true,
+      attemptNumber: numberOrNull(payment.attemptNumber),
+      discountCode: payment.discountCode || null,
+      gatewayTransactionId: payment.gatewayTransactionId || null,
+    };
+  }).filter((record) => record.studentId);
+
+  const accountIds = [...new Set(records.flatMap((record) => [record.studentId, record.payerId]).filter(Boolean))];
+  const accounts = new Map();
+  for (let offset = 0; offset < accountIds.length; offset += 250) {
+    const refs = accountIds.slice(offset, offset + 250).map((accountId) => db.collection('users').doc(accountId));
+    if (!refs.length) continue;
+    metrics.firestoreReadOperations += 1;
+    const snapshots = await db.getAll(...refs);
+    metrics.firestoreDocumentsReturned += snapshots.filter((snapshot) => snapshot.exists).length;
+    for (const snapshot of snapshots) {
+      if (!snapshot.exists) continue;
+      const account = snapshot.data();
+      accounts.set(snapshot.id, {
+        name: account.displayName || account.name || account.fullName || null,
+        email: account.email || null,
+      });
+    }
+  }
+
+  const transactions = records.map((record) => ({
+    ...record,
+    studentName: accounts.get(record.studentId)?.name || null,
+    studentEmail: accounts.get(record.studentId)?.email || record.email,
+    payerName: accounts.get(record.payerId)?.name || null,
+    payerEmail: accounts.get(record.payerId)?.email || null,
+  })).sort((left, right) => Date.parse(right.createdAt || right.paidAt || '') - Date.parse(left.createdAt || left.paidAt || ''));
+
+  logger.info('Admin payment transactions loaded', {
+    durationMs: Date.now() - startedAt,
+    ...metrics,
+    transactionsReturned: transactions.length,
+  });
+  return { transactions };
+});
+
 export const chargeAuthorizationForSubscription = async ({
   studentId,
   email,

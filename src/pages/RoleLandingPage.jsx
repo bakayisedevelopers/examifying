@@ -55,7 +55,7 @@ const formatRand = (amount) => new Intl.NumberFormat('en-ZA', {
 }).format(amount);
 
 const ParentIndicativePricing = () => {
-  const subjectCounts = [1, 2, 3, 4, 5];
+  const subjectCounts = Array.from({ length: 20 }, (_, index) => index + 1);
   const plans = [
     { id: 'circle', name: 'Circle', extra: 'R49 for each additional subject' },
     { id: 'personalized', name: 'Personalized', extra: 'R599 for each additional subject' },

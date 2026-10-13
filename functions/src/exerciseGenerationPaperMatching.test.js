@@ -46,6 +46,21 @@ test('paper region is a preference and never excludes an otherwise matching pape
   assert.equal(ordered.length, papers.length);
 });
 
+test('Life Sciences papers in grade-label variants and other provinces meet the two-paper threshold', () => {
+  const papers = [
+    { id: 'biology-grade-10-national', subject: 'Biology', grade: 'G10', region: 'National', analysisStatus: 'Analyzed', questions: [{ questionReference: '1' }] },
+    { id: 'life-science-grade-10-ec', subject: 'Life Science', grade: 'Grade 10', region: 'Eastern Cape', analysisStatus: 'Analyzed', questions: [{ questionReference: '1' }] },
+  ];
+  const matching = sortExerciseGenerationPapersByRegionPreference(
+    papers.filter((paper) => isAnalyzedExerciseSourcePaper(paper)
+      && matchesExerciseGenerationPaper(paper, { subject: 'Life Sciences', grade: 'Grade 10' })),
+    'Gauteng',
+  );
+
+  assert.equal(matching.length, 2);
+  assert.deepEqual(matching.map((paper) => paper.id), ['biology-grade-10-national', 'life-science-grade-10-ec']);
+});
+
 test('only fully analyzed papers with usable question records qualify', () => {
   const basePaper = { analysisStatus: 'Analyzed', availableForGeneration: true, questions: [{ questionReference: '1' }] };
   assert.equal(isAnalyzedExerciseSourcePaper(basePaper), true);

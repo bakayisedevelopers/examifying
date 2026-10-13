@@ -53,6 +53,13 @@ import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './
 import { queryClient } from '../lib/queryClient';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
 import { mergeParentStudentSubscriptionSummary, summarizeParentStudentProgress } from '../utils/parentStudentSummary.js';
+import {
+  getExerciseGenerationSubjectQueryValues,
+  isAnalyzedExerciseSourcePaper,
+  matchesExerciseGenerationPaper,
+  normalizeExerciseGenerationSubject,
+  sortExerciseGenerationPapersByRegionPreference,
+} from '../../functions/src/exerciseGenerationPaperMatching.js';
 
 const getDoc = (...args) => trackFirestoreRead('getDoc', () => firebaseGetDoc(...args));
 const getDocs = (...args) => trackFirestoreRead('getDocs', () => firebaseGetDocs(...args));
@@ -411,13 +418,11 @@ const buildStudentGenerationStatus = ({
   };
 };
 
-const filterQuestionPapers = (papers, { grade, region, subject = DEFAULT_SUBJECT, allowNational = true }) =>
-  papers.filter((paper) => {
-    const subjectMatches = paper.subject === subject;
-    const gradeMatches = !paper.grade || !grade || paper.grade === grade;
-    const regionMatches = paper.region === region || (allowNational && paper.region === 'National');
-    return subjectMatches && gradeMatches && regionMatches;
-  });
+const filterQuestionPapers = (papers, { grade, region, subject = DEFAULT_SUBJECT }) =>
+  sortExerciseGenerationPapersByRegionPreference(
+    papers.filter((paper) => matchesExerciseGenerationPaper(paper, { subject, grade })),
+    region,
+  );
 
 const getLatestTutorReportFromList = (studentId, reports = []) =>
   [...reports]
@@ -2633,21 +2638,31 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
 
 export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJECT } = {}) => {
   if (!isFirebaseConfigured) {
-    return filterQuestionPapers(mockQuestionPapers, { grade, region, subject, allowNational: true });
+    return filterQuestionPapers(mockQuestionPapers, { grade, region, subject });
   }
 
   ensureDb();
+  const subjectValues = getExerciseGenerationSubjectQueryValues(subject);
+  if (!subjectValues.length) return [];
+  const subjectValueGroups = Array.from({ length: Math.ceil(subjectValues.length / 30) }, (_, index) =>
+    subjectValues.slice(index * 30, (index + 1) * 30));
+  const canonicalSubject = normalizeExerciseGenerationSubject(subject) || subject;
   const paperRows = await queryClient.fetchQuery({
-    queryKey: ['reference', 'question-papers', subject],
+    queryKey: ['reference', 'question-papers', canonicalSubject],
     queryFn: async () => {
-      const snapshot = await getDocs(query(collection(db, collections.questionPapers), where('subject', '==', subject)));
-      return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      const snapshots = await Promise.all(subjectValueGroups.map((values) =>
+        getDocs(query(collection(db, collections.questionPapers), where('subject', 'in', values)))));
+      const rowsById = new Map();
+      snapshots.flatMap((snapshot) => snapshot.docs).forEach((item) => {
+        if (!rowsById.has(item.id)) rowsById.set(item.id, { id: item.id, ...item.data() });
+      });
+      return [...rowsById.values()];
     },
     staleTime: 10_000,
   });
   return filterQuestionPapers(
-    paperRows.filter(isAnalyzedQuestionPaper),
-    { grade, region, subject, allowNational: true },
+    paperRows.filter(isAnalyzedExerciseSourcePaper),
+    { grade, region, subject },
   );
 };
 

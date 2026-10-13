@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag, ClipboardList, MessageSquare } from 'lucide-react';
+import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
@@ -68,9 +68,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     { to: '/parent', label: 'Family Home', icon: LayoutDashboard },
     { to: '/parent/kids', label: 'Kids', icon: Users },
     { to: `${childBasePath}/home`, label: 'Student Home', icon: LayoutDashboard },
-    { to: `${childBasePath}/exercises`, label: 'Exercises', icon: ClipboardList },
     { to: `${childBasePath}/lessons`, label: 'Lessons', icon: GraduationCap },
-    { to: `${childBasePath}/peer-reviews`, label: 'Peer marking', icon: MessageSquare },
     { to: `${childBasePath}/papers`, label: 'Past papers', icon: BookOpen },
     { to: `${childBasePath}/subscription`, label: 'Subscription', icon: CreditCard },
     { to: `${childBasePath}/profile/details`, label: 'Personal details', icon: Users },
@@ -102,6 +100,27 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     ? (subscriptionState?.subscriptionPlanName || 'Student')
     : ({ teacher: 'Teacher', tutor: 'Tutor', admin: 'Admin', parent: 'Parent' }[effectiveRole] || 'Account');
   const navigate = useNavigate();
+  const renderNavigationLink = ({ to, label, icon: Icon }) => (
+    <NavLink
+      key={to}
+      to={to}
+      end={to === `/${effectiveRole}` || to === '/parent/kids' || (isParentWorkspace && to === `${childBasePath}/home`)}
+      onClick={() => setIsMobileMenuOpen(false)}
+      onMouseEnter={() => warmNavigationRoute(to)}
+      onFocus={() => warmNavigationRoute(to)}
+      onPointerDown={() => warmNavigationRoute(to)}
+      className={({ isActive }) =>
+        `flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition ${
+          isActive
+            ? 'bg-lime-400/15 text-lime-400 border border-lime-400/30 font-semibold shadow-[0_0_15px_rgba(163,230,53,0.15)]'
+            : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100'
+        }`
+      }
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </NavLink>
+  );
   const handleLogout = () => runOperation({ operationName: 'Signing out', successMessage: 'You have been signed out.', autoDismissMs: 650 }, () => onLogout?.()).catch(() => {});
   const handleBack = () => {
     if (onboardingLocked) {
@@ -196,27 +215,13 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
             </span>
           </Link>
           <nav className="space-y-2">
-            {navigation.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={to === `/${effectiveRole}` || to === '/parent/kids' || (isParentWorkspace && to === `${childBasePath}/home`)}
-                onClick={() => setIsMobileMenuOpen(false)}
-                onMouseEnter={() => warmNavigationRoute(to)}
-                onFocus={() => warmNavigationRoute(to)}
-                onPointerDown={() => warmNavigationRoute(to)}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition ${
-                    isActive
-                      ? 'bg-lime-400/15 text-lime-400 border border-lime-400/30 font-semibold shadow-[0_0_15px_rgba(163,230,53,0.15)]'
-                      : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100'
-                  }`
-                }
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-              </NavLink>
-            ))}
+            {isParentWorkspace ? (
+              <>
+                <div className="space-y-2">{navigation.slice(0, 2).map(renderNavigationLink)}</div>
+                <div className="my-3 border-t border-slate-800" aria-hidden="true" />
+                <div className="space-y-2">{navigation.slice(2).map(renderNavigationLink)}</div>
+              </>
+            ) : navigation.map(renderNavigationLink)}
           </nav>
           <div className="mt-auto hidden rounded-2xl border border-slate-800 bg-slate-950/80 p-4 lg:block">
             <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Signed in</p>

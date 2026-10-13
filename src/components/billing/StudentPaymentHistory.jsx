@@ -32,7 +32,7 @@ export const StudentPaymentHistory = ({ studentId }) => {
         <p className="mt-1 text-sm text-slate-600">Payments made for this student and refunds returned to the original card.</p>
       </div>
       {error ? <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p> : null}
-      {loading ? <LoadingState label="Loading payment history…" /> : <PaymentTransactionList rows={buildPaymentLedgerRows(transactions)} />}
+      {loading ? <LoadingState label="Loading payment history…" /> : <PaymentTransactionList rows={buildPaymentLedgerRows(transactions)} layout="table" />}
     </section>
   );
 };

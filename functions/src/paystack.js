@@ -9,6 +9,7 @@ import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 import { getPaystackConfig } from './config.js';
 import { calculateSubscriptionQuote } from './subscriptionPricing.js';
 import { getNextActualSubscriptionCharge, needsAuthorizationForZeroCostCheckout } from './paystackPricingCore.js';
+import { getPaystackCustomerDetails } from './paystackCustomerDetails.js';
 import { getActiveSubjectLessonQuotaUpdates } from './lessonEntitlements.js';
 import { applyRecurringDiscount, applyScheduledDiscount, calculateDiscount, calculateDiscountEndAt, normalizeDiscountCode } from './discountCodesCore.js';
 import { getDiscountQuoteForCheckout, reserveDiscountRedemption, transitionDiscountRedemptionForPayment } from './discountCodes.js';
@@ -642,7 +643,7 @@ const assertCanManageStudentSubscription = async ({ db, payerId, studentId }) =>
   if (!isStudent && !isParent) {
     throw new HttpsError('permission-denied', 'Only the student or their linked parent can manage this subscription.');
   }
-  return { isParent };
+  return { isParent, payer };
 };
 
 export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (request) => {
@@ -660,11 +661,14 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
     }
 
     const db = getDb();
-    const { isParent } = await assertCanManageStudentSubscription({ db, payerId, studentId });
-    const payerSnapshot = await db.collection('users').doc(payerId).get();
-    const payer = payerSnapshot.data();
+    const { isParent, payer } = await assertCanManageStudentSubscription({ db, payerId, studentId });
     const email = request.auth.token?.email || payer.email;
     if (!email) throw new HttpsError('failed-precondition', 'A billing email is required.');
+    const customer = getPaystackCustomerDetails({
+      profile: payer,
+      authName: request.auth.token?.name,
+      authPhone: request.auth.token?.phone_number,
+    });
 
     const { paystackCallbackUrl: fallbackCallbackUrl } = getPaystackConfig();
     const paystackCallbackUrl = typeof callbackUrl === 'string' && callbackUrl.trim()
@@ -1064,6 +1068,9 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
         method: 'POST',
         payload: {
           email,
+          ...(customer.firstName ? { first_name: customer.firstName } : {}),
+          ...(customer.lastName ? { last_name: customer.lastName } : {}),
+          ...(customer.phone ? { phone: customer.phone } : {}),
           amount: toMinorUnits(transactionAmount),
           currency: 'ZAR',
           reference,
@@ -1071,6 +1078,8 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
           metadata: {
             studentId,
             payerId,
+            ...(customer.fullName ? { payerName: customer.fullName } : {}),
+            ...(customer.phone ? { payerPhone: customer.phone } : {}),
             planId: quote.planId,
             billingPeriod: quote.billingPeriod,
             subjectCount: quote.subjectCount,

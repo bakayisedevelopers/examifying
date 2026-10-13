@@ -24,6 +24,11 @@ export const readablePaymentStatus = (status) => String(status || 'unknown')
   .replaceAll('-', ' ')
   .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
+export const maskPaymentReference = (reference) => {
+  const suffix = String(reference ?? '').trim().slice(-4);
+  return suffix ? `••••${suffix}` : '—';
+};
+
 const getPayerLabel = (payment) => {
   if (payment.payerId && payment.payerId === payment.studentId) {
     return payment.recurring ? 'Student · automatic renewal' : 'Student';

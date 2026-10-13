@@ -1,4 +1,4 @@
-import { formatPaymentAmount, formatPaymentDate, readablePaymentStatus } from '../../utils/paymentTransactions';
+import { formatPaymentAmount, formatPaymentDate, maskPaymentReference, readablePaymentStatus } from '../../utils/paymentTransactions';
 
 const statusColor = (status) => {
   const normalized = String(status || '').toLowerCase();
@@ -8,13 +8,61 @@ const statusColor = (status) => {
   return 'bg-amber-100 text-amber-900';
 };
 
-export const PaymentTransactionList = ({ rows, showStudent = false }) => {
+export const PaymentTransactionList = ({ rows, showStudent = false, layout = 'cards', transparentCards = false }) => {
   if (!rows.length) return <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">No payment transactions have been recorded yet.</p>;
+
+  if (layout === 'table') {
+    return (
+      <div className="panel overflow-hidden p-0">
+        <div className="overflow-x-auto overscroll-x-contain">
+          <table className="min-w-[760px] w-full border-collapse text-left text-sm">
+            <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
+              <tr>
+                <th scope="col" className="px-4 py-3 font-semibold">Transaction</th>
+                <th scope="col" className="px-4 py-3 font-semibold">Reference</th>
+                {showStudent ? <th scope="col" className="px-4 py-3 font-semibold">Student</th> : null}
+                <th scope="col" className="px-4 py-3 font-semibold">Paid by</th>
+                <th scope="col" className="px-4 py-3 font-semibold">Date</th>
+                <th scope="col" className="px-4 py-3 font-semibold">Status</th>
+                <th scope="col" className="px-4 py-3 text-right font-semibold">Amount</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-700/70">
+              {rows.map((row) => {
+                const referenceSuffix = String(row.reference ?? '').trim().slice(-4);
+                return (
+                  <tr key={row.id} className="align-top">
+                    <th scope="row" className="px-4 py-4 text-left font-semibold text-slate-900">
+                      <span>{row.kind === 'refund' ? 'Refund' : 'Payment'} · {row.title}</span>
+                      {row.kind !== 'refund' && row.planDetails ? <span className="mt-1 block text-xs font-normal text-slate-500">{row.planDetails}</span> : null}
+                    </th>
+                    <td className="whitespace-nowrap px-4 py-4 font-mono text-xs text-slate-500" aria-label={referenceSuffix ? `Reference ending ${referenceSuffix}` : 'Reference unavailable'}>
+                      {maskPaymentReference(row.reference)}
+                    </td>
+                    {showStudent ? <td className="px-4 py-4 text-slate-700">{row.studentName}</td> : null}
+                    <td className="px-4 py-4 text-slate-700">{row.payer}</td>
+                    <td className="whitespace-nowrap px-4 py-4 text-slate-500">{formatPaymentDate(row.date)}</td>
+                    <td className="px-4 py-4">
+                      <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${statusColor(row.status)}`}>
+                        {readablePaymentStatus(row.status)}
+                        {row.providerStatus && row.providerStatus !== row.status ? ` · ${readablePaymentStatus(row.providerStatus)}` : ''}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-right font-bold text-slate-950">{formatPaymentAmount(row.amount, row.currency)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
       {rows.map((row) => (
-        <article key={row.id} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+        <article key={row.id} className={`flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center sm:justify-between ${transparentCards ? 'border-slate-700/70 bg-transparent' : 'border-slate-200 bg-white'}`}>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <p className="font-semibold text-slate-900">{row.kind === 'refund' ? 'Refund' : 'Payment'} · {row.title}</p>

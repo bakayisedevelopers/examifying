@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPaymentLedgerRows, readablePaymentStatus } from './paymentTransactions.js';
+import { buildPaymentLedgerRows, maskPaymentReference, readablePaymentStatus } from './paymentTransactions.js';
 
 test('payment history keeps the payer and creates a separate row for its refund', () => {
   const [paymentRow, refundRow] = buildPaymentLedgerRows([{
@@ -46,4 +46,9 @@ test('zero cost and student paid records remain visible without inventing refund
 
 test('payment status labels are readable without changing stored values', () => {
   assert.equal(readablePaymentStatus('pending_initiation'), 'Pending Initiation');
+});
+
+test('payment history reference masking reveals only the final four characters', () => {
+  assert.equal(maskPaymentReference('full-reference-value-123456'), '••••3456');
+  assert.equal(maskPaymentReference(''), '—');
 });

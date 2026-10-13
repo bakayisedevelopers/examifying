@@ -53,7 +53,11 @@ export const TutorExerciseDetailsPage = () => {
           const archivedData = await getTutorAssignmentHistoryData({ tutorId: profile.uid, studentId: result.studentId, periodId, historyContexts: history });
           const archivedExercise = archivedData.exercises.find((item) => item.id === exerciseId);
           if (!archivedExercise) throw new Error('This exercise is not part of the selected assignment period.');
-          setExercise(archivedExercise);
+          const historicalContext = history.find((period) => period.assignmentPeriodId === periodId);
+          setExercise({
+            ...archivedExercise,
+            studentName: historicalContext?.displayName || historicalContext?.name || historicalContext?.email || 'Student',
+          });
           setTopicScores(Object.fromEntries((archivedExercise.topicUnderstandingScores ?? []).map((entry) => [entry.topic, entry.understandingLevel])));
           setCompletedMarkingAssignments([]);
           const archivedTopics = getExerciseTopicNames(archivedExercise);
@@ -70,15 +74,19 @@ export const TutorExerciseDetailsPage = () => {
           return;
         }
         setIsHistorical(false);
-        setExercise(result);
         setStatus('');
         if (profile?.uid) {
           const [contexts, allMarkingAssignments] = await Promise.all([
             getTutorAssignedStudentContexts(profile.uid, result.studentId),
             getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }).catch(() => []),
           ]);
-          const markingAssignments = allMarkingAssignments.filter((item) => markingBelongsToExercise(item, result));
           const selectedContext = contexts.find((context) => context.subject === result.subject) ?? null;
+          const exerciseWithStudent = {
+            ...result,
+            studentName: selectedContext?.displayName || selectedContext?.name || selectedContext?.email || 'Student',
+          };
+          setExercise(exerciseWithStudent);
+          const markingAssignments = allMarkingAssignments.filter((item) => markingBelongsToExercise(item, exerciseWithStudent));
           const scores = await getStudentTopicScoresForTutor({
             tutorId: profile.uid,
             studentId: result.studentId,
@@ -88,20 +96,22 @@ export const TutorExerciseDetailsPage = () => {
           setTopicScores(scores);
           setAccessRole(selectedContext?.accessRole || 'viewer');
           const topicNames = uniqueTopicNames([
-            ...getExerciseTopicNames(result),
+            ...getExerciseTopicNames(exerciseWithStudent),
             ...markingAssignments.flatMap(getPeerMarkingTopicNames),
           ]);
           setCompletedMarkingAssignments(markingAssignments);
           setScoreEntries(await getTopicUnderstandingQuestionScores({
-            studentId: result.studentId,
-            subjectInstanceId: result.subjectInstanceId,
+            studentId: exerciseWithStudent.studentId,
+            subjectInstanceId: exerciseWithStudent.subjectInstanceId,
             topics: topicNames,
             topicIds: [...new Set([
-              ...getQuestionTopicIds(result),
+              ...getQuestionTopicIds(exerciseWithStudent),
               ...markingAssignments.flatMap(getQuestionTopicIds),
             ])],
-            sourceIds: [result.id, ...markingAssignments.flatMap((item) => [item.id, item.assignmentPath])],
+            sourceIds: [exerciseWithStudent.id, ...markingAssignments.flatMap((item) => [item.id, item.assignmentPath])],
           }).catch(() => []));
+        } else {
+          setExercise(result);
         }
       })
       .catch((error) => setStatus(error.message || 'Could not load exercise.'))
@@ -127,12 +137,22 @@ export const TutorExerciseDetailsPage = () => {
   };
 
   return (
-    <AppShell title="Exercise details" subtitle={exercise ? `${exercise.subject} • ${exercise.assignmentDate}` : status} role={role} user={profile} onLogout={logout}>
+    <AppShell title="Exercise details" subtitle={exercise ? `${exercise.studentName || 'Student'} • ${exercise.subject} • ${exercise.assignmentDate}` : status} role={role} user={profile} onLogout={logout}>
       {isLoading ? <LoadingState label="Loading exercise, scores, and marking history…" /> : null}
       {status && !isLoading ? <div className="panel p-5 text-sm text-slate-500">{status}</div> : null}
       {isHistorical ? <div className="panel border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">Historical assignment record · read-only</div> : null}
       {exercise && availability ? (
         <div className="space-y-4">
+          <section className="panel grid gap-4 p-5 sm:grid-cols-2">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Student</p>
+              <p className="mt-1 text-lg font-bold text-slate-950">{exercise.studentName || 'Student'}</p>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Subject</p>
+              <p className="mt-1 text-lg font-bold text-slate-950">{exercise.subject}</p>
+            </div>
+          </section>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link to={`${basePath}/exercises`} className="btn-secondary hidden w-fit lg:inline-flex">Back to exercises</Link>
             {accessRole === 'co-owner' && !isHistorical && !exerciseStatus?.isToday ? <button type="button" className="hidden btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
@@ -150,7 +170,7 @@ export const TutorExerciseDetailsPage = () => {
             completedMarkingAssignments={completedMarkingAssignments}
             onTopicScoreSaved={(topic, score) => setTopicScores((current) => ({ ...current, [topic]: score }))}
             showQuestionLinks
-            viewerRole="tutor"
+            viewerRole={role}
             accessRole={accessRole}
             isHistorical={isHistorical}
           />

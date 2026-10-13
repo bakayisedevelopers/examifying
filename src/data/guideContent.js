@@ -17,7 +17,7 @@ export const guideContentByRole = {
         title: 'Start on your dashboard',
         description: 'The dashboard shows your payment status, today\'s exercise, tutor support, and your recent activity in one place.',
         icon: LayoutDashboard,
-        routeLabel: 'Overview',
+        routeLabel: 'Home',
         steps: [
           'Read the payment banner first so you know whether lessons and exercises are unlocked.',
           'Check the Today\'s Exercise card to see the current topic and instructions.',
@@ -53,7 +53,7 @@ export const guideContentByRole = {
         title: 'Upload your answer image',
         description: 'Your answer is submitted as an image so your tutor and peer reviewer can check your written working.',
         icon: Upload,
-        routeLabel: 'Overview',
+        routeLabel: 'Home',
         steps: [
           'Take a clear photo of the page with good lighting and the full answer visible.',
           'Use the upload panel after your daily exercise appears.',
@@ -141,9 +141,9 @@ export const guideContentByRole = {
         title: 'Assign students to yourself',
         description: 'The tutor dashboard shows assigned and unassigned learners so you can claim and manage your student list.',
         icon: Users,
-        routeLabel: 'Overview / Students',
+        routeLabel: 'Students',
         steps: [
-          'Open the Students area or tutor overview to see available learners.',
+          'Open Students to see learners assigned to you and manage their learning paths.',
           'Assign a student so they are linked to you as their Maths tutor.',
           'Open the learner card to record completed topics and understanding scores.',
         ],
@@ -153,7 +153,7 @@ export const guideContentByRole = {
         title: 'Mark completed topics after tutoring',
         description: 'Each completed lesson should record the topic taught, your topic report, and the learner understanding level.',
         icon: CheckCircle2,
-        routeLabel: 'Overview',
+        routeLabel: 'Students',
         steps: [
           'Enter the topic name exactly as you want it tracked.',
           'Write a short topic report that describes performance and corrections.',
@@ -177,7 +177,7 @@ export const guideContentByRole = {
         title: 'Support the weekly learning cycle',
         description: 'When payment, completed lessons, and matching analyzed question papers are in place, the app can prepare exercise work.',
         icon: Sparkles,
-        routeLabel: 'Overview',
+        routeLabel: 'Students',
         steps: [
           'After saving the completed lesson, review the status message on the dashboard.',
           'If work does not generate yet, check payment, completed topic lessons, and matching analyzed papers.',
@@ -253,9 +253,9 @@ export const guideContentByRole = {
         title: 'Assign students to yourself',
         description: 'The teacher dashboard shows assigned and unassigned learners so you can claim and manage your student list.',
         icon: Users,
-        routeLabel: 'Overview / Students',
+        routeLabel: 'Students',
         steps: [
-          'Open the Students area or teacher overview to see available learners.',
+          'Open Students to see learners assigned to you and manage their learning paths.',
           'Assign a student so they are linked to you as their Maths teacher.',
           'Open the learner card to record completed topics and understanding scores.',
         ],
@@ -265,7 +265,7 @@ export const guideContentByRole = {
         title: 'Mark completed topics after teaching',
         description: 'Each completed lesson should record the topic taught, your topic report, and the learner understanding level.',
         icon: CheckCircle2,
-        routeLabel: 'Overview',
+        routeLabel: 'Students',
         steps: [
           'Enter the topic name exactly as you want it tracked.',
           'Write a short topic report that describes performance and corrections.',
@@ -289,7 +289,7 @@ export const guideContentByRole = {
         title: 'Support the weekly learning cycle',
         description: 'When payment, completed lessons, and matching analyzed question papers are in place, the app can prepare exercise work.',
         icon: Sparkles,
-        routeLabel: 'Overview',
+        routeLabel: 'Students',
         steps: [
           'After saving the completed lesson, review the status message on the dashboard.',
           'If work does not generate yet, check payment, completed topic lessons, and matching analyzed papers.',

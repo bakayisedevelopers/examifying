@@ -99,6 +99,7 @@ export {
 
 export {
   getCompletedPeerMarkingWorkForTutor,
+  getPeerMarkingAssignmentsForTutor,
   reviewTutorPeerMarkingAssignment,
   saveTutorExerciseScore,
   removeCompletedTopicFromLesson,

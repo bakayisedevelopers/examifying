@@ -28,11 +28,12 @@ export const ProtectedRoute = ({ allowedRoles }) => {
     const isOnboarding = location.pathname === '/student/onboarding';
     const isBilling = location.pathname === '/student/billing';
     const isPastPapers = location.pathname === '/student/papers' || location.pathname.startsWith('/student/papers/');
+    const isProfile = location.pathname === '/student/profile' || location.pathname.startsWith('/student/profile/');
 
-    if (status === 'unpaid_incomplete' && !isOnboarding && !isBilling && !isPastPapers) {
+    if (status === 'unpaid_incomplete' && !isOnboarding && !isBilling && !isPastPapers && !isProfile) {
       return <Navigate to="/student/onboarding" replace />;
     }
-    if (status === 'paid_incomplete' && !isOnboarding && !isBilling) {
+    if (status === 'paid_incomplete' && !isOnboarding && !isBilling && !isProfile) {
       return <Navigate to="/student/onboarding" replace />;
     }
     if (status === 'paid_completed' && isOnboarding) {
@@ -45,13 +46,17 @@ export const ProtectedRoute = ({ allowedRoles }) => {
     const homePath = portal === 'teacher' ? '/teacher' : '/tutor';
     const onboardingPath = `${homePath}/onboarding`;
     const isOnboarding = location.pathname === onboardingPath;
-    if (profile.profileCompletionStatus !== 'completed' && !isOnboarding) {
+    const isProfile = location.pathname === `${homePath}/profile` || location.pathname.startsWith(`${homePath}/profile/`);
+    if (profile.profileCompletionStatus !== 'completed' && !isOnboarding && !isProfile) {
       return <Navigate to={onboardingPath} replace />;
     }
   }
 
   return (
-    <StudentNotificationGate profile={profile} required={profile.role === ROLES.STUDENT && allowedRoles?.includes(ROLES.STUDENT)}>
+    <StudentNotificationGate
+      profile={profile}
+      required={profile.role === ROLES.STUDENT && allowedRoles?.includes(ROLES.STUDENT) && !location.pathname.startsWith('/student/profile')}
+    >
       <Outlet />
     </StudentNotificationGate>
   );

@@ -51,6 +51,7 @@ import { normalizeWhatsAppLessonLink } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
 import { queryClient } from '../lib/queryClient';
+import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
 
 const getDoc = (...args) => trackFirestoreRead('getDoc', () => firebaseGetDoc(...args));
 const getDocs = (...args) => trackFirestoreRead('getDocs', () => firebaseGetDocs(...args));
@@ -846,6 +847,48 @@ export const getStudentExerciseCalendarWindow = async ({ studentId, subjectEpiso
   }));
 
   return exerciseRows.flat().sort((left, right) => String(left.assignmentDate).localeCompare(String(right.assignmentDate)));
+};
+
+export const getTutorExerciseCalendarBounds = async (contexts = []) => {
+  if (!isFirebaseConfigured || !contexts.length) return { earliestDate: '', latestDate: '' };
+  ensureDb();
+  const bounds = await Promise.all(contexts.map(async (context) => {
+    const exercises = collection(db, 'users', context.studentId, 'subjects', context.subjectInstanceId, 'exercises');
+    const [first, last] = await Promise.all([
+      getDocs(query(exercises, orderBy('assignmentDate', 'asc'), limit(1))),
+      getDocs(query(exercises, orderBy('assignmentDate', 'desc'), limit(1))),
+    ]);
+    return [
+      normalizeAssignmentDate(first.docs[0]?.data()?.assignmentDate),
+      normalizeAssignmentDate(last.docs[0]?.data()?.assignmentDate),
+    ].filter(Boolean);
+  }));
+  const dates = bounds.flat().sort();
+  return { earliestDate: dates[0] ?? '', latestDate: dates.at(-1) ?? '' };
+};
+
+export const getTutorExerciseCalendarWindow = async ({ contexts = [], startDate, endDate } = {}) => {
+  if (!isFirebaseConfigured || !contexts.length || !startDate || !endDate) return [];
+  ensureDb();
+  const rows = await Promise.all(contexts.map(async (context) => {
+    const snapshot = await getDocs(query(
+      collection(db, 'users', context.studentId, 'subjects', context.subjectInstanceId, 'exercises'),
+      where('assignmentDate', '>=', startDate),
+      where('assignmentDate', '<=', endDate),
+      orderBy('assignmentDate', 'asc'),
+    ));
+    return snapshot.docs.map((item) => ({
+      id: item.id,
+      ...item.data(),
+      studentId: context.studentId,
+      studentName: context.displayName || context.name || context.email || 'Student',
+      subject: item.data().subject || context.subject || DEFAULT_SUBJECT,
+      subjectInstanceId: context.subjectInstanceId,
+      accessRole: context.accessRole || 'viewer',
+      documentPath: item.ref.path,
+    }));
+  }));
+  return rows.flat().sort((left, right) => String(left.assignmentDate ?? '').localeCompare(String(right.assignmentDate ?? '')));
 };
 
 export const getCompletedPeerMarkingAssignmentsForCalendar = async ({ reviewerId, startDate, endDate, subjectInstanceIds = [] }) => {
@@ -2953,6 +2996,13 @@ export const getCompletedPeerMarkingWorkForTutor = async ({ tutorId, studentId, 
   return trackDataRequest('Completed peer-marking work', async () => (await callable({ studentId, subject })).data);
 };
 
+const getPeerMarkingAssignmentsForTutorContext = async ({ studentId, subject, subjectInstanceId }) => {
+  if (!studentId || !subject || !subjectInstanceId || !isFirebaseConfigured) return [];
+  const callable = httpsCallable(functions, 'getPeerMarkingAssignmentsForTutor');
+  return trackDataRequest('Tutor peer-marking assignments', async () =>
+    (await callable({ studentId, subject, subjectInstanceId })).data);
+};
+
 export const getCompletedPeerMarkingAssignmentsForStudent = async (reviewerId, subject = DEFAULT_SUBJECT) => {
   if (!reviewerId || !isFirebaseConfigured) return [];
   ensureDb();
@@ -2989,6 +3039,53 @@ export const getTopicUnderstandingQuestionScores = async ({ studentId, subjectIn
     id: score.id,
     ...score.data(),
   })));
+};
+
+export const getTutorExerciseWorkRecords = async ({ contexts = [], exercises = [] } = {}) => {
+  if (!contexts.length || !exercises.length) return {};
+  const contextKey = (studentId, subjectInstanceId) => `${studentId}:${subjectInstanceId}`;
+  const contextsByKey = new Map(contexts.map((context) => [contextKey(context.studentId, context.subjectInstanceId), context]));
+  const groupedExercises = new Map();
+  exercises.forEach((exercise) => {
+    const key = contextKey(exercise.studentId, exercise.subjectInstanceId);
+    if (!contextsByKey.has(key)) return;
+    const rows = groupedExercises.get(key) ?? [];
+    rows.push(exercise);
+    groupedExercises.set(key, rows);
+  });
+
+  const records = await Promise.all([...groupedExercises.entries()].map(async ([key, contextExercises]) => {
+    const context = contextsByKey.get(key);
+    try {
+      const exerciseIds = new Set(contextExercises.map((exercise) => exercise.id));
+      const peerMarkingAssignments = await getPeerMarkingAssignmentsForTutorContext({
+        studentId: context.studentId,
+        subject: context.subject || DEFAULT_SUBJECT,
+        subjectInstanceId: context.subjectInstanceId,
+      });
+      const relevantAssignments = peerMarkingAssignments.filter((assignment) => exerciseIds.has(assignment.reviewerExerciseId));
+      const topics = [...new Set([
+        ...contextExercises.flatMap(getExerciseTopicNames),
+        ...relevantAssignments.flatMap(getPeerMarkingTopicNames),
+      ])];
+      const topicIds = [...new Set([...contextExercises, ...relevantAssignments].flatMap(getQuestionTopicIds))];
+      const sourceIds = [...new Set([
+        ...contextExercises.map((exercise) => exercise.id),
+        ...relevantAssignments.flatMap((assignment) => [assignment.id, assignment.assignmentPath]),
+      ].filter(Boolean))];
+      const scoreEntries = await getTopicUnderstandingQuestionScores({
+        studentId: context.studentId,
+        subjectInstanceId: context.subjectInstanceId,
+        topics,
+        topicIds,
+        sourceIds,
+      });
+      return [key, { peerMarkingAssignments: relevantAssignments, scoreEntries }];
+    } catch (error) {
+      return [key, { peerMarkingAssignments: [], scoreEntries: [], loadError: error.message || 'Work history could not be loaded.' }];
+    }
+  }));
+  return Object.fromEntries(records);
 };
 
 export const deleteExerciseAssignmentForTutor = async ({ tutorId, exerciseId }) => {
@@ -3870,8 +3967,11 @@ export const getTutorExercisesForAssignedStudents = async (tutorId, knownContext
   const snapshots = await Promise.all(contexts.map((context) => getDocs(query(
     collection(db, 'users', context.studentId, 'subjects', context.subjectInstanceId, 'exercises'), orderBy('assignmentDate', 'desc'), limit(40)))));
   return snapshots.flatMap((snapshot, index) => snapshot.docs.map((item) => ({ id: item.id, ...item.data(),
+    studentId: contexts[index].studentId,
+    subject: item.data().subject || contexts[index].subject || DEFAULT_SUBJECT,
     documentPath: item.ref.path, subjectInstanceId: contexts[index].subjectInstanceId,
-    studentName: contexts[index].displayName || 'Student' }))).sort((a, b) => String(b.assignmentDate).localeCompare(String(a.assignmentDate)));
+    accessRole: contexts[index].accessRole || 'viewer',
+    studentName: contexts[index].displayName || contexts[index].name || contexts[index].email || 'Student' }))).sort((a, b) => String(b.assignmentDate).localeCompare(String(a.assignmentDate)));
 };
 
 export const getTutorLessonsForAssignedStudents = async (tutorId, knownContexts = null) => {

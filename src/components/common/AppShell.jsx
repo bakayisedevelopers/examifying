@@ -9,24 +9,25 @@ import { useOperationStatus } from '../../hooks/useOperationStatus';
 
 const navigationByRole = {
   [ROLES.STUDENT]: [
-    { to: '/student', label: 'Overview', icon: LayoutDashboard },
+    { to: '/student', label: 'Home', icon: LayoutDashboard },
     { to: '/student/lessons', label: 'Lessons', icon: GraduationCap },
     { to: '/student/papers', label: 'Past papers', icon: BookOpen },
   ],
   [ROLES.TUTOR]: [
-    { to: '/tutor', label: 'Overview', icon: LayoutDashboard },
+    { to: '/tutor', label: 'Home', icon: LayoutDashboard },
+    { to: '/tutor/students', label: 'Students', icon: Users },
     { to: '/tutor/lessons', label: 'Lessons', icon: GraduationCap },
     { to: '/tutor/papers', label: 'Past papers', icon: BookOpen },
   ],
   [ROLES.ADMIN]: [
-    { to: '/admin', label: 'Overview', icon: LayoutDashboard },
+    { to: '/admin', label: 'Home', icon: LayoutDashboard },
     { to: '/admin/users', label: 'Users', icon: Users },
     { to: '/admin/papers', label: 'Past papers', icon: BookOpen },
     { to: '/admin/payments', label: 'Payments', icon: CreditCard },
     { to: '/admin/discount-codes', label: 'Discount codes', icon: Tag },
   ],
   [ROLES.PARENT]: [
-    { to: '/parent', label: 'Overview', icon: LayoutDashboard },
+    { to: '/parent', label: 'Home', icon: LayoutDashboard },
   ],
 };
 
@@ -37,7 +38,8 @@ const getNavigationForRole = (role, isTeacher) => {
   const prefix = isTeacher ? '/teacher' : `/${role}`;
   if (role === ROLES.TUTOR || isTeacher) {
     return [
-      { to: prefix, label: 'Overview', icon: LayoutDashboard },
+      { to: prefix, label: 'Home', icon: LayoutDashboard },
+      { to: `${prefix}/students`, label: 'Students', icon: Users },
       { to: `${prefix}/lessons`, label: 'Lessons', icon: GraduationCap },
       { to: `${prefix}/papers`, label: 'Past papers', icon: BookOpen },
     ];
@@ -67,7 +69,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     ? [{ to: '/student/papers', label: 'Browse past papers', icon: BookOpen }]
     : onboardingLocked ? [] : roleNavigation;
   const homePath = onboardingLocked ? onboardingPath : isFreeStudent ? '/student/papers' : `/${effectiveRole}`;
-  const profilePath = onboardingLocked ? onboardingPath : `/${effectiveRole}/profile`;
+  const profilePath = `/${effectiveRole}/profile`;
   const displayName = account.displayName || account.name || account.fullName || 'Account';
   const email = account.email || '';
   const avatarUrl = account.photoURL || account.photoUrl || account.avatarUrl || account.profileImageUrl || account.avatar || '';
@@ -89,7 +91,13 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     }
     const historyIndex = Number(window.history.state?.idx);
     if (Number.isInteger(historyIndex) && historyIndex > 0) navigate(-1);
-    else navigate(homePath, { replace: true });
+    else if (['tutor', 'teacher'].includes(effectiveRole) && window.location.pathname.includes('/students/')) {
+      const currentPath = window.location.pathname;
+      const studentsPath = currentPath.includes('/history/')
+        ? currentPath.split('/history/')[0]
+        : currentPath.slice(0, currentPath.lastIndexOf('/'));
+      navigate(studentsPath, { replace: true });
+    } else navigate(homePath, { replace: true });
   };
 
   return (

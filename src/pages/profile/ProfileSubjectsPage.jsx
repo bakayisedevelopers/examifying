@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
+import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
 import { useAuth } from '../../hooks/useAuth';
 import { ROLES } from '../../lib/constants';
 import { addStudentSubjects, getActiveSubjectsForStudent, getGlobalSubjects, getStudentSubjectHistoryOptions, getStudentSubscriptionState, getTutorMarksDocuments, removeUserSubject, updateUserSubjectAvailability } from '../../services/firestoreService';
@@ -33,7 +34,6 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
   const isTutorRole = role === ROLES.TUTOR || role === 'teacher';
   const subscriptionState = useStudentSubscriptionState(role === ROLES.STUDENT ? profile : null);
   const [selectedSubjects, setSelectedSubjects] = useState([]);
-  const [subjectToAdd, setSubjectToAdd] = useState('');
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState('');
@@ -70,7 +70,6 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
     .filter((subject) => !currentSubjects.includes(subject));
   const restorableHistoryCandidates = historyCandidates.filter((candidate) =>
     isSubjectAvailableForGrade(candidate.subject, profile?.grade) && !currentSubjects.includes(candidate.subject));
-  const selectableSubjects = availableSubjects.filter((subject) => !selectedSubjects.includes(subject));
   const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
   const remainingSubjectSlots = Math.max(0, subjectLimit - currentSubjects.length - selectedSubjects.length);
   const tutorMarkBySubject = useMemo(() => new Map(
@@ -182,19 +181,21 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
     return () => { isActive = false; };
   }, [profile?.grade, profile?.uid, role]);
 
-  const handleAddSubjectToSelection = () => {
-    if (!subjectToAdd || selectedSubjects.includes(subjectToAdd)) return;
-    if (!isSubjectAvailableForGrade(subjectToAdd, profile?.grade)) {
-      setStatus(`That subject is not available for ${profile?.grade || 'your current grade'}.`);
-      setSubjectToAdd('');
+  const handleSubjectSelectionChange = (nextSubjects) => {
+    if (nextSubjects.some((subject) => !isSubjectAvailableForGrade(subject, profile?.grade))) {
+      setStatus(`Choose only subjects available for ${profile?.grade || 'your current grade'}.`);
       return;
     }
-    if (currentSubjects.length + selectedSubjects.length >= subjectLimit) {
+    if (currentSubjects.length + nextSubjects.length > subjectLimit) {
       setStatus(`Your subscription includes up to ${subjectLimit} subjects. Remove a current subject before adding another.`);
       return;
     }
-    setSelectedSubjects((current) => [...current, subjectToAdd]);
-    setSubjectToAdd('');
+    setSelectedSubjects(nextSubjects);
+    setSelectedHistoryIds((current) => current.filter((id) => {
+      const candidate = historyCandidates.find((item) => item.episodeId === id);
+      return candidate && nextSubjects.includes(candidate.subject);
+    }));
+    setStatus('');
   };
 
   const handleRemoveSelectedSubject = (subject) => {
@@ -247,7 +248,6 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
       setStatus(onboarding ? 'Your profile is complete.' : `${selectedSubjects.join(', ')} added to your subjects.`);
       setSelectedSubjects([]);
       setSelectedHistoryIds([]);
-      setSubjectToAdd('');
     } catch (error) {
       setStatus(error.message || 'Could not add subjects.');
     } finally {
@@ -481,19 +481,20 @@ export const ProfileSubjectsPage = ({ role, onboarding = false, onboardingNotice
             <p className="text-sm font-semibold text-slate-950">Add subjects</p>
             <p className="mt-1 text-sm text-slate-500">Your plan allows {subjectLimit} registered {subjectLimit === 1 ? 'subject' : 'subjects'}. Remove a current subject to make room for a replacement.</p>
           </div>
-          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-            <select
-              className="input"
-              value={subjectToAdd}
-              onChange={(event) => setSubjectToAdd(event.target.value)}
-              disabled={globalSubjectsLoading || !selectableSubjects.length || remainingSubjectSlots === 0}
-            >
-              <option value="">{globalSubjectsLoading ? 'Loading subjects...' : !profile?.grade ? 'Set your grade to see eligible subjects' : selectableSubjects.length ? 'Select a subject' : `No additional subjects available for ${profile.grade}`}</option>
-              {selectableSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
-            </select>
-            <button type="button" className="btn-secondary" onClick={handleAddSubjectToSelection} disabled={!subjectToAdd || remainingSubjectSlots === 0}>
-              Add to list
-            </button>
+          <div className="grid gap-2">
+            <label className="text-sm font-semibold text-slate-700" htmlFor="student-subject-multi-select">Choose subjects</label>
+            <MultiSelectDropdown
+              id="student-subject-multi-select"
+              choices={availableSubjects}
+              selectedValues={selectedSubjects}
+              onChange={handleSubjectSelectionChange}
+              maxSelections={Math.max(0, subjectLimit - currentSubjects.length)}
+              placeholder={globalSubjectsLoading ? 'Loading subjects…' : !profile?.grade ? 'Set your grade to see eligible subjects' : 'Select one or more subjects'}
+              emptyMessage={globalSubjectsLoading ? 'Loading subjects…' : `No additional subjects available for ${profile?.grade || 'your grade'}`}
+              ariaLabel="Choose subjects to add"
+              disabled={globalSubjectsLoading || !profile?.grade || currentSubjects.length >= subjectLimit}
+            />
+            {selectedSubjects.length ? <p className="text-xs text-slate-500">Selected subjects are added to the list below immediately. Choose Done to close this menu.</p> : null}
           </div>
           {globalSubjectsLoading ? <LoadingState className="min-h-12 p-3" label="Loading available subjects…" /> : null}
           {restorableHistoryCandidates.length || historyCandidatesLoading ? <fieldset className="space-y-2 rounded-2xl border border-lime-500/30 bg-transparent p-4">

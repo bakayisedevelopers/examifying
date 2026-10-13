@@ -7,6 +7,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
 import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
@@ -42,7 +43,7 @@ import { isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
   const date = new Date();
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 };
-const emptyLessonForm = { selectedTopic: '', topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online', whatsappLessonLink: '', locationDetails: '' };
+const emptyLessonForm = { topicUnderstandingScores: [], topicReport: '', lessonDate: today(), lessonType: 'online', whatsappLessonLink: '', locationDetails: '' };
 const emptyTopicGroups = { extracted: [], manual: [], all: [] };
 const createLessonRequestId = () => globalThis.crypto?.randomUUID?.() ?? `lesson-log-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 const historyTimestamp = (value) => {
@@ -377,10 +378,13 @@ export const TutorStudentDetailsPage = () => {
   const basePath = location.pathname.startsWith('/teacher') ? '/teacher' : '/tutor';
   const sortedExercises = [...exercises].sort((a, b) => String(a.assignmentDate ?? '').localeCompare(String(b.assignmentDate ?? '')));
 
-  const addTopic = () => {
-    if (!lessonForm.selectedTopic || lessonForm.topicUnderstandingScores.some((entry) => entry.topic === lessonForm.selectedTopic)) return;
-    setLessonForm((current) => ({ ...current, selectedTopic: '', topicUnderstandingScores: [...current.topicUnderstandingScores, { topic: current.selectedTopic, understandingLevel: 5 }] }));
-  };
+  const updateLessonTopicSelection = (selectedTopics) => setLessonForm((current) => {
+    const currentByTopic = new Map(current.topicUnderstandingScores.map((entry) => [entry.topic, entry]));
+    return {
+      ...current,
+      topicUnderstandingScores: selectedTopics.map((topic) => currentByTopic.get(topic) ?? { topic, understandingLevel: 5 }),
+    };
+  });
   const updateScore = (topic, value) => setLessonForm((current) => ({ ...current, topicUnderstandingScores: current.topicUnderstandingScores.map((entry) => entry.topic === topic ? { ...entry, understandingLevel: Number(value) } : entry) }));
   const removeTopic = (topic) => setLessonForm((current) => ({ ...current, topicUnderstandingScores: current.topicUnderstandingScores.filter((entry) => entry.topic !== topic) }));
 
@@ -551,7 +555,7 @@ export const TutorStudentDetailsPage = () => {
         </div>
       ) : null}
       {detailListsLoading ? <LoadingState label="Loading student exercises, lessons, and marking history…" /> : null}
-      <Link to={`${basePath}`} className="hidden w-fit items-center gap-2 text-lime-400 hover:text-lime-300 sm:inline-flex"><span aria-hidden="true">&lt;</span><span>Assigned students</span></Link>
+      <Link to={`${basePath}/students`} className="hidden w-fit items-center gap-2 text-lime-400 hover:text-lime-300 sm:inline-flex"><span aria-hidden="true">&lt;</span><span>Assigned students</span></Link>
 
       {student?.historicalAccessRole ? <div className="panel border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">
         Historical assignment · {student.historicalAccessRole} access · read-only{student.endDateEstimated ? ' · end date estimated from legacy data' : ''}
@@ -643,14 +647,23 @@ export const TutorStudentDetailsPage = () => {
               <textarea className="input min-h-20" value={lessonForm.locationDetails} onChange={(event) => setLessonForm((current) => ({ ...current, locationDetails: event.target.value }))} placeholder="School name, street address, or meeting point" />
             </label>
           )}
-          <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-            <select className="input" value={lessonForm.selectedTopic} onChange={(event) => setLessonForm((current) => ({ ...current, selectedTopic: event.target.value }))} disabled={!lessonEligibleSubjects.includes(subject) || !topicOptions.all.length}>
-              <option value="">{ancillaryQuery.isFetching ? 'Loading topics…' : topicOptions.all.length ? 'Choose topic' : 'No topics available'}</option>
-              {topicOptions.extracted.length ? <optgroup label="Past paper extracted topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`}>{topic}</option>)}</optgroup> : null}
-              {topicOptions.manual.length ? <optgroup label="Manual topic list">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`}>{topic}</option>)}</optgroup> : null}
-            </select>
+          <div className="grid gap-2">
+            <label className="text-sm font-semibold text-slate-700" htmlFor="completed-lesson-topics">Topics covered</label>
+            <MultiSelectDropdown
+              id="completed-lesson-topics"
+              choices={[
+                ...topicOptions.extracted.map((topic) => ({ value: topic, label: topic, group: 'Past paper extracted topics' })),
+                ...topicOptions.manual.filter((topic) => !topicOptions.extracted.includes(topic)).map((topic) => ({ value: topic, label: topic, group: 'Manual topic list' })),
+              ]}
+              selectedValues={lessonForm.topicUnderstandingScores.map((entry) => entry.topic)}
+              onChange={updateLessonTopicSelection}
+              placeholder={ancillaryQuery.isFetching ? 'Loading topics…' : 'Select one or more topics'}
+              emptyMessage={ancillaryQuery.isFetching ? 'Loading topics…' : 'No topics available'}
+              ariaLabel="Choose topics covered in this lesson"
+              disabled={!lessonEligibleSubjects.includes(subject) || !topicOptions.all.length || ancillaryQuery.isFetching}
+            />
+            {lessonForm.topicUnderstandingScores.length ? <p className="text-xs text-slate-500">Selected topics appear below immediately. Choose Done to close this menu.</p> : null}
             {ancillaryQuery.isFetching && !ancillaryQuery.data ? <LoadingState className="min-h-12 p-3" label="Loading topic choices…" /> : null}
-            <button type="button" className="btn-secondary" onClick={addTopic} disabled={!lessonForm.selectedTopic}>Add topic</button>
           </div>
           <p className="text-sm text-slate-600">Enter an understanding score from 0 to 10 for every topic covered in this lesson.</p>
           {lessonForm.topicUnderstandingScores.map((entry) => (
@@ -710,7 +723,7 @@ export const TutorStudentDetailsPage = () => {
                 const params = new URLSearchParams({ studentId });
                 if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
                 if (student?.historicalAccessRole) params.set('period', periodId);
-                navigate(`/tutor/exercises/${exercise.id}?${params.toString()}`);
+                navigate(`${basePath}/exercises/${exercise.id}?${params.toString()}`);
               }} className="min-w-0 flex-1 text-left">
                 <p className="font-semibold text-slate-100">{exercise.title}</p>
                 <p className="text-sm text-slate-400">{exercise.subject} • {exercise.assignmentDate}</p>

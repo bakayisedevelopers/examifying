@@ -265,6 +265,32 @@ export const getCompletedPeerMarkingWorkForTutor = onCall({ cpu: 'gcf_gen1' }, a
     .filter((item) => item.subject === subject && item.reviewImageUrl);
 });
 
+export const getPeerMarkingAssignmentsForTutor = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = request.auth?.uid;
+  const { studentId, subject, subjectInstanceId } = request.data ?? {};
+  if (!studentId || !subject || !subjectInstanceId) {
+    throw new HttpsError('invalid-argument', 'A student, subject, and active subject episode are required.');
+  }
+  const db = getDb();
+  const actor = await requireActor(db, uid);
+  const episodeSnapshot = await db.collection('users').doc(studentId).collection('subjects').doc(subjectInstanceId).get();
+  if (!episodeSnapshot.exists || normalizeSubject(episodeSnapshot.data().subjectKey) !== normalizeSubject(subject)) {
+    throw new HttpsError('not-found', 'The student subject is not active.');
+  }
+  requireEpisodeAccess({
+    episode: episodeSnapshot.data(),
+    uid,
+    isAdmin: actor.role === 'admin',
+    allowedRoles: ['co-owner', 'marker', 'viewer'],
+  });
+
+  const assignments = await db.collectionGroup('peerMarkingAssignments')
+    .where('reviewerId', '==', studentId).get();
+  return assignments.docs
+    .map((item) => ({ id: item.id, ...item.data(), assignmentPath: item.ref.path }))
+    .filter((item) => item.subject === subject && item.reviewerSubjectInstanceId === subjectInstanceId);
+});
+
 export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = request.auth?.uid;
   const { peerAssignmentId, peerAssignmentPath, reviewerExerciseId: requestedReviewerExerciseId, studentId, topicMarks, scoreEventId } = request.data ?? {};

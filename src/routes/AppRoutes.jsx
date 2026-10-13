@@ -106,8 +106,9 @@ export const AppRoutes = () => {
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
       <Route path="/tutor/onboarding" element={<TutorOnboardingPage role={ROLES.TUTOR} />} />
-      <Route path="/tutor" element={<TutorDashboardPage />} />
-      <Route path="/tutor/students" element={<TutorStudentsPage />} />
+      <Route path="/tutor" element={<TutorExercisesPage />} />
+      <Route path="/tutor/students" element={<TutorDashboardPage />} />
+      <Route path="/tutor/subject-roster" element={<TutorStudentsPage />} />
       <Route path="/tutor/students/:studentId" element={<TutorStudentDetailsPage />} />
       <Route path="/tutor/students/:studentId/history/:periodId" element={<TutorStudentHistorySubjectPage />} />
       <Route path="/tutor/exercises" element={<TutorExercisesPage />} />
@@ -130,8 +131,9 @@ export const AppRoutes = () => {
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.TUTOR]} />}>
       <Route path="/teacher/onboarding" element={<TutorOnboardingPage role="teacher" />} />
-      <Route path="/teacher" element={<TutorDashboardPage />} />
-      <Route path="/teacher/students" element={<TutorStudentsPage />} />
+      <Route path="/teacher" element={<TutorExercisesPage />} />
+      <Route path="/teacher/students" element={<TutorDashboardPage />} />
+      <Route path="/teacher/subject-roster" element={<TutorStudentsPage />} />
       <Route path="/teacher/students/:studentId" element={<TutorStudentDetailsPage />} />
       <Route path="/teacher/students/:studentId/history/:periodId" element={<TutorStudentHistorySubjectPage />} />
       <Route path="/teacher/exercises" element={<TutorExercisesPage />} />

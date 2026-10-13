@@ -4,6 +4,7 @@ import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { OperationStatusOverlay } from '../../components/common/OperationStatusOverlay';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
 import { useAuth } from '../../hooks/useAuth';
 import { DEFAULT_SUBJECT, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { LessonAccessDetails } from '../../components/lessons/LessonAccessDetails';
@@ -90,7 +91,6 @@ export const TutorLessonDetailsPage = () => {
   const [studentsToAdd, setStudentsToAdd] = useState([]);
   const [topicOptions, setTopicOptions] = useState(emptyTopicGroups);
   const [topics, setTopics] = useState([]);
-  const [selectedTopic, setSelectedTopic] = useState('');
   const [lessonRows, setLessonRows] = useState([]);
   const [participants, setParticipants] = useState({});
   const [isSaving, setIsSaving] = useState(false);
@@ -335,14 +335,17 @@ export const TutorLessonDetailsPage = () => {
     });
   };
 
-  const addTopic = () => {
-    if (!selectedTopic || topics.includes(selectedTopic)) return;
-    setTopics((current) => [...current, selectedTopic]);
+  const updateTopicSelection = (nextTopics) => {
+    const addedTopics = nextTopics.filter((topic) => !topics.includes(topic));
+    const removedTopics = topics.filter((topic) => !nextTopics.includes(topic));
+    setTopics(nextTopics);
     setParticipants((current) => Object.fromEntries(Object.entries(current).map(([id, row]) => [id, {
       ...row,
-      scores: { ...row.scores, [selectedTopic]: row.scores?.[selectedTopic] ?? '' },
+      scores: {
+        ...Object.fromEntries(Object.entries(row.scores ?? {}).filter(([topic]) => !removedTopics.includes(topic))),
+        ...Object.fromEntries(addedTopics.map((topic) => [topic, row.scores?.[topic] ?? ''])),
+      },
     }])));
-    setSelectedTopic('');
   };
 
   const removeTopic = (topic) => {
@@ -612,7 +615,7 @@ export const TutorLessonDetailsPage = () => {
             {sessionMode === 'group' ? <p className="text-xs text-slate-500">Selected: {selectedStudentIds.length}. Group students must share the selected subject and grade.</p> : null}
           </div>
 
-          <TopicPicker topicOptions={topicOptions} selectedTopic={selectedTopic} setSelectedTopic={setSelectedTopic} addTopic={addTopic} topics={topics} removeTopic={removeTopic} />
+          <TopicPicker topicOptions={topicOptions} topics={topics} onChangeTopics={updateTopicSelection} removeTopic={removeTopic} />
           <button type="button" className="btn-primary w-full md:w-auto" onClick={createPlannedSession} disabled={isSaving || Boolean(createBlocker)}>
             {isSaving ? 'Saving…' : 'Create planned lesson'}
           </button>
@@ -677,7 +680,7 @@ export const TutorLessonDetailsPage = () => {
               ) : contextsLoaded ? <p className="text-sm text-slate-500">No other current co-owner students match this subject and grade.</p> : null}
             </section>
           ) : null}
-          <TopicPicker topicOptions={topicOptions} selectedTopic={selectedTopic} setSelectedTopic={setSelectedTopic} addTopic={addTopic} topics={topics} removeTopic={removeTopic} disabled={!isEditable} />
+          <TopicPicker topicOptions={topicOptions} topics={topics} onChangeTopics={updateTopicSelection} removeTopic={removeTopic} disabled={!isEditable} />
           <div className="w-full overflow-hidden rounded-lg border border-slate-200">
             <div className="overflow-x-auto overscroll-x-contain">
               <table className="min-w-[1120px] border-collapse text-left text-sm">
@@ -748,18 +751,24 @@ export const TutorLessonDetailsPage = () => {
   );
 };
 
-const TopicPicker = ({ topicOptions, selectedTopic, setSelectedTopic, addTopic, topics, removeTopic, disabled = false }) => (
+const TopicPicker = ({ topicOptions, topics, onChangeTopics, removeTopic, disabled = false }) => (
   <div className="space-y-3">
-    <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-      <label className="grid gap-2 text-sm font-semibold text-slate-700">Planned and covered topics
-        <select className="input" value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value)} disabled={disabled || !topicOptions.all.length}>
-          <option value="">{topicOptions.all.length ? 'Choose a canonical topic' : 'No topics available for this grade and subject'}</option>
-          {topicOptions.extracted.length ? <optgroup label="Matched past-paper topics">{topicOptions.extracted.map((topic) => <option key={`paper-${topic}`} value={topic}>{topic}</option>)}</optgroup> : null}
-          {topicOptions.manual.length ? <optgroup label="Global subject topics">{topicOptions.manual.map((topic) => <option key={`manual-${topic}`} value={topic}>{topic}</option>)}</optgroup> : null}
-        </select>
-      </label>
-      <button type="button" className="btn-secondary self-end" onClick={addTopic} disabled={disabled || !selectedTopic}>Add topic</button>
-    </div>
+    <label className="grid gap-2 text-sm font-semibold text-slate-700" htmlFor="lesson-topic-multi-select">Planned and covered topics
+      <MultiSelectDropdown
+        id="lesson-topic-multi-select"
+        choices={[
+          ...topicOptions.extracted.map((topic) => ({ value: topic, label: topic, group: 'Matched past-paper topics' })),
+          ...topicOptions.manual.filter((topic) => !topicOptions.extracted.includes(topic)).map((topic) => ({ value: topic, label: topic, group: 'Global subject topics' })),
+        ]}
+        selectedValues={topics}
+        onChange={onChangeTopics}
+        placeholder="Select one or more topics"
+        emptyMessage="No topics available for this grade and subject"
+        ariaLabel="Choose lesson topics"
+        disabled={disabled || !topicOptions.all.length}
+      />
+      {topics.length ? <span className="text-xs font-normal text-slate-500">Selected topics are added to the list immediately. Choose Done to close this menu.</span> : null}
+    </label>
     {topics.length ? <ul className="flex flex-wrap gap-2">{topics.map((topic) => <li key={topic} className="inline-flex items-center gap-2 rounded-md border border-lime-500/40 bg-transparent px-3 py-2 text-sm font-medium text-slate-900"><span>{topic}</span>{!disabled ? <button type="button" className="text-rose-800 hover:text-rose-950" aria-label={`Remove ${topic}`} onClick={() => removeTopic(topic)}>×</button> : null}</li>)}</ul> : null}
   </div>
 );

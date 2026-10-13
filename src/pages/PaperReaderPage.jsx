@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { AppShell } from '../components/common/AppShell';
 import { InAppPdfPage } from '../components/common/InAppPdfPage';
@@ -273,6 +273,7 @@ const LiveModelActivity = ({ paper, activity, loading = false, error = '' }) => 
 };
 
 export const PaperReaderPage = () => {
+  const location = useLocation();
   const { paperId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -344,6 +345,7 @@ export const PaperReaderPage = () => {
 
   const goBack = () => {
     if (window.history.state?.idx > 0) navigate(-1);
+    else if (location.pathname.startsWith('/teacher')) navigate('/teacher/exercises');
     else navigate(role === ROLES.TUTOR ? '/tutor/exercises' : '/student');
   };
 

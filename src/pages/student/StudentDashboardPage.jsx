@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronLeft, ChevronRight, CreditCard, Hourglass, LockKeyhole, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, CreditCard } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
-import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
+import { HomeExerciseCard } from '../../components/dashboard/HomeExerciseCard';
+import { ExerciseActivityCalendar } from '../../components/dashboard/ExerciseActivityCalendar';
+import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
+import { getLocalDateKey, shiftDateKey } from '../../utils/dateKey';
 import { useAuth } from '../../hooks/useAuth';
 import { useScreenLoadMetrics } from '../../hooks/useScreenLoadMetrics';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
-import { canOpenExercise } from '../../utils/exerciseRules';
+import { useStudentSubscriptionState } from '../../hooks/useStudentSubscriptionState';
+import { getSubjectsAvailableForGrade } from '../../../functions/src/subjects.js';
 import {
+  addStudentSubjects,
   generateExercisePlanIfEligible,
   getActiveSubjectEpisodesForStudent,
+  getGlobalSubjects,
   getCompletedPeerMarkingAssignmentsForCalendar,
   getPeerMarkingAssignmentsForStudent,
   getStudentExerciseCalendarBounds,
@@ -22,143 +28,6 @@ import {
 } from '../../services/firestoreService';
 import { getCachedStudentSubscriptionState, loadStudentSubscriptionState } from '../../services/studentSubscriptionStateStore';
 import { getCachedStudentDashboardState, updateCachedStudentDashboardState } from '../../services/studentDashboardStateStore';
-import { DEFAULT_SUBJECT } from '../../lib/constants';
-
-const TodayExerciseCard = ({ exercise, onOpen }) => {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      disabled={!canOpenExercise(exercise.assignmentDate)}
-      className="panel w-full p-5 text-left transition hover:-translate-y-0.5 hover:shadow-soft disabled:cursor-not-allowed disabled:opacity-70"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">{exercise.subject ?? DEFAULT_SUBJECT}</span>
-        <ExerciseStatusBadges exercise={exercise} className="justify-end" />
-      </div>
-      <h3 className="mt-4 text-xl font-bold text-slate-950">{exercise.title}</h3>
-      <p className="mt-2 text-sm font-semibold text-accent">{exercise.topic}</p>
-      <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-500">{exercise.instruction}</p>
-      <div className="mt-4 flex items-center justify-between gap-3 text-xs uppercase tracking-[0.25em] text-slate-400">
-        <span>{exercise.assignmentDate}</span>
-        <span>{canOpenExercise(exercise.assignmentDate) ? 'Open exercise' : 'Locked'}</span>
-      </div>
-    </button>
-  );
-};
-
-const getLocalDateKey = (date = new Date()) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
-const shiftDateKey = (dateKey, days) => {
-  const [year, month, day] = String(dateKey).split('-').map(Number);
-  const date = new Date(year, month - 1, day + days, 12);
-  return getLocalDateKey(date);
-};
-const dateFromKey = (dateKey) => new Date(`${dateKey}T12:00:00`);
-const isSubmittedExercise = (exercise = {}) => Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes' || exercise.submissionStatus === 'submitted');
-
-const ExerciseActivityCalendar = ({
-  weekStart,
-  bounds,
-  exercises,
-  assignedMarking,
-  completedMarking,
-  activeSubjectInstanceIds,
-  loading,
-  onWeekChange,
-}) => {
-  const today = getLocalDateKey();
-  const dates = Array.from({ length: 7 }, (_, index) => shiftDateKey(weekStart, index));
-  const weekEnd = dates.at(-1);
-  const canGoBack = Boolean(bounds?.earliestDate && weekStart > bounds.earliestDate);
-  const canGoForward = Boolean(bounds?.latestDate && weekEnd < bounds.latestDate);
-  const activeInstances = new Set(activeSubjectInstanceIds);
-  const markingRowsByPath = new Map();
-  [...assignedMarking, ...completedMarking].forEach((assignment) => {
-    if (activeInstances.has(assignment.reviewerSubjectInstanceId)) {
-      markingRowsByPath.set(assignment.assignmentPath || assignment.id, assignment);
-    }
-  });
-  const markingRows = [...markingRowsByPath.values()];
-  const statusDetails = {
-    completed: { label: 'Completed', Icon: Check, iconClass: 'text-slate-950' },
-    missed: { label: 'Missed', Icon: X, iconClass: 'text-rose-700' },
-    inProgress: { label: 'In progress', Icon: Hourglass, iconClass: 'text-slate-950' },
-    locked: { label: 'Locked', Icon: LockKeyhole, iconClass: 'text-slate-700' },
-    none: { label: 'No work assigned', Icon: null, iconClass: '' },
-  };
-
-  const statusForDate = (dateKey) => {
-    if (dateKey > today) return 'locked';
-    if (!bounds) return dateKey === today ? 'inProgress' : 'none';
-    const dayExercises = exercises.filter((exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) === dateKey);
-    const dayMarking = markingRows.filter((assignment) => String(assignment.assignmentDate ?? '').slice(0, 10) === dateKey);
-    const expectedSubjectIds = activeSubjectInstanceIds.filter((subjectInstanceId) => {
-      const subjectBounds = bounds?.subjectBounds?.[subjectInstanceId];
-      return subjectBounds?.earliestDate && subjectBounds?.latestDate
-        && dateKey >= subjectBounds.earliestDate && dateKey <= subjectBounds.latestDate;
-    });
-    const hasActivity = expectedSubjectIds.length > 0 || dayExercises.length > 0 || dayMarking.length > 0;
-    const allExercisesSubmitted = expectedSubjectIds.length
-      ? expectedSubjectIds.every((subjectInstanceId) => {
-        const subjectExercises = dayExercises.filter((exercise) => exercise.subjectInstanceId === subjectInstanceId);
-        return subjectExercises.length > 0 && subjectExercises.every(isSubmittedExercise);
-      })
-      : dayExercises.every(isSubmittedExercise);
-    const allMarkingCompleted = dayMarking.every((assignment) => assignment.status === 'completed');
-
-    if (hasActivity && allExercisesSubmitted && allMarkingCompleted) return 'completed';
-    if (dateKey === today) return 'inProgress';
-    return hasActivity ? 'missed' : 'none';
-  };
-
-  const changeWeek = (direction) => {
-    if (direction < 0) {
-      const previousStart = shiftDateKey(weekStart, -7);
-      onWeekChange(bounds?.earliestDate && previousStart < bounds.earliestDate ? bounds.earliestDate : previousStart);
-      return;
-    }
-    const nextStart = shiftDateKey(weekStart, 7);
-    const latestFullWeekStart = bounds?.latestDate ? shiftDateKey(bounds.latestDate, -6) : nextStart;
-    onWeekChange(nextStart > latestFullWeekStart ? latestFullWeekStart : nextStart);
-  };
-
-  const visibleRange = `${dateFromKey(weekStart).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })} – ${dateFromKey(weekEnd).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })}`;
-
-  return (
-    <div className="mt-4 w-full rounded-xl border border-emerald-950/20 bg-transparent p-3 sm:p-4" aria-label="Exercise and peer-marking activity calendar">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <p className="shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-950/75 sm:text-xs">Last 7 days</p>
-        <div className="flex min-w-0 items-center gap-1">
-          <button type="button" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-950 transition hover:bg-lime-200 disabled:cursor-not-allowed disabled:opacity-35" onClick={() => changeWeek(-1)} disabled={!canGoBack} aria-label="Show previous week">
-            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
-          </button>
-          <span className="min-w-0 text-center text-[10px] font-semibold tabular-nums text-emerald-950/80 sm:text-xs" aria-live="polite">{visibleRange}</span>
-          <button type="button" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-950 transition hover:bg-lime-200 disabled:cursor-not-allowed disabled:opacity-35" onClick={() => changeWeek(1)} disabled={!canGoForward} aria-label="Show next week">
-            <ChevronRight className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-      </div>
-      {loading ? <p className="sr-only" role="status">Loading activity for this week.</p> : null}
-      <div className="mt-3 grid w-full grid-cols-7 gap-1.5 sm:gap-3">
-        {dates.map((dateKey) => {
-          const status = statusForDate(dateKey);
-          const { label, Icon, iconClass } = statusDetails[status];
-          const date = dateFromKey(dateKey);
-          return (
-            <div key={dateKey} className="grid min-w-0 justify-items-center gap-1" role="group" aria-label={`${date.toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' })}: ${label}`}>
-              <span className="text-[9px] font-semibold uppercase text-emerald-950/65 sm:text-[10px]">{date.toLocaleDateString('en-ZA', { weekday: 'short' }).slice(0, 2)}</span>
-              <span className="flex aspect-square w-full max-w-11 items-center justify-center rounded-full border border-emerald-950/35 bg-transparent" title={`${date.toLocaleDateString('en-ZA')}: ${label}`}>
-                {Icon ? <Icon className={`h-4 w-4 stroke-[2.5] sm:h-5 sm:w-5 ${iconClass}`} aria-hidden="true" /> : null}
-              </span>
-              <span className="text-[10px] font-semibold tabular-nums text-emerald-950/80 sm:text-xs">{date.getDate()}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
 
 const ReadinessChecklist = ({ rows, studentName }) => {
   const unmetRows = rows.filter((row) => Object.values(row.checks ?? {}).some((passed) => !passed));
@@ -202,6 +71,7 @@ export const StudentDashboardPage = () => {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const { runOperation } = useOperationStatus();
+  const subscriptionState = useStudentSubscriptionState(profile);
   const cachedDashboardState = getCachedStudentDashboardState(profile?.uid);
   const cachedSubscriptionState = getCachedStudentSubscriptionState(profile?.uid);
   const hasCachedAccessState = Boolean(cachedDashboardState?.accessChecked || cachedSubscriptionState);
@@ -232,11 +102,66 @@ export const StudentDashboardPage = () => {
   const [generationStatuses, setGenerationStatuses] = useState({});
   const [initialRetrySubjects, setInitialRetrySubjects] = useState([]);
   const [retryingInitialSubject, setRetryingInitialSubject] = useState('');
+  const [globalSubjects, setGlobalSubjects] = useState([]);
+  const [globalSubjectsLoading, setGlobalSubjectsLoading] = useState(true);
+  const [homeSelectedSubjects, setHomeSelectedSubjects] = useState([]);
+  const [savingHomeSubjects, setSavingHomeSubjects] = useState(false);
+  const [homeSubjectStatus, setHomeSubjectStatus] = useState('');
   const localGenerationSubjectsRef = useRef(new Set());
   const backgroundGenerationOperationsRef = useRef(new Map());
   const [subscriptionPlanId, setSubscriptionPlanId] = useState(() => cachedDashboardState?.subscriptionPlanId ?? cachedSubscriptionState?.subscriptionPlanId ?? 'free');
   const [subscriptionPlanName, setSubscriptionPlanName] = useState(() => cachedDashboardState?.subscriptionPlanName ?? cachedSubscriptionState?.subscriptionPlanName ?? 'Free');
   const [requiresSubscriptionSelection, setRequiresSubscriptionSelection] = useState(() => cachedDashboardState?.requiresSubscriptionSelection ?? cachedSubscriptionState?.requiresSubscriptionSelection ?? true);
+  const subjectLimit = Number(subscriptionState?.subscriptionSubjectCount) || 0;
+  const remainingHomeSubjectSlots = Math.max(0, subjectLimit - availableSubjects.length);
+  const homeSubjectOptions = useMemo(() => getSubjectsAvailableForGrade(profile?.grade, globalSubjects)
+    .filter((subject) => !availableSubjects.includes(subject)), [availableSubjects, globalSubjects, profile?.grade]);
+
+  useEffect(() => {
+    let active = true;
+    getGlobalSubjects().then((subjects) => {
+      if (active) setGlobalSubjects(subjects);
+    }).catch((error) => {
+      if (active) setHomeSubjectStatus(error.message || 'Could not load available subjects.');
+    }).finally(() => {
+      if (active) setGlobalSubjectsLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
+  const handleHomeSubjectSelectionChange = (subjects) => {
+    if (subjects.length > remainingHomeSubjectSlots) {
+      setHomeSubjectStatus(`Your subscription includes up to ${subjectLimit} subjects.`);
+      return;
+    }
+    setHomeSelectedSubjects(subjects);
+    setHomeSubjectStatus('');
+  };
+
+  const saveHomeSubjects = async () => {
+    if (!profile?.uid || !homeSelectedSubjects.length) return;
+    if (!subscriptionState?.paymentCompleted || availableSubjects.length + homeSelectedSubjects.length > subjectLimit) {
+      setHomeSubjectStatus(`Your active subscription allows up to ${subjectLimit} subjects.`);
+      return;
+    }
+    setSavingHomeSubjects(true);
+    setHomeSubjectStatus('');
+    try {
+      await runOperation({ operationName: 'Adding subjects', successMessage: 'Your subjects were updated.' }, async () => {
+        await addStudentSubjects({ studentId: profile.uid, subjects: homeSelectedSubjects });
+        const episodes = await getActiveSubjectEpisodesForStudent(profile.uid);
+        const subjects = [...new Set(episodes.map((episode) => episode.subjectKey).filter(Boolean))].sort();
+        setAvailableSubjectEpisodes(episodes);
+        setAvailableSubjects(subjects);
+        saveLastAppData({ availableSubjects: subjects, availableSubjectEpisodes: episodes, subjectsLoaded: true });
+      });
+      setHomeSelectedSubjects([]);
+    } catch (error) {
+      setHomeSubjectStatus(error.message || 'Could not add the selected subjects.');
+    } finally {
+      setSavingHomeSubjects(false);
+    }
+  };
 
   useEffect(() => {
     const snapshot = getCachedStudentDashboardState(profile?.uid);
@@ -728,10 +653,46 @@ export const StudentDashboardPage = () => {
     >
       {loadError ? <div className="panel p-4 text-sm text-amber-700">{loadError}</div> : null}
       {isCheckingAccess && (visibleLastAppData?.accessChecked || hasCachedAccessState) ? <p className="inline-flex items-center gap-2 text-xs font-medium text-slate-300" role="status"><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-lime-300 border-r-transparent" aria-hidden="true" />Refreshing subscription and access in the background; showing your last loaded data.</p> : null}
-      {!availableSubjects.length && !requiresSubscriptionSelection ? (
+      {!availableSubjects.length && !requiresSubscriptionSelection && !globalSubjectsLoading && !homeSubjectOptions.length ? (
         <div className="panel p-5 text-sm text-slate-600">
-          Add a subject to your active plan before exercises can be assigned. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate('/student/profile/subjects')}>Manage subjects</button>
+          No additional subjects are available for your grade and subscription. <button type="button" className="ml-1 font-semibold text-brand-700 underline" onClick={() => navigate('/student/profile/subjects')}>Manage subjects</button>
         </div>
+      ) : null}
+
+      {subscriptionState?.paymentCompleted && remainingHomeSubjectSlots > 0 ? (
+        <section className="panel space-y-4 p-5" aria-labelledby="home-subject-picker-title">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 id="home-subject-picker-title" className="text-lg font-bold text-slate-950">Add subjects</h2>
+              <p className="mt-1 text-sm text-slate-500">Choose up to {remainingHomeSubjectSlots} more subject{remainingHomeSubjectSlots === 1 ? '' : 's'} on your plan.</p>
+            </div>
+            <span className="rounded-full bg-lime-100 px-3 py-1 text-xs font-semibold text-lime-800">{availableSubjects.length} of {subjectLimit} selected</span>
+          </div>
+          <MultiSelectDropdown
+            choices={homeSubjectOptions}
+            selectedValues={homeSelectedSubjects}
+            onChange={handleHomeSubjectSelectionChange}
+            maxSelections={remainingHomeSubjectSlots}
+            placeholder={globalSubjectsLoading ? 'Loading subjects…' : !profile?.grade ? 'Set your grade to see eligible subjects' : 'Select one or more subjects'}
+            emptyMessage={globalSubjectsLoading ? 'Loading subjects…' : `No additional subjects available for ${profile?.grade || 'your grade'}`}
+            ariaLabel="Choose subjects to add from Home"
+            disabled={globalSubjectsLoading || !profile?.grade || !homeSubjectOptions.length || savingHomeSubjects}
+          />
+          <div className="min-h-14 rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Selected subjects</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {homeSelectedSubjects.length ? homeSelectedSubjects.map((subject) => (
+                <button key={subject} type="button" className="rounded-full border border-lime-500/50 px-3 py-1 text-sm font-semibold text-slate-800 hover:bg-lime-100" onClick={() => handleHomeSubjectSelectionChange(homeSelectedSubjects.filter((item) => item !== subject))} disabled={savingHomeSubjects} aria-label={`Remove ${subject}`}>
+                  {subject} ×
+                </button>
+              )) : <span className="text-sm text-slate-500">Subjects you choose will appear here immediately.</span>}
+            </div>
+          </div>
+          {homeSubjectStatus ? <p className="text-sm text-rose-700" role="alert">{homeSubjectStatus}</p> : null}
+          <button type="button" className="btn-primary" onClick={saveHomeSubjects} disabled={savingHomeSubjects || !homeSelectedSubjects.length}>
+            {savingHomeSubjects ? 'Saving subjects…' : 'Save subjects'}
+          </button>
+        </section>
       ) : null}
 
       {initialRetrySubjects.map((subject) => (
@@ -770,7 +731,7 @@ export const StudentDashboardPage = () => {
           {(isLoadingExercises || (isCheckingAccess && !hasCachedAccessState)) && !todayExercises.length ? (
             <LoadingState className="col-span-full min-h-40" label="Loading today’s exercises…" />
           ) : isGenerating && !todayExercises.length ? null : !paymentLocked && todayExercises.length ? todayExercises.map((exercise) => (
-            <TodayExerciseCard key={exercise.id} exercise={exercise} onOpen={() => {
+            <HomeExerciseCard key={exercise.id} exercise={exercise} onOpen={() => {
               const params = new URLSearchParams();
               if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
               navigate(`/student/exercises/${exercise.id}${params.size ? `?${params.toString()}` : ''}`);

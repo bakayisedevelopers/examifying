@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Trash2 } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { SectionHeader } from '../../components/common/SectionHeader';
+import { MultiSelectDropdown } from '../../components/common/MultiSelectDropdown';
 import { useAuth } from '../../hooks/useAuth';
 import {
   getManualTopicCompletionOptions,
@@ -36,7 +37,6 @@ export const TutorLessonsPage = () => {
   const [manualAvailableTopics, setManualAvailableTopics] = useState([]);
   const [manualTopicsLoading, setManualTopicsLoading] = useState(false);
   const [manualTopicsError, setManualTopicsError] = useState('');
-  const [manualSelectedTopic, setManualSelectedTopic] = useState('');
   const [manualTopicRows, setManualTopicRows] = useState([]);
   const [manualSaveError, setManualSaveError] = useState('');
   const [manualSaving, setManualSaving] = useState(false);
@@ -91,29 +91,26 @@ export const TutorLessonsPage = () => {
   const changeManualSubject = (value) => {
     setManualSubject(value);
     setManualContextKey('');
-    setManualSelectedTopic('');
     setManualTopicRows([]);
     setManualSaveError('');
     resetManualOperation();
   };
   const changeManualStudent = (value) => {
     setManualContextKey(value);
-    setManualSelectedTopic('');
     setManualTopicRows([]);
     setManualSaveError('');
     resetManualOperation();
   };
-  const addManualTopic = () => {
-    if (!manualSelectedTopic || manualTopicRows.some((entry) => entry.topic === manualSelectedTopic)) return;
-    setManualTopicRows((current) => [...current, { topic: manualSelectedTopic, understandingLevel: '' }]);
-    setManualAvailableTopics((current) => current.filter((topic) => topic !== manualSelectedTopic));
-    setManualSelectedTopic('');
+  const updateManualTopicSelection = (selectedTopics) => {
+    setManualTopicRows((current) => {
+      const currentByTopic = new Map(current.map((entry) => [entry.topic, entry]));
+      return selectedTopics.map((topic) => currentByTopic.get(topic) ?? { topic, understandingLevel: '' });
+    });
     setManualSaveError('');
     resetManualOperation();
   };
   const removeManualTopic = (topic) => {
     setManualTopicRows((current) => current.filter((entry) => entry.topic !== topic));
-    setManualAvailableTopics((current) => [...current, topic].sort((left, right) => left.localeCompare(right)));
     setManualSaveError('');
     resetManualOperation();
   };
@@ -149,7 +146,6 @@ export const TutorLessonsPage = () => {
       }));
       manualOperationId.current = null;
       setManualTopicRows([]);
-      setManualSelectedTopic('');
       try {
         const lesson = await getLessonById(saved.lessonId, {
           studentId: manualContext.studentId,
@@ -218,14 +214,19 @@ export const TutorLessonsPage = () => {
         {manualContexts.length === 0 && !isLoading ? <p className="text-sm text-slate-500">This action requires current co-owner access to an assigned student.</p> : null}
         {manualContext ? (
           <>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <select aria-label="Choose a topic to add" className="input min-w-0 flex-1" value={manualSelectedTopic} onChange={(event) => setManualSelectedTopic(event.target.value)} disabled={manualTopicsLoading || !manualAvailableTopics.length}>
-                <option value="">{manualTopicsLoading ? 'Loading available topics…' : manualAvailableTopics.length ? 'Choose a topic' : 'No uncompleted topics available'}</option>
-                {manualAvailableTopics.map((topic) => <option key={topic} value={topic}>{topic}</option>)}
-              </select>
-              <button type="button" className="btn-secondary inline-flex items-center justify-center gap-2" onClick={addManualTopic} disabled={!manualSelectedTopic || manualTopicsLoading}>
-                <Plus className="h-4 w-4" aria-hidden="true" /> Add topic
-              </button>
+            <div className="grid gap-2">
+              <label className="text-sm font-semibold text-slate-700" htmlFor="manual-topic-multi-select">Topics to record</label>
+              <MultiSelectDropdown
+                id="manual-topic-multi-select"
+                choices={manualAvailableTopics}
+                selectedValues={manualTopicRows.map((entry) => entry.topic)}
+                onChange={updateManualTopicSelection}
+                placeholder={manualTopicsLoading ? 'Loading available topics…' : 'Select one or more topics'}
+                emptyMessage={manualTopicsLoading ? 'Loading available topics…' : 'No uncompleted topics available'}
+                ariaLabel="Choose completed topics"
+                disabled={manualTopicsLoading || manualSaving || !manualAvailableTopics.length}
+              />
+              {manualTopicRows.length ? <p className="text-xs text-slate-500">Selected topics appear below immediately. Choose Done to close this menu.</p> : null}
             </div>
             {manualTopicsError ? <p className="text-sm text-rose-700" role="alert">{manualTopicsError}</p> : null}
             {manualTopicRows.length ? (
@@ -245,7 +246,7 @@ export const TutorLessonsPage = () => {
                   </table>
                 </div>
               </div>
-            ) : <p className="rounded-lg border border-slate-200 p-3 text-sm text-slate-500">Add one or more topics from the selected subject's catalogue. Topics already present in this student's subject episode are excluded.</p>}
+            ) : <p className="rounded-lg border border-slate-200 p-3 text-sm text-slate-500">Select one or more topics from the subject catalogue. Topics already present in this student's subject episode are excluded.</p>}
             {manualSaveError ? <p className="text-sm text-rose-700" role="alert">{manualSaveError}</p> : null}
             <button type="button" className="btn-primary" onClick={saveManualTopics} disabled={manualSaving || !manualScoresAreValid}>
               {manualSaving ? 'Saving completed topics…' : `Save ${manualTopicRows.length || ''} completed topic${manualTopicRows.length === 1 ? '' : 's'}`}

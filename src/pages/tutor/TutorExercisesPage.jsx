@@ -1,120 +1,185 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
-import { SectionHeader } from '../../components/common/SectionHeader';
-import { ExerciseStatusBadges } from '../../components/dashboard/ExerciseStatusBadges';
+import { ExerciseActivityCalendar } from '../../components/dashboard/ExerciseActivityCalendar';
+import { HomeExerciseCard } from '../../components/dashboard/HomeExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
-import { useOperationStatus } from '../../hooks/useOperationStatus';
-import { deleteExerciseAssignmentForTutor, getTutorAssignedStudentContexts, getTutorExercisesForAssignedStudents } from '../../services/firestoreService';
-import { deleteExerciseSubmissionFiles } from '../../services/storageService';
-import { isExerciseSubmitted } from '../../services/exerciseGenerationPlan';
+import {
+  getTutorAssignedStudentContexts,
+  getTutorExerciseCalendarBounds,
+  getTutorExerciseCalendarWindow,
+  getTutorExerciseWorkRecords,
+} from '../../services/firestoreService';
+import { getTutorCalendarDateStatus, getTutorExerciseCompletionKey, getTutorExerciseCompletionStatus } from '../../utils/tutorExerciseCompletion';
+import { getLocalDateKey, shiftDateKey } from '../../utils/dateKey';
 import { useEffectiveRole } from '../../utils/effectiveRole';
 import { warmNavigationRoute } from '../../routes/preloadNavigationRoute';
 
-const getLocalDate = () => {
-  const now = new Date();
-  return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
-};
+const buildCompletionStatuses = (exercises, workRecords) => Object.fromEntries(exercises.map((exercise) => {
+  const contextKey = `${exercise.studentId}:${exercise.subjectInstanceId}`;
+  const records = workRecords[contextKey] ?? {};
+  return [getTutorExerciseCompletionKey(exercise), getTutorExerciseCompletionStatus({
+    exercise,
+    peerMarkingAssignments: records.peerMarkingAssignments ?? [],
+    scoreEntries: records.scoreEntries ?? [],
+    workRecordsError: Boolean(records.loadError),
+  })];
+}));
 
 export const TutorExercisesPage = () => {
   const { profile, logout } = useAuth();
-  const { runOperation } = useOperationStatus();
   const navigate = useNavigate();
   const { role, basePath } = useEffectiveRole();
-  const [exercises, setExercises] = useState([]);
   const [contexts, setContexts] = useState([]);
-  const [studentFilter, setStudentFilter] = useState('all');
-  const [subjectFilter, setSubjectFilter] = useState('all');
+  const [bounds, setBounds] = useState({ earliestDate: '', latestDate: '' });
+  const [calendarWeekStart, setCalendarWeekStart] = useState(() => shiftDateKey(getLocalDateKey(), -6));
+  const [calendarExercises, setCalendarExercises] = useState([]);
+  const [calendarCompletion, setCalendarCompletion] = useState({});
+  const [todayExercises, setTodayExercises] = useState([]);
+  const [todayCompletion, setTodayCompletion] = useState({});
+  const [isLoadingContexts, setIsLoadingContexts] = useState(true);
+  const [isLoadingCalendar, setIsLoadingCalendar] = useState(true);
   const [status, setStatus] = useState('');
-  const [deletingExerciseId, setDeletingExerciseId] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const today = getLocalDate();
+  const [workLoadError, setWorkLoadError] = useState('');
+  const today = getLocalDateKey();
 
   useEffect(() => {
-    if (!profile?.uid) { setIsLoading(false); return undefined; }
     let active = true;
-    setIsLoading(true);
+    if (!profile?.uid) {
+      setContexts([]);
+      setBounds({ earliestDate: '', latestDate: '' });
+      setIsLoadingContexts(false);
+      return () => { active = false; };
+    }
+
+    setIsLoadingContexts(true);
     setStatus('');
-    getTutorAssignedStudentContexts(profile.uid).then((contextRows) =>
-      getTutorExercisesForAssignedStudents(profile.uid, contextRows).then((exerciseRows) => [exerciseRows, contextRows]),
-    ).then(([exerciseRows, contextRows]) => {
-      if (!active) return;
-      setExercises(exerciseRows);
-      setContexts(contextRows);
-    }).catch((error) => {
-      if (active) setStatus(error.message || 'Could not load exercises.');
-    }).finally(() => {
-      if (active) setIsLoading(false);
-    });
+    getTutorAssignedStudentContexts(profile.uid)
+      .then(async (rows) => {
+        if (!active) return;
+        setContexts(rows);
+        try {
+          setBounds(await getTutorExerciseCalendarBounds(rows));
+        } catch (error) {
+          setBounds({ earliestDate: '', latestDate: '' });
+          setStatus(error.message || 'Exercise calendar history could not be loaded.');
+        }
+      })
+      .catch((error) => {
+        if (active) setStatus(error.message || 'Could not load students and exercises.');
+      })
+      .finally(() => { if (active) setIsLoadingContexts(false); });
+
     return () => { active = false; };
   }, [profile?.uid]);
 
-  const subjects = useMemo(() => [...new Set(contexts.map((item) => item.subject).filter(Boolean))], [contexts]);
-  const students = useMemo(() => contexts.filter((item, index, list) => list.findIndex((row) => row.studentId === item.studentId) === index), [contexts]);
-  const filteredExercises = exercises.filter((exercise) =>
-    (studentFilter === 'all' || exercise.studentId === studentFilter) &&
-    (subjectFilter === 'all' || exercise.subject === subjectFilter)
-  );
-  const canDeleteExercise = (exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) > today && !isExerciseSubmitted(exercise);
+  useEffect(() => {
+    let active = true;
+    if (isLoadingContexts) return undefined;
+    if (!contexts.length) {
+      setCalendarExercises([]);
+      setCalendarCompletion({});
+      setTodayExercises([]);
+      setTodayCompletion({});
+      setIsLoadingCalendar(false);
+      return undefined;
+    }
+
+    const weekEnd = shiftDateKey(calendarWeekStart, 6);
+    const todayInWeek = today >= calendarWeekStart && today <= weekEnd;
+    setIsLoadingCalendar(true);
+    setWorkLoadError('');
+    getTutorExerciseCalendarWindow({ contexts, startDate: calendarWeekStart, endDate: weekEnd })
+      .then(async (exercises) => {
+        if (!active) return;
+        setCalendarExercises(exercises);
+        if (todayInWeek) setTodayExercises(exercises.filter((exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) === today));
+        const workRecords = await getTutorExerciseWorkRecords({ contexts, exercises });
+        if (!active) return;
+        const completion = buildCompletionStatuses(exercises, workRecords);
+        setCalendarCompletion(completion);
+        if (todayInWeek) {
+          setTodayCompletion(Object.fromEntries(exercises
+            .filter((exercise) => String(exercise.assignmentDate ?? '').slice(0, 10) === today)
+            .map((exercise) => [getTutorExerciseCompletionKey(exercise), completion[getTutorExerciseCompletionKey(exercise)]])));
+        }
+        const failedContext = Object.values(workRecords).find((record) => record.loadError);
+        if (failedContext?.loadError) setWorkLoadError('Some marking history could not be checked; affected work stays pending until it can be verified.');
+      })
+      .catch((error) => {
+        if (active) setStatus(error.message || 'Could not load this week’s exercises.');
+      })
+      .finally(() => { if (active) setIsLoadingCalendar(false); });
+
+    return () => { active = false; };
+  }, [calendarWeekStart, contexts, isLoadingContexts, today]);
+
+  const dateStatus = (dateKey) => getTutorCalendarDateStatus({
+    dateKey,
+    today,
+    exercises: calendarExercises,
+    completionByExerciseId: calendarCompletion,
+  });
+
   const openExercise = (exercise) => {
-    const params = new URLSearchParams({ studentId: exercise.studentId, subjectInstanceId: exercise.subjectInstanceId });
-    navigate(`${basePath}/exercises/${exercise.id}?${params.toString()}`);
+    const params = new URLSearchParams();
+    if (exercise.studentId) params.set('studentId', exercise.studentId);
+    if (exercise.subjectInstanceId) params.set('subjectInstanceId', exercise.subjectInstanceId);
+    navigate(`${basePath}/exercises/${exercise.id}${params.size ? `?${params.toString()}` : ''}`);
   };
 
-  const removeExercise = async (exercise) => {
-    if (!window.confirm(`Delete “${exercise.title || 'this exercise'}” for ${exercise.studentName || 'this student'}? This cannot be undone.`)) return;
-    setDeletingExerciseId(exercise.id);
-    try {
-      await runOperation({ operationName: 'Deleting exercise and uploaded work', successMessage: 'The exercise and its submitted files were deleted.' }, async () => {
-        const result = await deleteExerciseAssignmentForTutor({ tutorId: profile.uid, exerciseId: exercise.id });
-        await deleteExerciseSubmissionFiles(result.storageUrls);
-        setExercises((current) => current.filter((item) => item.id !== exercise.id));
-      });
-      setStatus('Exercise deleted.');
-    } catch (error) {
-      setStatus(error.message || 'Could not delete exercise.');
-    } finally {
-      setDeletingExerciseId('');
-    }
-  };
+  const emptyMessage = useMemo(() => contexts.length
+    ? 'No exercises are scheduled for your students today.'
+    : 'No students are assigned to you yet.', [contexts.length]);
 
   return (
-    <AppShell title="Exercises" subtitle="Tutor view of exercises assigned to your students." role={role} user={profile} onLogout={logout}>
-      <div className="panel grid gap-3 p-4 md:grid-cols-2">
-        <select className="input" value={studentFilter} onChange={(event) => setStudentFilter(event.target.value)}>
-          <option value="all">All students</option>
-          {students.map((student) => <option key={student.studentId} value={student.studentId}>{student.displayName || student.name || student.email || student.studentId}</option>)}
-        </select>
-        <select className="input" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}>
-          <option value="all">All subjects</option>
-          {subjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
-        </select>
-      </div>
-      {status ? <div role="status" className="panel p-4 text-sm text-slate-300">{status}</div> : null}
-      <SectionHeader eyebrow="Assigned work" title="Student exercises" description="Filter by all, student, or subject. Only students assigned to you are shown." />
-      <div className="grid gap-4">
-        {isLoading ? <LoadingState label="Loading assigned exercises…" /> : null}
-        {filteredExercises.map((exercise) => (
-          <div key={exercise.id} className="panel flex flex-wrap items-center justify-between gap-3 p-5">
-            <button type="button" onClick={() => openExercise(exercise)} onMouseEnter={() => warmNavigationRoute(`${basePath}/exercises/${exercise.id}`)} onFocus={() => warmNavigationRoute(`${basePath}/exercises/${exercise.id}`)} onPointerDown={() => warmNavigationRoute(`${basePath}/exercises/${exercise.id}`)} className="min-w-0 flex-1 text-left transition">
-              <div>
-                <p className="font-semibold text-slate-100">{exercise.title}</p>
-                <p className="mt-1 text-sm text-slate-400">{exercise.studentName || exercise.studentId} • {exercise.subject} • {exercise.assignmentDate}</p>
-                <p className="mt-2 text-sm text-slate-300">{exercise.topic}</p>
-              </div>
-            </button>
-            <ExerciseStatusBadges exercise={exercise} className="justify-end" />
-            {canDeleteExercise(exercise) ? (
-              <button type="button" className="hidden btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={() => removeExercise(exercise)} disabled={deletingExerciseId === exercise.id} aria-label={`Delete ${exercise.title}`} title="Delete future exercise">
-                <Trash2 className="h-4 w-4" aria-hidden="true" /> {deletingExerciseId === exercise.id ? 'Deleting...' : 'Delete'}
-              </button>
+    <AppShell title="Home" subtitle="Review today’s exercise work across your students." role={role} user={profile} onLogout={logout}>
+      {status ? <div className="panel p-4 text-sm text-rose-700" role="alert">{status}</div> : null}
+      {workLoadError ? <div className="panel p-4 text-sm text-amber-700" role="status">{workLoadError}</div> : null}
+
+      <section className="space-y-4">
+        <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
+          <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Exercises</p>
+          <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Complete</h2>
+          <ExerciseActivityCalendar
+            weekStart={calendarWeekStart}
+            bounds={bounds}
+            exercises={calendarExercises}
+            loading={isLoadingContexts || isLoadingCalendar}
+            onWeekChange={setCalendarWeekStart}
+            getDateStatus={dateStatus}
+            pendingStatusLabel="Pending"
+            incompleteStatusLabel="Incomplete"
+          />
+        </div>
+
+        <div>
+          <div className="mb-4">
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Today · {today}</p>
+            <h2 className="mt-1 text-xl font-bold text-slate-950">Student exercises</h2>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            {isLoadingContexts || isLoadingCalendar ? <LoadingState className="col-span-full min-h-40" label="Loading today’s exercises…" /> : null}
+            {!isLoadingContexts && !isLoadingCalendar ? todayExercises.map((exercise) => (
+              <HomeExerciseCard
+                key={getTutorExerciseCompletionKey(exercise)}
+                exercise={exercise}
+                studentName={exercise.studentName}
+                completion={todayCompletion[getTutorExerciseCompletionKey(exercise)]}
+                allowAnyDate
+                onOpen={() => {
+                  openExercise(exercise);
+                  warmNavigationRoute(`${basePath}/exercises/${exercise.id}`);
+                }}
+              />
+            )) : null}
+            {!isLoadingContexts && !isLoadingCalendar && !todayExercises.length ? (
+              <div className="panel col-span-full flex min-h-40 items-center justify-center p-6 text-center text-sm text-slate-500">{emptyMessage}</div>
             ) : null}
           </div>
-        ))}
-        {!isLoading && !status && !filteredExercises.length ? <div className="panel p-5 text-sm text-slate-500">No exercises match this filter.</div> : null}
-      </div>
+        </div>
+      </section>
     </AppShell>
   );
 };

@@ -60,7 +60,7 @@ export const TutorDashboardPage = () => {
   const [readinessLoading, setReadinessLoading] = useState(true);
 
   useScreenLoadMetrics(
-    `${RoleName} dashboard`,
+    `${RoleName} students`,
     role,
     students.length > 0 || !readinessLoading || Boolean(status),
   );
@@ -135,7 +135,7 @@ export const TutorDashboardPage = () => {
 
   return (
     <AppShell
-      title={`${RoleName} dashboard`}
+      title="Students"
       subtitle="Open an assigned student to manage subject reports, completed lessons, and exercises."
       role={role}
       user={profile}

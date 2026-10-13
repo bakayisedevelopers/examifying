@@ -21,6 +21,7 @@ export {
 
 export { processSubscriptionRenewals } from './subscriptionRenewals.js';
 export { auditSubscriptionChanges, auditAuthorizationChanges } from './subscriptionAudit.js';
+export { scheduleAccountDeletion, cancelAccountDeletion, processScheduledAccountDeletions } from './accountDeletion.js';
 
 export {
   createDiscountCode,

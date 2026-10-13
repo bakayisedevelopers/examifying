@@ -3,7 +3,14 @@ import { AppShell } from '../../components/common/AppShell';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { updateUserSettings } from '../../services/firestoreService';
-import { deleteCurrentUserAccount } from '../../services/authService';
+import { cancelCurrentUserAccountDeletion, scheduleCurrentUserAccountDeletion } from '../../services/authService';
+
+const formatDeletionDate = (value) => {
+  const date = value?.toDate?.() ?? (value instanceof Date ? value : value ? new Date(value) : null);
+  return date && Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat('en-ZA', { dateStyle: 'long', timeZone: 'Africa/Johannesburg' }).format(date)
+    : 'the scheduled date';
+};
 
 const NOTIFICATION_TYPES = [
   {
@@ -87,6 +94,7 @@ export const ProfileSettingsPage = ({ role }) => {
   const [preferences, setPreferences] = useState(() => buildNotificationPreferences(profile));
   const [marketingEmailOptIn, setMarketingEmailOptIn] = useState(profile?.marketingEmailOptIn === true);
   const [status, setStatus] = useState('');
+  const [deletionStatus, setDeletionStatus] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -125,24 +133,50 @@ export const ProfileSettingsPage = ({ role }) => {
   };
 
   const handleDeleteAccount = async () => {
-    const typed = window.prompt('Type DELETE to permanently delete your account.');
+    const typed = window.prompt('Type DELETE to schedule permanent account deletion after 30 days. You can cancel during that period.');
     if (typed !== 'DELETE') {
-      setStatus('Account deletion cancelled.');
+      setDeletionStatus('Account deletion request cancelled.');
       return;
     }
 
     try {
       setDeleting(true);
-      setStatus('Deleting account…');
-      await runOperation({ operationName: 'Deleting your account', successMessage: 'Your account deletion was confirmed.' }, () => deleteCurrentUserAccount(profile.uid));
+      setDeletionStatus('Scheduling account deletion…');
+      const result = await runOperation({
+        operationName: 'Scheduling account deletion',
+        successMessage: 'Your account is scheduled for deletion in 30 days. You can cancel it in Settings before then.',
+        autoDismissMs: 6000,
+      }, scheduleCurrentUserAccountDeletion);
+      await refreshProfile(profile.uid);
+      setDeletionStatus(`Your account is scheduled for deletion on ${formatDeletionDate(result.scheduledFor)}. You can cancel it any time before then.`);
     } catch (error) {
-      const message = error?.code === 'auth/requires-recent-login'
-        ? 'Please log out, log back in, and then delete the account again.'
-        : error.message || 'Could not delete account.';
-      setStatus(message);
+      setDeletionStatus(error.message || 'Could not schedule account deletion.');
+    } finally {
       setDeleting(false);
     }
   };
+
+  const handleCancelAccountDeletion = async () => {
+    if (!window.confirm('Cancel the scheduled deletion and keep your Examifying account?')) return;
+    try {
+      setDeleting(true);
+      setDeletionStatus('Cancelling scheduled account deletion…');
+      await runOperation({
+        operationName: 'Cancelling account deletion',
+        successMessage: 'Your account deletion request has been cancelled. Your account remains active.',
+        autoDismissMs: 5000,
+      }, cancelCurrentUserAccountDeletion);
+      await refreshProfile(profile.uid);
+      setDeletionStatus('Your account deletion request has been cancelled. Your account remains active.');
+    } catch (error) {
+      setDeletionStatus(error.message || 'Could not cancel account deletion.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const deletionScheduled = profile?.accountDeletionStatus === 'scheduled' && Boolean(profile?.accountDeletionScheduledFor);
+  const deletionProcessing = profile?.accountDeletionStatus === 'deleting';
 
   return (
     <AppShell title="Settings" subtitle="Manage notifications and account preferences." role={role} user={profile} onLogout={logout}>
@@ -193,17 +227,29 @@ export const ProfileSettingsPage = ({ role }) => {
 
       <section className="panel max-w-4xl space-y-4 border-rose-200 p-6">
         <div>
-          <p className="font-semibold text-rose-700">Delete account</p>
-          <p className="mt-2 text-sm text-slate-500">This permanently deletes the signed-in account and its user profile record.</p>
+          <p className="font-semibold text-rose-700">{deletionProcessing ? 'Account deletion in progress' : deletionScheduled ? 'Account deletion scheduled' : 'Delete account'}</p>
+          {deletionScheduled ? (
+            <p role="status" className="mt-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+              Your account is scheduled for permanent deletion on <strong>{formatDeletionDate(profile.accountDeletionScheduledFor)}</strong>.
+              {' '}Your account remains available during the 30-day period. You can cancel the deletion below before that date.
+            </p>
+          ) : deletionProcessing ? (
+            <p role="status" className="mt-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">The 30-day period has ended and permanent account deletion is being processed.</p>
+          ) : (
+            <p className="mt-2 text-sm text-slate-500">Scheduling deletion starts a 30-day period. Your account stays available during that time, and you can cancel the request from Settings. After the period ends, the account and its user data are permanently removed.</p>
+          )}
         </div>
         <button
           type="button"
-          onClick={handleDeleteAccount}
-          disabled={deleting}
-          className="rounded-full bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
+          onClick={deletionScheduled ? handleCancelAccountDeletion : handleDeleteAccount}
+          disabled={deleting || deletionProcessing}
+          className={deletionScheduled
+            ? 'btn-secondary disabled:cursor-not-allowed disabled:opacity-60'
+            : 'rounded-full bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60'}
         >
-          {deleting ? 'Deleting…' : 'Delete account'}
+          {deleting ? 'Please wait…' : deletionProcessing ? 'Deletion in progress' : deletionScheduled ? 'Cancel scheduled deletion' : 'Schedule account deletion'}
         </button>
+        {deletionStatus ? <p role="status" className="text-sm text-slate-600">{deletionStatus}</p> : null}
       </section>
     </AppShell>
   );

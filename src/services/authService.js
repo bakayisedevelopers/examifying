@@ -8,7 +8,7 @@ import {
   updatePassword,
   deleteUser,
 } from 'firebase/auth';
-import { deleteDoc, deleteField, doc, getDoc as firebaseGetDoc, runTransaction, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteField, doc, getDoc as firebaseGetDoc, runTransaction, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections } from '../firebase/schema';
@@ -292,16 +292,16 @@ export const updateUserProfileDetails = async ({ uid, displayName, grade, whatsa
 };
 
 
-export const deleteCurrentUserAccount = async (uid) => {
-  if (!isFirebaseConfigured) {
-    return true;
-  }
+export const scheduleCurrentUserAccountDeletion = async () => {
+  if (!auth?.currentUser) throw new Error('Sign in before scheduling account deletion.');
+  if (!functions) throw new Error('Firebase Functions are not configured. Account deletion is temporarily unavailable.');
+  const schedule = httpsCallable(functions, 'scheduleAccountDeletion');
+  return (await schedule({})).data;
+};
 
-  if (!auth?.currentUser || auth.currentUser.uid !== uid) {
-    throw new Error('You must be signed in as this user to delete the account.');
-  }
-
-  await deleteDoc(doc(db, collections.users, uid));
-  await deleteUser(auth.currentUser);
-  return true;
+export const cancelCurrentUserAccountDeletion = async () => {
+  if (!auth?.currentUser) throw new Error('Sign in before cancelling account deletion.');
+  if (!functions) throw new Error('Firebase Functions are not configured. Account deletion is temporarily unavailable.');
+  const cancel = httpsCallable(functions, 'cancelAccountDeletion');
+  return (await cancel({})).data;
 };

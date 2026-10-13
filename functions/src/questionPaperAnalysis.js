@@ -11,6 +11,7 @@ import { getDb, storage, taskQueue } from './admin.js';
 import { mergeGlobalTopicLabels, normalizeGeneratedTopicLabel, normalizeStoredTopicLabel } from './globalTopicCatalog.js';
 import { normalizePaperIdentityValue, resolveDrivePaperIdentity } from './paperIdentity.js';
 import { parseGoogleDrivePaperMetadata } from './googleDrivePaperImportCore.js';
+import { extendTopicOptionsWithDriveLabels, normalizeDriveAnalysisTopicLabels } from './driveAnalysisTopicLabels.js';
 import { callKiloVisionWithFallback } from './kilo.js';
 import { callGeminiGenerateContent } from './gemini.js';
 import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
@@ -998,6 +999,14 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [] }) => 
   if (!sourceQuestions.length || sourceQuestions.length > MAX_STORED_QUESTIONS) {
     throw new Error(`The Drive analysis JSON must contain 1-${MAX_STORED_QUESTIONS} questions.`);
   }
+  const questionTopics = sourceQuestions.map((item) => normalizeDriveAnalysisTopicLabels({
+    values: Array.isArray(item?.topics) ? item.topics : [item?.topic],
+    allowedTopics: topicOptions,
+    questionReference: String(item?.questionReference ?? '').trim(),
+  }));
+  // Drive JSON is an authoritative analysis source. Keep structurally valid labels that
+  // are not in the current catalog so persistence can add them to the grade catalog.
+  const driveTopicOptions = extendTopicOptionsWithDriveLabels(topicOptions, questionTopics);
   const seenReferences = new Set();
   const normalizedQuestions = sourceQuestions.map((item, index) => {
     const questionReference = String(item?.questionReference ?? '').trim();
@@ -1012,15 +1021,10 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [] }) => 
     if (!Number.isFinite(marks) || marks < 0) throw new Error(`Question ${questionReference} must have a non-negative marks value.`);
     if (!difficulty) throw new Error(`Question ${questionReference} must have difficulty easy, medium, or hard.`);
 
-    const requestedTopics = Array.isArray(item?.topics) ? item.topics : [item?.topic];
-    const topicLabels = [...new Set(requestedTopics.map((value) => normalizeStoredTopicLabel(value)).filter(Boolean))];
-    const suppliedTopicLabels = requestedTopics.map((value) => String(value ?? '').trim()).filter(Boolean);
-    if (topicLabels.length !== suppliedTopicLabels.length) {
+    const topicLabels = questionTopics[index];
+    const constrainedTopics = constrainTopicList(topicLabels, driveTopicOptions);
+    if (topicLabels.length !== constrainedTopics.length) {
       throw new Error(`Question ${questionReference} contains a topic that is not in Child | Parent format.`);
-    }
-    const constrainedTopics = constrainTopicList(topicLabels, topicOptions);
-    if (topicLabels.length && constrainedTopics.length !== topicLabels.length) {
-      throw new Error(`Question ${questionReference} contains duplicate or invalid topic labels.`);
     }
     const question = normalizeQuestion({
       item: {
@@ -1045,7 +1049,7 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [] }) => 
   const parsed = {
     topicMetadata: Array.isArray(source.analysis.topicMetadata) ? source.analysis.topicMetadata : [],
   };
-  const topicMetadata = normalizeParsedTopicMetadata({ parsed, questions: normalizedQuestions, topicOptions });
+  const topicMetadata = normalizeParsedTopicMetadata({ parsed, questions: normalizedQuestions, topicOptions: driveTopicOptions });
   const topics = [...new Set(normalizedQuestions.flatMap((question) => question.topics ?? []))]
     .filter((topic) => topic !== 'Unclassified topic')
     .slice(0, 80);
@@ -1064,7 +1068,7 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [] }) => 
   };
   const identityPatch = drivePaperIdentityPatch(drivePaperIdentity, paper);
   const analysisPaper = { ...paper, ...identityPatch };
-  const analysis = buildAnalysisFromBatches({ paperId, paper: analysisPaper, batches: [batch], models: [], topicOptions });
+  const analysis = buildAnalysisFromBatches({ paperId, paper: analysisPaper, batches: [batch], models: [], topicOptions: driveTopicOptions });
   return { ...analysis, drivePaperIdentity };
 };
 

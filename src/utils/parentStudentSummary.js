@@ -14,17 +14,19 @@ export const mergeParentStudentSubscriptionSummary = (subjectAccess, subscriptio
 
 const fulfilledValues = (results = []) => results
   .filter((result) => result?.status === 'fulfilled')
-  .flatMap((result) => Array.isArray(result.value) ? result.value : []);
+  .flatMap((result) => Array.isArray(result.value)
+    ? result.value
+    : result.value == null ? [] : [result.value]);
 
-export const summarizeParentStudentProgress = ({ todayExerciseResults = [], completedLessonResults = [] } = {}) => {
+export const summarizeParentStudentProgress = ({ todayExerciseResults = [], completedTopicResults = [] } = {}) => {
   const todayExercises = fulfilledValues(todayExerciseResults);
-  const completedLessons = fulfilledValues(completedLessonResults);
+  const completedTopicSummaries = fulfilledValues(completedTopicResults);
 
   return {
     todayExercise: todayExercises
       .sort((left, right) => String(left.subject ?? '').localeCompare(String(right.subject ?? '')))[0] ?? null,
-    completedLessonsCount: completedLessons.length,
+    completedTopicsCount: completedTopicSummaries.filter((summary) => summary.topicStatus === 'done').length,
     todayExerciseUnavailable: todayExerciseResults.some((result) => result?.status === 'rejected'),
-    completedLessonsUnavailable: completedLessonResults.some((result) => result?.status === 'rejected'),
+    completedTopicsUnavailable: completedTopicResults.some((result) => result?.status === 'rejected'),
   };
 };

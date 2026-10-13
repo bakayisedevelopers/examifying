@@ -1551,7 +1551,7 @@ export const getCompletedLessons = async (studentId, subject = DEFAULT_SUBJECT, 
 };
 
 export const getParentStudentSummary = async (student, subject = DEFAULT_SUBJECT) => {
-  if (!student?.uid) return { ...getEffectiveSubscriptionState(), completedLessonsCount: 0, todayExercise: null };
+  if (!student?.uid) return { ...getEffectiveSubscriptionState(), completedTopicsCount: 0, todayExercise: null };
   const subscription = await getStudentSubscriptionState(student);
   let episodes = [];
   let episodeLookupUnavailable = false;
@@ -1561,16 +1561,11 @@ export const getParentStudentSummary = async (student, subject = DEFAULT_SUBJECT
     episodeLookupUnavailable = true;
   }
 
-  const [todayExerciseResults, completedLessonResults] = await Promise.all([
+  const [todayExerciseResults, completedTopicResults] = await Promise.all([
     Promise.allSettled(episodes.map((episode) => getTodayExercise(student.uid, episode.subjectKey || subject, episode))),
-    Promise.allSettled(episodes.map((episode) => getCompletedLessons(
-      student.uid,
-      episode.subjectKey || subject,
-      episode.id,
-      episode,
-    ))),
+    Promise.allSettled(episodes.map((episode) => getEpisodeTopicSummaries(student.uid, episode.id))),
   ]);
-  const progress = summarizeParentStudentProgress({ todayExerciseResults, completedLessonResults });
+  const progress = summarizeParentStudentProgress({ todayExerciseResults, completedTopicResults });
   const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
   const subjectEpisode = episodes.find((episode) => (normalizeEligibleSubject(episode.subjectKey) ?? episode.subjectKey) === normalizedSubject) ?? null;
   const subjectAccess = {
@@ -1584,7 +1579,7 @@ export const getParentStudentSummary = async (student, subject = DEFAULT_SUBJECT
   return mergeParentStudentSubscriptionSummary(subjectAccess, subscription, {
     ...progress,
     todayExerciseUnavailable: progress.todayExerciseUnavailable || episodeLookupUnavailable,
-    completedLessonsUnavailable: progress.completedLessonsUnavailable || episodeLookupUnavailable,
+    completedTopicsUnavailable: progress.completedTopicsUnavailable || episodeLookupUnavailable,
   });
 };
 

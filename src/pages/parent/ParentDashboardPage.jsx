@@ -111,7 +111,7 @@ export const ParentDashboardPage = () => {
     const fallbackStudents = parentStudents.map((student) => ({
       ...student,
       summaryUnavailable: true,
-      completedLessonsCount: Number(student.completedLessonsCount || 0),
+      completedTopicsCount: Number(student.completedTopicsCount || 0),
       todayExercise: null,
       paymentCompleted: student.paymentCompleted === true,
       subscriptionPlanId: student.subscriptionPlanId || 'free',
@@ -626,11 +626,11 @@ export const ParentDashboardPage = () => {
                   <>
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Progress & Status</h4>
                     <div className="space-y-4 mb-6">
-                      {student.summaryUnavailable ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Student progress and subscription details could not be loaded. The linked student is still available; retry the status check below.</p> : student.todayExerciseUnavailable || student.completedLessonsUnavailable ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Some progress details could not be loaded. Subscription status is shown separately; retry the progress check below.</p> : null}
+                      {student.summaryUnavailable ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Student progress and subscription details could not be loaded. The linked student is still available; retry the status check below.</p> : student.todayExerciseUnavailable || student.completedTopicsUnavailable ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Some progress details could not be loaded. Subscription status is shown separately; retry the progress check below.</p> : null}
                       <div className="flex items-center gap-3">
                         <Activity className="w-5 h-5 text-brand-600" />
                         <div>
-                          <p className="text-sm font-medium text-slate-900">{student.summaryUnavailable ? 'Progress unavailable' : student.completedLessonsUnavailable ? `${student.completedLessonsCount} Completed Topics (partial)` : `${student.completedLessonsCount} Completed Topics`}</p>
+                          <p className="text-sm font-medium text-slate-900">{student.summaryUnavailable ? 'Progress unavailable' : student.completedTopicsUnavailable ? `${student.completedTopicsCount} Completed Topics (partial)` : `${student.completedTopicsCount} Completed Topics`}</p>
                           <p className="text-xs text-slate-500">Starting Mark: {student.previousYearMark || 0}%</p>
                         </div>
                       </div>
@@ -661,7 +661,7 @@ export const ParentDashboardPage = () => {
                     </span>
                   </div>
 
-                  {student.summaryUnavailable || student.todayExerciseUnavailable || student.completedLessonsUnavailable ? (
+                  {student.summaryUnavailable || student.todayExerciseUnavailable || student.completedTopicsUnavailable ? (
                     <button className="btn-secondary w-full" onClick={() => void loadStudents()} disabled={loading}>Retry student status</button>
                   ) : !student.paymentCompleted ? (
                     <button 

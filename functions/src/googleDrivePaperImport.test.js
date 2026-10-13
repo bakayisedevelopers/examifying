@@ -39,13 +39,14 @@ const createHarness = ({
   existingPapers = [],
   priorTrackingByFileId = {},
   inspectPdf = async () => ({}),
+  recheckWaitingAnalysis = async () => ({ requeued: false }),
   downloadFile = async () => pdfBuffer,
   onDownload = async () => {},
   downloadExisting = async () => pdfBuffer,
   inspectExistingStorage = async () => null,
 } = {}) => {
   const tracking = new Map(Object.entries(priorTrackingByFileId));
-  const calls = { upload: [], create: [], attachMemo: [], syncMetadata: [], logs: [] };
+  const calls = { upload: [], create: [], attachMemo: [], syncMetadata: [], analysisChecks: [], logs: [] };
   const runner = createDrivePaperImportRunner({
     rootFolderId: 'configured-past-papers-folder',
     acquireLease: async () => ({ acquired: true, owner: 'lease-test' }),
@@ -96,11 +97,16 @@ const createHarness = ({
     },
     createPaperIfAbsent: async ({ paperId, paperRecord }) => {
       calls.create.push({ paperId, paperRecord });
+      existingPapers.push({ id: paperId, ...paperRecord });
       return { created: true };
     },
     attachMemoIfMissing: async ({ paperId, memo, uploaded }) => {
       calls.attachMemo.push({ paperId, driveFileId: memo.file.id, uploaded });
       return { attached: true };
+    },
+    recheckWaitingAnalysis: async (input) => {
+      calls.analysisChecks.push(input);
+      return recheckWaitingAnalysis(input);
     },
     logger: {
       info: (...args) => calls.logs.push(args),
@@ -187,6 +193,70 @@ test('a language filename without its language level is held for review as ambig
   });
   assert.equal(parsed.ok, false);
   assert.match(parsed.reason, /subject is ambiguous/i);
+});
+
+test('recovers archived Drive names from their subject and grade folders', () => {
+  const cases = [
+    {
+      fileName: 'English FAL P2 May-June 2024 MG.doc.pdf',
+      folderPath: ['Past Papers', 'English First Additional Language', 'Grade 12'],
+      expected: {
+        subject: 'English First Additional Language', grade: 'Grade 12', month: 'June', year: 2024,
+        paperNumber: 'Paper 2', paperType: 'memo', language: 'English',
+      },
+    },
+    {
+      fileName: 'LIFE SC P1 QP GR10 NOV 2018_English.pdf',
+      folderPath: ['Past Papers', 'Life Sciences', 'Grade 10'],
+      expected: {
+        subject: 'Life Sciences', grade: 'Grade 10', month: 'November', year: 2018,
+        paperNumber: 'Paper 1', paperType: 'question', language: 'English',
+      },
+    },
+    {
+      fileName: 'Mathematics P1 Grade 10 Nov 2015 Memo Eng & Afr.pdf',
+      folderPath: ['Past Papers', 'Mathematics', 'Grade 10'],
+      expected: {
+        subject: 'Mathematics', grade: 'Grade 10', month: 'November', year: 2015,
+        paperNumber: 'Paper 1', paperType: 'memo', language: 'Afrikaans & English',
+      },
+    },
+    {
+      fileName: 'Life Sciences P1 GR 10 Exemplar Memo Eng.pdf',
+      folderPath: ['Past Papers', 'Life Sciences', 'Grade 10'],
+      expected: {
+        subject: 'Life Sciences', grade: 'Grade 10', month: '', year: null,
+        paperNumber: 'Examplar', paperType: 'memo', language: 'English',
+      },
+    },
+  ];
+
+  for (const { fileName, folderPath, expected } of cases) {
+    const parsed = parseGoogleDrivePaperMetadata({ fileName, folderPath });
+    assert.equal(parsed.ok, true, `${fileName}: ${parsed.reason ?? ''}`);
+    assert.deepEqual(parsed.metadata, { region: '', ...expected });
+  }
+});
+
+test('folder preview pairs a legacy question paper with its bilingual memo', () => {
+  const [group] = summarizeDriveFolderPapers({ files: [
+    {
+      id: 'legacy-memo',
+      name: 'Mathematics P1 Grade 10 Nov 2015 Memo Eng & Afr.pdf',
+      mimeType: 'application/pdf',
+      folderPath: ['Past Papers', 'Mathematics', 'Grade 10'],
+    },
+    {
+      id: 'legacy-paper',
+      name: 'Mathematics P1 Grade 10 Nov 2015 Eng.pdf',
+      mimeType: 'application/pdf',
+      folderPath: ['Past Papers', 'Mathematics', 'Grade 10'],
+    },
+  ] });
+
+  assert.equal(group.questionFiles.length, 1);
+  assert.equal(group.memoFiles.length, 1);
+  assert.deepEqual(group.importFileIds.sort(), ['legacy-memo', 'legacy-paper']);
 });
 
 test('accepts and normalizes all valid calendar months, including November', () => {
@@ -359,7 +429,7 @@ test('duplicate checks use matching Firebase Storage metadata even for a front-e
     inspectExistingStorage: async () => ({
       objectPath: 'questionPapers/user/paper/paper.pdf',
       metadata: { contentSha256: sha256Buffer(pdfBuffer), fileType: 'question' },
-    }),
+      }),
     downloadExisting: async () => { throw new Error('Storage metadata should provide the comparison hash.'); },
   });
   const result = await runner();
@@ -435,7 +505,7 @@ test('an existing record with no month is uncertain rather than treated as an id
   }), { status: 'uncertain', fields: ['month'] });
 });
 
-test('free-form school regions distinguish papers while province aliases still match', () => {
+test('region labels are descriptive and do not block a structurally matching record', () => {
   const incoming = parseGoogleDrivePaperMetadata({
     fileName: 'Mathematics - Grade 12 - Central High School - November - 2024 - Paper 1.pdf',
   }).metadata;
@@ -446,7 +516,7 @@ test('free-form school regions distinguish papers while province aliases still m
     year: 2024,
     month: 'November',
     paperNumber: 'Paper 1',
-  }), { status: 'different', field: 'region' });
+  }), { status: 'match' });
 
   assert.deepEqual(comparePaperMetadata({ ...incoming, region: 'GP' }, {
     subject: 'Mathematics',
@@ -517,6 +587,115 @@ test('a linked Drive file updates stale Firestore identity from its current file
   assert.equal(calls.syncMetadata.length, 1);
   assert.equal(calls.upload.length, 0);
   assert.equal(calls.create.length, 0);
+});
+
+test('the importer retries a previously reviewed filename when folder-aware parsing now recognizes it', async () => {
+  const file = paperFile('drive-recovered-parser', 'LIFE SC P1 QP GR10 NOV 2018_English.pdf');
+  file.folderPath = ['Past Papers', 'Life Sciences', 'Grade 10'];
+  const { runner, calls, tracking } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        parsedMetadata: null,
+        reviewReason: 'The subject and grade are missing from their expected filename positions.',
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.recoveredParserReviewRetries, 1);
+  assert.equal(result.importedFiles, 1);
+  assert.equal(tracking.get(file.id).importStatus, 'imported');
+  assert.equal(calls.create[0].paperRecord.subject, 'Life Sciences');
+  assert.equal(calls.create[0].paperRecord.grade, 'Grade 10');
+});
+
+test('terminal importer tracking reimports a Drive file whose Firestore target was deleted', async () => {
+  const file = paperFile('drive-missing-firestore-target');
+  const { runner, calls, tracking } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'imported',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        targetPaperId: 'deleted-paper-record',
+        parsedMetadata: parseGoogleDrivePaperMetadata({ fileName: file.name }).metadata,
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.importedFiles, 1);
+  assert.equal(calls.create.length, 1);
+  assert.equal(tracking.get(file.id).targetPaperId, calls.create[0].paperId);
+});
+
+test('a review tracking row does not block reimport when its Firestore target was deleted', async () => {
+  const file = paperFile('drive-reviewed-missing-target');
+  const { runner, calls, tracking } = createHarness({
+    files: [file],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'review',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        targetPaperId: 'deleted-review-target',
+        parsedMetadata: parseGoogleDrivePaperMetadata({ fileName: file.name }).metadata,
+        reviewReason: 'The target paper could not be loaded during the previous import attempt.',
+      },
+    },
+  });
+
+  const result = await runner();
+
+  assert.equal(result.importedFiles, 1);
+  assert.equal(calls.create.length, 1);
+  assert.equal(tracking.get(file.id).importStatus, 'imported');
+});
+
+test('a completed Drive scan rechecks waiting paper analysis when a sibling JSON appears', async () => {
+  const file = paperFile('drive-analysis-json-added');
+  const paper = {
+    id: 'waiting-drive-paper',
+    source: 'google_drive',
+    driveFileId: file.id,
+    subject: 'Mathematics',
+    grade: 'Grade 12',
+    region: 'National',
+    year: 2024,
+    month: 'November',
+    paperNumber: 'Paper 1',
+    paperFileName: file.name,
+    paperUrl: 'https://storage.example/paper',
+    analysisStatus: 'Waiting for Drive JSON',
+  };
+  const { runner, calls } = createHarness({
+    files: [file],
+    existingPapers: [paper],
+    priorTrackingByFileId: {
+      [file.id]: {
+        importStatus: 'imported',
+        driveFingerprint: getDriveFileFingerprint(file),
+        sourceFilename: file.name,
+        targetPaperId: paper.id,
+        parsedMetadata: parseGoogleDrivePaperMetadata({ fileName: file.name }).metadata,
+      },
+    },
+    recheckWaitingAnalysis: async () => ({ requeued: true }),
+  });
+
+  const result = await runner();
+
+  assert.equal(result.skippedFiles, 1);
+  assert.equal(result.requeuedDriveJsonAnalyses, 1);
+  assert.equal(calls.analysisChecks.length, 1);
+  assert.equal(calls.upload.length, 0);
 });
 
 test('a tracked unchanged Drive file still restores stale Firestore metadata without downloading again', async () => {
@@ -687,7 +866,7 @@ test('prior region reviews still stay skipped when the current parser rejects th
   assert.equal(calls.upload.length, 0);
 });
 
-test('retries a prior content conflict when the existing paper differs only by region', async () => {
+test('retries a prior region-only review and lets matching Drive contents update Firestore metadata', async () => {
   const file = paperFile('drive-school-region-conflict', 'Natural Sciences - Grade 7 - Laerskool Dalview - November - 2021 - Paper 1.pdf');
   const nationalPaper = {
     id: 'existing-national-paper',
@@ -716,11 +895,12 @@ test('retries a prior content conflict when the existing paper differs only by r
   const result = await runner();
 
   assert.equal(result.regionIdentityReviewRetries, 1);
-  assert.equal(result.importedFiles, 1);
+  assert.equal(result.duplicateFiles, 1);
+  assert.equal(result.importedFiles, 0);
   assert.equal(result.reviewFiles, 0);
-  assert.equal(tracking.get(file.id).importStatus, 'imported');
-  assert.equal(calls.create.length, 1);
-  assert.equal(calls.create[0].paperRecord.region, 'Laerskool Dalview');
+  assert.equal(tracking.get(file.id).importStatus, 'duplicate');
+  assert.equal(nationalPaper.region, 'Laerskool Dalview');
+  assert.equal(calls.create.length, 0);
 });
 
 test('keeps same-region content conflicts in review without retrying every scan', async () => {

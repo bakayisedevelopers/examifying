@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { AppShell } from '../components/common/AppShell';
 import { Logo } from '../components/common/Logo';
@@ -1405,7 +1405,7 @@ export const PastExamPapersPage = () => {
     return (
       <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2">
         <Link
-          className="inline-flex items-center rounded-lg border border-lime-300/20 bg-lime-300/5 px-2.5 py-2 text-xs font-bold text-lime-200 transition hover:border-lime-300/50 hover:bg-lime-300/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 sm:px-3 sm:text-sm"
+          className="inline-flex px-1 py-1 text-xs font-bold text-lime-300 transition hover:text-lime-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 sm:text-sm"
           to={`${paperPath(paper.id)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
           aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
         >
@@ -1413,13 +1413,12 @@ export const PastExamPapersPage = () => {
         </Link>
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-900/70 px-2.5 py-2 text-xs font-semibold text-slate-200 transition hover:border-emerald-300/40 hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-wait disabled:opacity-60 sm:px-3 sm:text-sm"
+          className="inline-flex px-1 py-1 text-xs font-semibold text-slate-200 transition hover:text-emerald-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 disabled:cursor-wait disabled:opacity-60 sm:text-sm"
           onClick={() => downloadPaperDocument(paper, type)}
           disabled={Boolean(downloadingDocument)}
           aria-label={`Download ${getCatalogDocumentTitle(paper, type)}`}
           aria-busy={downloadingDocument === downloadKey}
         >
-          <Download className="h-3.5 w-3.5" aria-hidden="true" />
           {downloadingDocument === downloadKey ? 'Preparing…' : 'Download'}
         </button>
       </div>

@@ -17,6 +17,7 @@ import {
 import { DRIVE_PAPER_SUBJECT_QUERY_VALUES } from './drivePaperSubjects.js';
 import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
 import { getGoogleDriveAccessToken } from './googleDriveAuth.js';
+import { recheckWaitingQuestionPaperDriveJson } from './questionPaperAnalysis.js';
 
 const GOOGLE_DRIVE_ROOT_ENV = 'GOOGLE_DRIVE_PAPERS_ROOT_ID';
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
@@ -281,6 +282,7 @@ const loadExistingQuestionPapers = async () => {
     'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
     'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'paperMetadata',
     'displayName', 'paperTitle', 'source', 'driveFileId', 'driveImport', 'analysisStatus',
+    'driveSourceAvailability', 'driveAnalysisJsonStatus',
   ];
   const snapshots = await Promise.all([
     ...subjectChunks.map((subjectValues) => (
@@ -302,6 +304,7 @@ const loadPaperForDriveFile = async ({ item, includeFileNameAndHash = false }) =
     'subject', 'grade', 'region', 'province', 'year', 'month', 'paperNumber', 'language', 'examSession', 'session',
     'paperUrl', 'memoUrl', 'paperFileName', 'memoFileName', 'paperSha256', 'memoSha256', 'paperMetadata',
     'displayName', 'paperTitle', 'source', 'driveFileId', 'driveImport', 'analysisStatus',
+    'driveSourceAvailability', 'driveAnalysisJsonStatus',
   ];
   const targetIds = [...new Set([
     item.tracking?.targetPaperId,
@@ -567,6 +570,7 @@ const runDrivePaperImport = createDrivePaperImportRunner({
   uploadPdf: uploadDrivePdf,
   createPaperIfAbsent: createQuestionPaperIfAbsent,
   attachMemoIfMissing,
+  recheckWaitingAnalysis: recheckWaitingQuestionPaperDriveJson,
   logger,
   maxFileBytes: MAX_PDF_BYTES,
 });
@@ -574,6 +578,38 @@ const runDrivePaperImport = createDrivePaperImportRunner({
 const enqueueDriveFolderImports = async ({ requestedBy = 'scheduled_import', runKey = '' } = {}) => {
   const rootFolderId = requireConfiguredDriveRoot();
   const files = await listConfiguredDriveTree(rootFolderId);
+  const currentDriveIds = new Set(files.map((file) => String(file.id ?? '').trim()).filter(Boolean));
+  const currentDriveNames = new Set(files.map((file) => String(file.name ?? '').trim().toLocaleLowerCase()).filter(Boolean));
+  const waitingPapers = await getDb().collection('questionPapers').where('analysisStatus', '==', 'Waiting for Drive JSON').get();
+  let markedMissingSource = 0;
+  for (const snapshot of waitingPapers.docs) {
+    const paper = snapshot.data();
+    const driveFileIds = [paper.driveFileId, paper.driveImport?.paperDriveFileId]
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean);
+    const isDrivePaper = paper.source === 'google_drive' || driveFileIds.length > 0;
+    if (!isDrivePaper || driveFileIds.some((id) => currentDriveIds.has(id))) continue;
+    const filename = String(paper.paperFileName ?? '').trim().toLocaleLowerCase();
+    if (filename && currentDriveNames.has(filename)) continue;
+
+    const paperRef = snapshot.ref;
+    const changed = await getDb().runTransaction(async (transaction) => {
+      const currentSnapshot = await transaction.get(paperRef);
+      if (!currentSnapshot.exists || currentSnapshot.get('analysisStatus') !== 'Waiting for Drive JSON') return false;
+      transaction.set(paperRef, {
+        analysisStatus: 'Cancelled',
+        analysisStage: 'Source missing',
+        analysisProgressMessage: 'The Drive source PDF was not found in the configured past-papers folder during the latest complete scan.',
+        analysisError: 'The Drive source PDF is missing from the configured folder.',
+        driveAnalysisJsonStatus: 'source_missing',
+        driveSourceAvailability: 'missing',
+        availableForGeneration: false,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return true;
+    });
+    if (changed) markedMissingSource += 1;
+  }
   const folders = new Map();
   for (const file of files) {
     const folderId = String(file.parents?.[0] ?? '').trim();
@@ -607,6 +643,7 @@ const enqueueDriveFolderImports = async ({ requestedBy = 'scheduled_import', run
   const result = {
     discoveredPdfFiles: files.length,
     discoveredFolders: folders.size,
+    markedMissingSource,
     queuedFolders,
     alreadyQueuedFolders,
   };

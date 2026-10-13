@@ -337,7 +337,10 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
   const controlSnapshot = await paperAnalysisControlRef().get();
   const candidates = paperSnapshots.filter((snapshot) => {
     const paper = snapshot.data();
-    const filenameMetadata = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
+    const filenameMetadata = parseGoogleDrivePaperMetadata({
+      fileName: paper.paperFileName,
+      fallbackMetadata: { subject: paper.subject, grade: paper.grade, region: paper.region ?? paper.province },
+    });
     const filenameMatchesRequestedGroup = filenameMetadata.ok
       ? filenameMetadata.metadata.subject === subject && filenameMetadata.metadata.grade === grade
       : paper.subject === subject && paper.grade === grade;
@@ -368,7 +371,10 @@ export const queueLegacyDriveJsonAnalyses = onCall({ timeoutSeconds: 540, memory
     if (queuedCount >= maxPapers) break;
     processedCount += 1;
     const paper = paperSnapshot.data();
-    const filenameParse = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
+  const filenameParse = parseGoogleDrivePaperMetadata({
+    fileName: paper.paperFileName,
+    fallbackMetadata: { subject: paper.subject, grade: paper.grade, region: paper.region ?? paper.province },
+  });
     if (!filenameParse.ok) {
       reviewCount += 1;
       await paperSnapshot.ref.set({
@@ -965,16 +971,24 @@ const parseDriveAnalysisJson = ({ text, paper, paperId, topicOptions = [] }) => 
 
   const storedIdentity = paperIdentityForAnalysisJson(paper);
   const provided = source.paper;
-  const filenameParse = parseGoogleDrivePaperMetadata({ fileName: paper.paperFileName });
+    const filenameParse = parseGoogleDrivePaperMetadata({
+      fileName: paper.paperFileName,
+      fallbackMetadata: { subject: paper.subject, grade: paper.grade, region: paper.region ?? paper.province },
+    });
   if (!filenameParse.ok) {
     throw new Error(`The Drive PDF filename does not follow the required paper naming structure. ${filenameParse.reason}`);
   }
+  const filenameIdentity = filenameParse.source === 'folder_fallback'
+    ? { ...filenameParse.metadata, subject: '', grade: '' }
+    : filenameParse.metadata;
   const drivePaperIdentity = resolveDrivePaperIdentity({
     analysisIdentity: provided,
-    filenameIdentity: filenameParse.metadata,
+    filenameIdentity,
     storedIdentity,
   });
-  for (const field of ['subject', 'grade', 'region', 'month', 'year', 'paperNumber']) {
+  const requiredIdentityFields = ['subject', 'grade', 'paperNumber'];
+  if (drivePaperIdentity.paperNumber !== 'Examplar') requiredIdentityFields.push('month', 'year');
+  for (const field of requiredIdentityFields) {
     if (!normalizePaperIdentityValue(drivePaperIdentity[field], field)) {
       throw new Error(`The Drive analysis JSON and PDF filename are missing paper ${field} metadata.`);
     }
@@ -1274,6 +1288,63 @@ const shouldAnalyze = ({ before, after }) => {
   return before.analysisStatus !== ANALYZING ||
     before.paperUrl !== after.paperUrl ||
     before.analysisRevision !== after.analysisRevision;
+};
+
+export const recheckWaitingQuestionPaperDriveJson = async ({ paper } = {}) => {
+  const paperId = String(paper?.id ?? '').trim();
+  if (!paperId || !paper.paperUrl) return { requeued: false, reason: 'paper_unavailable' };
+  const sourceWasMissing = paper.driveSourceAvailability === 'missing';
+  if (paper.analysisStatus !== WAITING_FOR_DRIVE_JSON && !sourceWasMissing) {
+    return { requeued: false, reason: 'not_waiting' };
+  }
+
+  const driveJsonResult = await readDriveQuestionPaperAnalysisJson(paper);
+  const paperRef = getDb().collection('questionPapers').doc(paperId);
+  return getDb().runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(paperRef);
+    if (!snapshot.exists) return { requeued: false, reason: 'paper_missing' };
+    const current = snapshot.data();
+    const currentSourceWasMissing = current.driveSourceAvailability === 'missing';
+    const currentIsWaiting = current.analysisStatus === WAITING_FOR_DRIVE_JSON;
+    if ((!currentIsWaiting && !currentSourceWasMissing)
+      || current.activeAnalysisRunId || current.queuedAnalysisRunId) {
+      return { requeued: false, reason: 'paper_state_changed' };
+    }
+
+    if (!driveJsonResult.found) {
+      if (currentSourceWasMissing) {
+        transaction.set(paperRef, {
+          analysisStatus: WAITING_FOR_DRIVE_JSON,
+          analysisStage: 'Waiting for Drive JSON',
+          analysisProgressMessage: 'The Drive paper is available again and is waiting for its matching analysis JSON.',
+          driveAnalysisJsonStatus: 'not_found',
+          driveAnalysisJsonReviewReason: '',
+          driveSourceAvailability: 'available',
+          availableForGeneration: false,
+          updatedAt: new Date(),
+        }, { merge: true });
+        return { requeued: false, reason: 'json_not_found', restored: true };
+      }
+      return { requeued: false, reason: 'json_not_found' };
+    }
+
+    transaction.set(paperRef, {
+      analysisStatus: ANALYZING,
+      analysisRequestedAt: new Date(),
+      analysisRevision: Number(current.analysisRevision ?? 0) + 1,
+      analysisStage: 'Queued',
+      analysisProgressMessage: 'A matching Drive analysis JSON was found; the paper was queued for analysis.',
+      analysisProgressCurrent: 0,
+      analysisProgressTotal: 1,
+      analysisError: '',
+      driveAnalysisJsonStatus: 'available',
+      driveAnalysisJsonReviewReason: '',
+      driveSourceAvailability: 'available',
+      availableForGeneration: false,
+      updatedAt: new Date(),
+    }, { merge: true });
+    return { requeued: true, jsonFileId: String(driveJsonResult.file?.id ?? '') };
+  });
 };
 
 export const analyzeQuestionPaper = onDocumentWritten(

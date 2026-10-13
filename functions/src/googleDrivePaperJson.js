@@ -194,7 +194,14 @@ const findUniqueNamedJsonFile = async (folderId, fileName) => {
 };
 
 export const readDriveQuestionPaperAnalysisJson = async (paper) => {
-  const filenameMetadata = parseGoogleDrivePaperMetadata({ fileName: paper?.paperFileName });
+  const filenameMetadata = parseGoogleDrivePaperMetadata({
+    fileName: paper?.paperFileName,
+    fallbackMetadata: {
+      subject: paper?.subject ?? paper?.paperMetadata?.subject,
+      grade: paper?.grade ?? paper?.paperMetadata?.grade,
+      region: paper?.region ?? paper?.province ?? paper?.paperMetadata?.region,
+    },
+  });
   if (!filenameMetadata.ok) return { found: false, reason: 'paper_filename_invalid', filenameReason: filenameMetadata.reason };
   const identity = filenameMetadata.ok ? filenameMetadata.metadata : paper;
   const folder = await findDrivePastPaperGradeFolder({ subject: identity?.subject, grade: identity?.grade });

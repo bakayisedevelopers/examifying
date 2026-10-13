@@ -3,6 +3,7 @@ import { Link, Navigate, useLocation } from 'react-router-dom';
 import { Logo } from '../components/common/Logo';
 import { useAuth } from '../hooks/useAuth';
 import { getPortalConfig, getPortalForProfile, getSignupPathForPortal } from '../utils/portal';
+import { calculateSubscriptionQuote } from '../utils/subscriptionPlans';
 
 const portalContent = {
   teacher: {
@@ -27,12 +28,12 @@ const portalContent = {
   },
   parent: {
     eyebrow: 'Parent and caregiver portal',
-    title: 'Follow your child’s Maths learning and progress.',
-    description: 'Use the Examifying parent portal to follow linked learners, exercise activity, and the progress information available to your family.',
+    title: 'Be part of every child’s learning journey.',
+    description: 'See your children’s daily learning, follow progress across their subjects, and manage each child’s learning from one family account.',
     cards: [
-      { icon: GraduationCap, title: 'Follow linked learners', body: 'View the learners connected to your parent account.' },
-      { icon: FileCheck2, title: 'Review progress', body: 'Keep track of exercise activity and available learning updates.' },
-      { icon: ShieldCheck, title: 'Manage your account', body: 'Access your profile and family account settings in one place.' },
+      { icon: GraduationCap, title: 'See each child’s day', body: 'Follow daily exercise completion across the subjects your children study.' },
+      { icon: FileCheck2, title: 'Keep learning on track', body: 'Check progress and open a child’s learning space when they need support.' },
+      { icon: ShieldCheck, title: 'Manage your family', body: 'Link children and manage their learning from one parent account.' },
     ],
   },
   admin: {
@@ -45,6 +46,59 @@ const portalContent = {
       { icon: LockKeyhole, title: 'Protected access', body: 'Administrator access is granted by the Examifying platform owner.' },
     ],
   },
+};
+
+const formatRand = (amount) => new Intl.NumberFormat('en-ZA', {
+  style: 'currency',
+  currency: 'ZAR',
+  maximumFractionDigits: 0,
+}).format(amount);
+
+const ParentIndicativePricing = () => {
+  const subjectCounts = [1, 2, 3, 4, 5];
+  const plans = [
+    { id: 'circle', name: 'Circle', extra: 'R49 for each additional subject' },
+    { id: 'personalized', name: 'Personalized', extra: 'R599 for each additional subject' },
+  ];
+
+  return (
+    <section id="parent-pricing" aria-labelledby="parent-pricing-title" className="mt-12 rounded-3xl border border-lime-300/20 bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/60 p-5 shadow-[0_20px_70px_rgba(16,185,129,0.08)] sm:p-8">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-300">Indicative pricing</p>
+          <h2 id="parent-pricing-title" className="mt-2 text-2xl font-black text-white sm:text-3xl">Monthly cost per student</h2>
+        </div>
+        <p className="max-w-xl text-sm leading-6 text-slate-300">Each child has an individual subscription. These amounts show how the monthly price changes with the number of subjects.</p>
+      </div>
+      <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
+        <table className="w-full min-w-[34rem] border-collapse text-left text-sm">
+          <thead className="bg-slate-950/80 text-slate-300">
+            <tr>
+              <th scope="col" className="px-4 py-3 font-semibold">Subjects for one student</th>
+              {plans.map((plan) => <th key={plan.id} scope="col" className="px-4 py-3 font-semibold text-lime-200">{plan.name}</th>)}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5 bg-slate-950/35">
+            {subjectCounts.map((subjectCount) => (
+              <tr key={subjectCount}>
+                <th scope="row" className="px-4 py-3 font-medium text-white">{subjectCount} {subjectCount === 1 ? 'subject' : 'subjects'}</th>
+                {plans.map((plan) => (
+                  <td key={plan.id} className="px-4 py-3 font-semibold text-slate-100">
+                    {formatRand(calculateSubscriptionQuote({ planId: plan.id, billingPeriod: 'monthly', subjectCount }).monthlyAmount)}
+                    <span className="ml-1 text-xs font-normal text-slate-400">/ month</span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
+        {plans.map((plan) => <p key={plan.id}><span className="font-semibold text-slate-300">{plan.name}:</span> {plan.extra} per student each month.</p>)}
+      </div>
+      <p className="mt-4 text-xs leading-5 text-slate-500">Indicative only. Choose a child’s plan and subject count in that child’s subscription settings.</p>
+    </section>
+  );
 };
 
 const getDashboardPath = (profile) => {
@@ -79,7 +133,7 @@ export const RoleLandingPage = ({ portal }) => {
 
   return (
     <main className="relative min-h-[calc(100vh-76px)] overflow-hidden bg-slate-950 px-4 py-14 text-slate-100 sm:py-20 lg:px-6">
-      <div className="pointer-events-none absolute -top-40 left-1/2 h-[34rem] w-[52rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(163,230,53,0.16)_0%,rgba(16,185,129,0.08)_42%,transparent_72%)] blur-3xl" />
+      <div className={`pointer-events-none absolute -top-40 left-1/2 h-[34rem] w-[52rem] -translate-x-1/2 rounded-full blur-3xl ${portal === 'parent' ? 'bg-[radial-gradient(circle_at_center,rgba(163,230,53,0.2)_0%,rgba(16,185,129,0.12)_42%,transparent_72%)]' : 'bg-[radial-gradient(circle_at_center,rgba(163,230,53,0.16)_0%,rgba(16,185,129,0.08)_42%,transparent_72%)]'}`} />
       <div className="relative mx-auto max-w-7xl">
         <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16">
           <section className="max-w-3xl">
@@ -123,11 +177,11 @@ export const RoleLandingPage = ({ portal }) => {
             </div>
           </section>
 
-          <aside className="panel relative overflow-hidden p-6 sm:p-8">
+          <aside className={`panel relative overflow-hidden p-6 sm:p-8 ${portal === 'parent' ? 'border-lime-300/20 bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/80 shadow-[0_24px_80px_rgba(16,185,129,0.12)]' : ''}`}>
             <div className="mb-7 flex items-center justify-between gap-4 border-b border-white/10 pb-6">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-400">{config.audience}</p>
-                <h2 className="mt-2 text-xl font-bold text-white">Your Examifying portal</h2>
+                <h2 className="mt-2 text-xl font-bold text-white">{portal === 'parent' ? 'Your family learning space' : 'Your Examifying portal'}</h2>
               </div>
               <Logo showText={false} className="rounded-2xl border border-lime-400/20 bg-lime-400/5 p-2" />
             </div>
@@ -151,6 +205,7 @@ export const RoleLandingPage = ({ portal }) => {
             ) : null}
           </aside>
         </div>
+        {portal === 'parent' ? <ParentIndicativePricing /> : null}
       </div>
     </main>
   );

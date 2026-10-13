@@ -11,8 +11,9 @@ export const MarketingLayout = () => {
   if (signupParams.has('discountCode')) signupParams.set('checkout', '1');
   const signupPath = getSignupPathForPortal(portal, signupParams.toString());
   const studentContentUrl = getPortalSiteUrl('student');
+  const showQuickAccess = !['teacher', 'tutor'].includes(portal);
   const methodHref = portal === 'student' ? '/#method' : `${studentContentUrl}/#method`;
-  const pricingHref = portal === 'student' ? '/#pricing' : `${studentContentUrl}/#pricing`;
+  const pricingHref = portal === 'student' ? '/#pricing' : portal === 'parent' ? '#parent-pricing' : `${studentContentUrl}/#pricing`;
   const homePath = profile?.role
     ? (getPortalForProfile(profile) === 'teacher' ? '/teacher' : `/${profile.role}`)
     : '/';
@@ -24,10 +25,12 @@ export const MarketingLayout = () => {
           <Link to={homePath} className="inline-flex items-center group">
             <Logo />
           </Link>
-          <nav aria-label="Quick access" className="order-3 flex w-full items-center justify-center gap-5 border-t border-white/5 pt-2 text-xs font-semibold text-slate-300 sm:order-none sm:w-auto sm:gap-4 sm:border-0 sm:pt-0 sm:text-sm">
-            <a href={methodHref} className="whitespace-nowrap transition hover:text-lime-300">Method of Teaching</a>
-            <a href={pricingHref} className="whitespace-nowrap transition hover:text-lime-300">Pricing</a>
-          </nav>
+          {showQuickAccess ? (
+            <nav aria-label="Quick access" className="order-3 flex w-full items-center justify-center gap-5 border-t border-white/5 pt-2 text-xs font-semibold text-slate-300 sm:order-none sm:w-auto sm:gap-4 sm:border-0 sm:pt-0 sm:text-sm">
+              <a href={methodHref} className="whitespace-nowrap transition hover:text-lime-300">Method of Teaching</a>
+              <a href={pricingHref} className="whitespace-nowrap transition hover:text-lime-300">Pricing</a>
+            </nav>
+          ) : null}
           <div className="flex flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-3">
             <Link
               to={`/login${location.search}`}

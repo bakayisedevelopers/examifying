@@ -39,9 +39,8 @@ const MONTH_PATTERNS = [
   { value: 'December', pattern: /\b(?:december|dec)\b/ },
 ];
 
-// Region labels are free-form, but common province aliases should still pair.
-// Keeping the normalized label in identity prevents school papers from
-// colliding with a National or province-wide paper with the same title.
+// Keep region aliases for grouping Drive files. A region value never gates
+// whether an otherwise matching Firestore record can be reconciled.
 const REGION_ALIASES = new Map([
   ['eastern cape', 'eastern cape'], ['ec', 'eastern cape'], ['province of eastern cape', 'eastern cape'],
   ['free state', 'free state'], ['fs', 'free state'], ['province of free state', 'free state'],
@@ -118,12 +117,71 @@ const parsePaperNumber = (segment) => {
 
 const documentTypeSignals = (segments) => {
   const text = normalizeWords(segments.join(' '));
-  const memo = /\b(?:memo|memorandum|marking scheme|marking guideline|answer key)\b/.test(text);
+  const memo = /\b(?:memo|memorandum|mg|marking scheme|marking guide(?:line)?|answer key)\b/.test(text);
   const questionPaper = /\b(?:question paper|questionpaper|qp)\b/.test(text);
   return { memo, questionPaper };
 };
 
-export const parseGoogleDrivePaperMetadata = ({ fileName } = {}) => {
+const parseLegacyDrivePaperMetadata = ({ fileName, folderPath = [], fallbackMetadata = {} } = {}) => {
+  const rawName = String(fileName ?? '').replace(/\.pdf$/i, '').replace(/\.doc$/i, '').trim();
+  const normalizedName = normalizeWords(rawName).replace(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)(?=\d{4}\b)/g, '$1 ');
+  const path = Array.isArray(folderPath) ? folderPath.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
+  const gradeFolderIndex = path.findLastIndex((part) => parseGrade(part).length === 1);
+  const folderGrade = gradeFolderIndex >= 0 ? parseGrade(path[gradeFolderIndex])[0] : '';
+  const folderSubjectName = gradeFolderIndex > 0 ? path[gradeFolderIndex - 1] : '';
+  const suppliedSubject = String(fallbackMetadata.subject ?? '').trim();
+  const subjectSource = suppliedSubject || folderSubjectName;
+  const subjectCandidates = getDrivePaperSubjectCandidates(subjectSource);
+  const subjectFromTitle = getDrivePaperSubjectCandidates(rawName);
+  const subject = subjectCandidates.length === 1
+    ? subjectCandidates[0]
+    : subjectFromTitle.length === 1 ? subjectFromTitle[0] : '';
+  const suppliedGrade = parseGrade(fallbackMetadata.grade ?? '')[0] ?? '';
+  const titleGrades = parseGrade(rawName);
+  const grade = suppliedGrade || folderGrade || (titleGrades.length === 1 ? titleGrades[0] : '');
+  const yearMatches = unique([...normalizedName.matchAll(/\b(?:19|20)\d{2}\b/g)].map(([value]) => value));
+  const monthMatches = unique(findTextMatches(normalizedName, MONTH_PATTERNS));
+  const month = monthMatches.length > 1 && /\bmay\s*[-/]\s*june\b/i.test(rawName)
+    ? 'June'
+    : monthMatches.length === 1 ? monthMatches[0] : '';
+  const paperNumbers = unique([...normalizedName.matchAll(/\b(?:paper|p)\s*([1-4])\b/g)].map((match) => `Paper ${match[1]}`));
+  const exemplar = /\b(?:exemplar|examplar)\b/i.test(rawName);
+  const paperNumber = exemplar ? 'Examplar' : paperNumbers.length === 1 ? paperNumbers[0] : '';
+  const memo = /\b(?:memo|memorandum|mg|marking scheme|marking guide(?:line)?|answer key)\b/i.test(rawName);
+  const questionPaperSignal = /\b(?:question paper|questionpaper|qp)\b/i.test(rawName);
+  const languageValues = unique(findTextMatches(rawName, LANGUAGE_PATTERNS));
+  const sessionValues = unique(findTextMatches(rawName, SESSION_PATTERNS));
+  const errors = [];
+
+  if (!subject || subjectCandidates.length > 1) errors.push('The subject could not be resolved from the filename or its Drive subject folder.');
+  if (!grade || (suppliedGrade && folderGrade && suppliedGrade !== folderGrade)) errors.push('The grade could not be resolved consistently from the filename or its Drive grade folder.');
+  if (!paperNumber || paperNumbers.length > 1) errors.push('The filename must identify one paper number or Exemplar paper.');
+  if (!memo && !questionPaperSignal && !paperNumber) errors.push('The filename does not identify a question paper or memo.');
+  if (!exemplar && (!month || yearMatches.length !== 1)) errors.push('The filename must contain one exam month and year.');
+  if (yearMatches.length > 1) errors.push('The filename contains more than one possible exam year.');
+  if (languageValues.length > 2 || sessionValues.length > 1) errors.push('The filename has ambiguous language or exam-session metadata.');
+  if (memo && questionPaperSignal) errors.push('The filename labels the PDF as both a question paper and a memo.');
+  if (!memo && !paperNumber && !questionPaperSignal) errors.push('The file type could not be determined from the filename.');
+  if (errors.length) return { ok: false, reason: unique(errors).join(' ') };
+
+  return {
+    ok: true,
+    source: 'folder_fallback',
+    metadata: {
+      subject,
+      grade,
+      region: '',
+      year: yearMatches[0] ? Number(yearMatches[0]) : null,
+      month,
+      paperNumber,
+      paperType: memo ? 'memo' : 'question',
+      ...(languageValues.length ? { language: languageValues.join(' & ') } : {}),
+      ...(sessionValues[0] ? { examSession: sessionValues[0] } : {}),
+    },
+  };
+};
+
+export const parseGoogleDrivePaperMetadata = ({ fileName, folderPath = [], fallbackMetadata = {} } = {}) => {
   const nameSegments = filenameSegments(fileName);
   const errors = [];
   const subject = parseFilenameField({ segments: nameSegments, index: 0, parser: parseSubject, label: 'subject', errors });
@@ -181,7 +239,10 @@ export const parseGoogleDrivePaperMetadata = ({ fileName } = {}) => {
   if (!month || /ambiguous/i.test(errors.find((error) => error.includes('exam month')) ?? '')) {
     errors.push('The exam month must appear in the filename between the region and the year; it is not inferred from Drive dates or folders.');
   }
-  if (errors.length) return { ok: false, reason: unique(errors).join(' ') };
+  if (errors.length) {
+    const legacy = parseLegacyDrivePaperMetadata({ fileName, folderPath, fallbackMetadata });
+    return legacy.ok ? legacy : { ok: false, reason: unique([...errors, legacy.reason]).join(' ') };
+  }
 
   return {
     ok: true,
@@ -232,7 +293,7 @@ export const getExistingPaperMetadata = (paper = {}) => {
   };
 };
 
-export const comparePaperMetadata = (incoming = {}, existingPaper = {}) => {
+export const comparePaperMetadata = (incoming = {}, existingPaper = {}, { ignoreLanguage = false } = {}) => {
   const existing = getExistingPaperMetadata(existingPaper);
   const canonicalizers = {
     subject: canonicalSubject,
@@ -246,9 +307,11 @@ export const comparePaperMetadata = (incoming = {}, existingPaper = {}) => {
   };
   const uncertainFields = [];
 
-  // Any non-empty region is allowed; its value distinguishes school-specific
-  // papers from National or province-wide papers with otherwise matching titles.
-  for (const field of ['subject', 'grade', 'region', 'month', 'year', 'paperNumber']) {
+  // Region is descriptive metadata. Drive's current filename and analysis
+  // record may replace the stored value, so region never blocks a match.
+  for (const field of ['subject', 'grade', 'month', 'year', 'paperNumber']) {
+    if (incoming.paperNumber === 'Examplar' && ['month', 'year'].includes(field)
+      && !incoming[field] && !existing[field]) continue;
     if (!incoming[field] || !existing[field]) uncertainFields.push(field);
     else if (field === 'subject') {
       const incomingSubjects = getDrivePaperSubjectCandidates(incoming.subject);
@@ -263,6 +326,7 @@ export const comparePaperMetadata = (incoming = {}, existingPaper = {}) => {
   }
 
   for (const field of ['language', 'examSession']) {
+    if (field === 'language' && ignoreLanguage) continue;
     const incomingValue = String(incoming[field] ?? '').trim();
     const existingValue = String(existing[field] ?? '').trim();
     if (incomingValue && existingValue && canonicalizers[field](incomingValue) !== canonicalizers[field](existingValue)) {
@@ -296,9 +360,12 @@ export const paperFileIdentityKey = (metadata = {}) => [
 
 export const summarizeDriveFolderPapers = ({ files = [], trackingByFileId = {}, existingPapers = [] } = {}) => {
   const groups = new Map();
-  for (const file of files) {
-    if (!isPdfDriveFile(file)) continue;
-    const parsed = parseGoogleDrivePaperMetadata({ fileName: file.name, folderPath: file.folderPath });
+  const parsedFiles = files
+    .filter(isPdfDriveFile)
+    .map((file) => ({ file, parsed: parseGoogleDrivePaperMetadata({ fileName: file.name, folderPath: file.folderPath }) }))
+    .sort((left, right) => Number(left.parsed.ok && left.parsed.metadata.paperType === 'memo')
+      - Number(right.parsed.ok && right.parsed.metadata.paperType === 'memo'));
+  for (const { file, parsed } of parsedFiles) {
     if (!parsed.ok) {
       groups.set(`review:${file.id}`, {
         identityKey: `review:${file.id}`,
@@ -315,8 +382,13 @@ export const summarizeDriveFolderPapers = ({ files = [], trackingByFileId = {}, 
       continue;
     }
     const identityKey = paperIdentityKey(parsed.metadata);
-    const group = groups.get(identityKey) ?? {
-      identityKey,
+    const memoMatches = parsed.metadata.paperType === 'memo'
+      ? [...groups.values()].filter((candidate) => candidate.questionFiles.length > 0
+        && comparePaperMetadata(parsed.metadata, candidate.metadata, { ignoreLanguage: true }).status === 'match')
+      : [];
+    const targetIdentityKey = memoMatches.length === 1 ? memoMatches[0].identityKey : identityKey;
+    const group = groups.get(targetIdentityKey) ?? {
+      identityKey: targetIdentityKey,
       metadata: parsed.metadata,
       files: [],
       questionFiles: [],
@@ -336,7 +408,7 @@ export const summarizeDriveFolderPapers = ({ files = [], trackingByFileId = {}, 
     group.files.push(driveFile);
     (parsed.metadata.paperType === 'memo' ? group.memoFiles : group.questionFiles).push(driveFile);
     if (tracking.importStatus === 'review') group.reviewReason ||= tracking.reviewReason || tracking.errorSummary || 'This Drive file needs manual review.';
-    groups.set(identityKey, group);
+    groups.set(targetIdentityKey, group);
   }
 
   return [...groups.values()].map((group) => {
@@ -499,8 +571,8 @@ const trackingFieldsFor = (item, now) => ({
   lastSeenAt: now(),
 });
 
-const matchingRecordsFor = (metadata, papers) => papers
-  .map((paper) => ({ paper, comparison: comparePaperMetadata(metadata, paper) }))
+const matchingRecordsFor = (metadata, papers, { ignoreLanguage = false } = {}) => papers
+  .map((paper) => ({ paper, comparison: comparePaperMetadata(metadata, paper, { ignoreLanguage }) }))
   .filter(({ comparison }) => comparison.status !== 'different');
 
 const uniquePapers = (papers) => [...new Map(papers.filter(Boolean).map((paper) => [paper.id, paper])).values()];
@@ -535,7 +607,7 @@ const existingPaperForDriveItem = ({ item, papers }) => {
     if (hashMatches.length) return { matches: hashMatches, source: 'content_hash' };
   }
 
-  return { matches: matchingRecordsFor(item.metadata, papers), source: 'metadata' };
+  return { matches: matchingRecordsFor(item.metadata, papers, { ignoreLanguage: isMemo }), source: 'metadata' };
 };
 
 const driveMetadataPatch = ({ metadata, file, paperType }) => {
@@ -620,7 +692,7 @@ const displayNameFor = (metadata) => [metadata.subject, metadata.grade, metadata
   .filter(Boolean)
   .join(' • ');
 
-const fileIdentityKeyWithoutRegion = (metadata) => paperFileIdentityKey({ ...metadata, region: '' });
+const fileIdentityKeyWithoutRegion = (metadata) => paperFileIdentityKey({ ...metadata, region: '', language: '' });
 
 const createStatusWriter = ({ writeTracking, now }) => async (item, importStatus, patch = {}) => {
   const fields = {
@@ -662,6 +734,7 @@ export const createDrivePaperImportRunner = (dependencies) => {
     uploadPdf,
     createPaperIfAbsent,
     attachMemoIfMissing,
+    recheckWaitingAnalysis = async () => ({ requeued: false }),
     now = () => new Date(),
     logger = { info() {}, warn() {}, error() {} },
     maxFileBytes = 50 * 1024 * 1024,
@@ -696,6 +769,8 @@ export const createDrivePaperImportRunner = (dependencies) => {
       reviewSkippedFiles: 0,
       legacyRegionReviewRetries: 0,
       regionIdentityReviewRetries: 0,
+      recoveredParserReviewRetries: 0,
+      requeuedDriveJsonAnalyses: 0,
     };
     const writeStatus = createStatusWriter({ writeTracking, now });
 
@@ -717,7 +792,7 @@ export const createDrivePaperImportRunner = (dependencies) => {
         contentSha256: '',
         paperType: item.metadata.paperType,
       });
-      return true;
+      return resolution.matches[0];
     };
 
     try {
@@ -809,12 +884,15 @@ export const createDrivePaperImportRunner = (dependencies) => {
           continue;
         }
         item.metadata = parsed.metadata;
+        const previousReviewReason = String(tracking?.reviewReason ?? tracking?.errorSummary ?? '');
+        const parserReviewReason = /(?:subject|grade|region|exam month|year|paper number|paper type|language|exam session).*(?:missing|invalid|ambiguous)|filename contains|unexpected segment|paper type must be|exam month must appear/i.test(previousReviewReason);
+        const recoveredParserReview = !retryingReview && tracking?.importStatus === 'review'
+          && tracking.driveFingerprint === item.fingerprint && !filenameChanged && !tracking.parsedMetadata && parserReviewReason;
 
         // Older importer revisions rejected free-form school/district regions.
         // Recheck those records automatically once the current filename parser
         // accepts the complete filename; other review reasons still require an
         // administrator to explicitly select the file for recheck.
-        const previousReviewReason = String(tracking?.reviewReason ?? tracking?.errorSummary ?? '');
         const retryingLegacyRegionReview = !retryingReview && tracking?.importStatus === 'review'
           && /province or National designation is missing or invalid in its expected filename position/i.test(previousReviewReason);
         let retryingRegionIdentityReview = false;
@@ -822,7 +900,13 @@ export const createDrivePaperImportRunner = (dependencies) => {
           && previousReviewReason === 'Paper metadata matches an existing record, but the PDF contents differ. The existing record was left unchanged.') {
           try {
             if (!existingPapers) existingPapers = await loadExistingPapers();
-            retryingRegionIdentityReview = existingPaperForDriveItem({ item, papers: existingPapers }).matches.length === 0;
+            const previousIdentity = existingPaperForDriveItem({ item, papers: existingPapers });
+            retryingRegionIdentityReview = previousIdentity.matches.length === 0
+              || previousIdentity.matches.some(({ paper }) => {
+                const storedRegion = getExistingPaperMetadata(paper).region;
+                return storedRegion && item.metadata.region
+                  && canonicalRegion(storedRegion) !== canonicalRegion(item.metadata.region);
+              });
           } catch (error) {
             logger.warn('Could not confirm whether a reviewed Drive paper conflicted only on its region identity', {
               driveFileId: file.id,
@@ -837,6 +921,13 @@ export const createDrivePaperImportRunner = (dependencies) => {
             filename: file.name,
           });
         }
+        if (recoveredParserReview) {
+          summary.recoveredParserReviewRetries += 1;
+          logger.info('Drive file is being rechecked because the current filename parser can now read it', {
+            driveFileId: file.id,
+            filename: file.name,
+          });
+        }
         if (retryingRegionIdentityReview) {
           summary.regionIdentityReviewRetries += 1;
           logger.info('Drive file is being rechecked because the previous identity match came from a different region label', {
@@ -846,10 +937,17 @@ export const createDrivePaperImportRunner = (dependencies) => {
         }
 
         if (tracking && tracking.driveFingerprint === item.fingerprint && terminalStatuses.has(tracking.importStatus)
-          && !filenameChanged && !retryingReview && !retryingLegacyRegionReview && !retryingRegionIdentityReview) {
+          && !filenameChanged && !retryingReview && !retryingLegacyRegionReview && !retryingRegionIdentityReview && !recoveredParserReview) {
+          let linkedPaper = null;
+          let metadataSyncFailed = false;
           try {
-            await syncKnownDriveMetadata(item);
+            linkedPaper = await syncKnownDriveMetadata(item);
+            if (linkedPaper) {
+              const analysisCheck = await recheckWaitingAnalysis({ paper: linkedPaper, item });
+              if (analysisCheck?.requeued) summary.requeuedDriveJsonAnalyses += 1;
+            }
           } catch (error) {
+            metadataSyncFailed = true;
             summary.failedFiles += 1;
             logger.warn('Drive filename metadata could not be synchronized to the linked Firestore paper', {
               driveFileId: file.id,
@@ -857,15 +955,29 @@ export const createDrivePaperImportRunner = (dependencies) => {
               error: safeErrorSummary(error),
             });
           }
-          summary.skippedFiles += 1;
-          if (tracking.importStatus === 'review') {
+          const trackedPaperIds = [tracking.targetPaperId, tracking.duplicateTargetPaperId]
+            .map((id) => String(id ?? '').trim())
+            .filter(Boolean);
+          const trackedTargetMissing = !metadataSyncFailed && !linkedPaper && trackedPaperIds.length > 0;
+          if (!linkedPaper && tracking.importStatus === 'review' && !trackedTargetMissing) {
+            summary.skippedFiles += 1;
             summary.reviewSkippedFiles += 1;
             logger.info('Drive file remains in review; it was skipped until an administrator rechecks it', {
               driveFileId: file.id,
               reviewReason: safeErrorSummary(tracking.reviewReason ?? tracking.errorSummary ?? ''),
             });
+            continue;
           }
-          continue;
+          if (!linkedPaper) {
+            logger.info('Previously completed Drive tracking has no Firestore target; the file will be imported again', {
+              driveFileId: file.id,
+              priorStatus: tracking.importStatus,
+              targetPaperId: tracking.targetPaperId ?? tracking.duplicateTargetPaperId ?? '',
+            });
+          } else {
+            summary.skippedFiles += 1;
+            continue;
+          }
         }
 
         try {
@@ -944,7 +1056,14 @@ export const createDrivePaperImportRunner = (dependencies) => {
           }
 
           const existingPaper = exactMatches[0]?.paper;
-          if (existingPaper) {
+          const existingRegion = String(getExistingPaperMetadata(existingPaper ?? {}).region ?? '').trim();
+          const incomingRegion = String(item.metadata.region ?? '').trim();
+          const differingRegionRecord = Boolean(existingPaper && existingRegion && incomingRegion
+            && canonicalRegion(existingRegion) !== canonicalRegion(incomingRegion));
+          const metadataOnlyMatch = resolution.source === 'metadata';
+          let metadataSynced = false;
+          const syncMatchedPaperMetadata = async () => {
+            if (!existingPaper || metadataSynced) return;
             const patch = await syncPaperMetadataFromDrive({
               paper: existingPaper,
               paperId: existingPaper.id,
@@ -954,7 +1073,12 @@ export const createDrivePaperImportRunner = (dependencies) => {
               paperType: item.metadata.paperType,
             });
             if (patch && typeof patch === 'object') Object.assign(existingPaper, patch);
-          }
+            metadataSynced = true;
+            const analysisCheck = await recheckWaitingAnalysis({ paper: existingPaper, item });
+            if (analysisCheck?.requeued) summary.requeuedDriveJsonAnalyses += 1;
+          };
+          if (existingPaper && !metadataOnlyMatch) await syncMatchedPaperMetadata();
+          if (item.metadata.paperType === 'memo' && existingPaper) await syncMatchedPaperMetadata();
           if (item.metadata.paperType === 'memo') {
             if (!existingPaper) {
               const reason = 'Waiting for a matching question-paper record before attaching this memo.';
@@ -1016,9 +1140,11 @@ export const createDrivePaperImportRunner = (dependencies) => {
             continue;
           }
 
+          let preserveSeparateRegionalPaper = false;
           if (existingPaper) {
             const comparison = await compareStoredFile({ item, paper: existingPaper, paperType: 'question', inspectExistingStorage, downloadExisting });
             if (comparison.status === 'same') {
+              await syncMatchedPaperMetadata();
               const alreadyDriveRecord = existingPaper.source === 'google_drive'
                 && (existingPaper.driveFileId === item.file.id || existingPaper.driveImport?.paperDriveFileId === item.file.id);
               await writeStatus(item, alreadyDriveRecord ? 'imported' : 'duplicate', {
@@ -1027,12 +1153,20 @@ export const createDrivePaperImportRunner = (dependencies) => {
                 errorSummary: '',
               });
               summary[alreadyDriveRecord ? 'importedFiles' : 'duplicateFiles'] += 1;
+            } else if (comparison.status === 'different' && metadataOnlyMatch && differingRegionRecord) {
+              preserveSeparateRegionalPaper = true;
+              logger.info('A structurally matching paper has different contents and a different descriptive region; preserving both Drive papers', {
+                driveFileId: item.file.id,
+                existingPaperId: existingPaper.id,
+                existingRegion,
+                driveRegion: incomingRegion,
+              });
             } else {
               await markReview(item, comparison.status === 'different'
                 ? 'Paper metadata matches an existing record, but the PDF contents differ. The existing record was left unchanged.'
                 : comparison.reason || 'A paper may match an existing record, but the files could not be confidently compared.');
             }
-            continue;
+            if (!preserveSeparateRegionalPaper) continue;
           }
 
           await writeStatus(item, 'importing', { importStage: 'uploading_question_paper' });

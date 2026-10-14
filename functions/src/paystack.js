@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 45893)
-Total output lines: 3681
-
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated, onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -1221,7 +1218,1252 @@ const releaseFamilyCheckoutLocks = async ({ db, parentId, reference, allocations
     studentId: allocation.studentId,
     reference: allocation.paymentDocumentId,
   }).catch((error) => logger.warn('Could not release family checkout student lock', {
-    parentId, reference, studentId: allocation.studentId, error: error?.message ?? …15893 tokens truncated…ble,
+    parentId, reference, studentId: allocation.studentId, error: error?.message ?? String(error),
+  }))));
+};
+
+const transitionFamilyDiscounts = async ({ db, allocations, status }) => {
+  await Promise.all((allocations || []).filter((allocation) => allocation.discountCode).map((allocation) =>
+    transitionDiscountRedemptionForPayment({
+      db,
+      code: allocation.discountCode,
+      reference: allocation.discountRedemptionReference,
+      status,
+    }).catch((error) => logger.error('Could not update a family discount redemption', {
+      studentId: allocation.studentId,
+      reference: allocation.discountRedemptionReference,
+      error: error?.message ?? String(error),
+    }))));
+};
+
+const finalizeFamilyPaystackPayment = async ({ parentId, reference }) => {
+  const db = getDb();
+  const groupPaymentRef = familyPaymentRef(db, parentId, reference);
+  const claim = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(groupPaymentRef);
+    if (!snapshot.exists) throw new HttpsError('not-found', 'Family checkout was not found.');
+    const payment = snapshot.data();
+    if (payment.payerId !== parentId || payment.familyCheckout !== true) {
+      throw new HttpsError('permission-denied', 'This family checkout does not belong to this parent.');
+    }
+    if (payment.status === 'success') return { alreadyFinalized: true, payment };
+    if (!PAYMENT_BLOCKING_CHECKOUT_STATUSES.includes(payment.status)) {
+      return { terminalStatus: payment.status, payment };
+    }
+    const lockAt = payment.finalizationLockedAt?.toDate?.()?.getTime?.() ?? 0;
+    if (payment.familyFinalizationStatus === 'processing' && Date.now() - lockAt < 10 * 60 * 1000) {
+      return { alreadyProcessing: true, payment };
+    }
+    transaction.set(groupPaymentRef, {
+      familyFinalizationStatus: 'processing',
+      finalizationLockedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { payment };
+  });
+
+  if (claim.alreadyFinalized) {
+    if (claim.payment.authorizationOnly === true) {
+      await requestAuthorizationRefund({ db, studentId: parentId, reference });
+    }
+    return { status: 'success', reference, alreadyFinalized: true };
+  }
+  if (claim.alreadyProcessing) return { status: 'processing', reference };
+  if (claim.terminalStatus) return { status: claim.terminalStatus, reference };
+
+  const payment = claim.payment;
+  const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+  if (!allocations.length || allocations.length > 20) {
+    throw new HttpsError('failed-precondition', 'The saved family checkout has no valid student selections.');
+  }
+  let transaction;
+  let sourceAuthorization = null;
+  if (payment.noChargeAuthorizationUse === true) {
+    // Resolve against the parent's current saved methods so a card that was replaced
+    // after initialization cannot be silently attached to a child's renewal record.
+    const methods = await getParentAuthorizationOptions({ db, parentId });
+    sourceAuthorization = methods.find((entry) => entry.id === payment.savedPaymentMethodId)?.authorization ?? null;
+    if (!sourceAuthorization || !isReusableAuthorization(sourceAuthorization)) {
+      await groupPaymentRef.set({ status: 'failed', familyFinalizationStatus: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      const failedBatch = db.batch();
+      allocations.forEach((allocation) => failedBatch.set(studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId), {
+        status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }));
+      if (payment.familyCheckoutDraftId) failedBatch.set(familyDraftRef(db, parentId, payment.familyCheckoutDraftId), {
+        status: 'students_attached', checkoutReference: admin.firestore.FieldValue.delete(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      await failedBatch.commit();
+      await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+      await releaseFamilyCheckoutLocks({ db, parentId, reference, allocations });
+      throw new HttpsError('failed-precondition', 'The selected saved card is no longer available. Choose another payment method.');
+    }
+    transaction = {
+      status: 'success',
+      reference,
+      amount: 0,
+      currency: 'ZAR',
+      paid_at: new Date().toISOString(),
+      customer: { email: payment.email },
+      authorization: {
+        authorization_code: sourceAuthorization.authorizationCode,
+        bin: sourceAuthorization.bin ?? null,
+        last4: sourceAuthorization.last4 ?? null,
+        exp_month: sourceAuthorization.expMonth ?? null,
+        exp_year: sourceAuthorization.expYear ?? null,
+        card_type: sourceAuthorization.cardType ?? null,
+        bank: sourceAuthorization.bank ?? null,
+        reusable: true,
+        signature: sourceAuthorization.signature ?? null,
+      },
+    };
+  } else {
+    transaction = await paystackRequest({ path: `/transaction/verify/${encodeURIComponent(reference)}`, method: 'GET' });
+    if (!transaction.authorization?.authorization_code && payment.savedPaymentMethodId) {
+      const methods = await getParentAuthorizationOptions({ db, parentId });
+      sourceAuthorization = methods.find((entry) => entry.id === payment.savedPaymentMethodId)?.authorization ?? null;
+    }
+  }
+  const expectedAmountMinor = Number(payment.gatewayAmountMinor);
+  if (transaction.status === 'success' && (transaction.reference !== reference
+    || Number(transaction.amount) !== expectedAmountMinor || transaction.currency !== 'ZAR')) {
+    await groupPaymentRef.set({ status: 'amount_mismatch', familyFinalizationStatus: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    await Promise.all(allocations.map((allocation) => studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId)
+      .set({ status: 'amount_mismatch', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true })));
+    return { status: 'amount_mismatch', reference };
+  }
+  if (transaction.status !== 'success') {
+    const terminal = ['failed', 'abandoned', 'reversed', 'cancelled'].includes(transaction.status);
+    if (terminal) {
+      await groupPaymentRef.set({ status: transaction.status, familyFinalizationStatus: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      if (payment.familyCheckoutDraftId) {
+        await familyDraftRef(db, parentId, payment.familyCheckoutDraftId).set({ status: 'students_attached', checkoutReference: admin.firestore.FieldValue.delete(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      }
+      await Promise.all(allocations.map((allocation) => studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId)
+        .set({ status: transaction.status, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true })));
+      await transitionFamilyDiscounts({ db, allocations, status: transaction.status });
+      await releaseFamilyCheckoutLocks({ db, parentId, reference, allocations });
+    } else {
+      await groupPaymentRef.set({ status: transaction.status || 'pending', familyFinalizationStatus: 'retryable', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    }
+    return { status: transaction.status || 'pending', reference };
+  }
+
+  const sourceAuthorizationForStorage = sourceAuthorization ? {
+    authorization_code: sourceAuthorization.authorizationCode,
+    bin: sourceAuthorization.bin ?? null,
+    last4: sourceAuthorization.last4 ?? null,
+    exp_month: sourceAuthorization.expMonth ?? null,
+    exp_year: sourceAuthorization.expYear ?? null,
+    card_type: sourceAuthorization.cardType ?? null,
+    bank: sourceAuthorization.bank ?? null,
+    reusable: sourceAuthorization.reusable === true,
+    signature: sourceAuthorization.signature ?? null,
+  } : null;
+  const authorization = transaction.authorization?.authorization_code && transaction.authorization?.reusable === true
+    ? transaction.authorization
+    : (sourceAuthorizationForStorage ?? transaction.authorization ?? null);
+  const reusableAuthorization = Boolean(authorization?.authorization_code && authorization.reusable);
+  const activationDate = transaction.paid_at && !Number.isNaN(new Date(transaction.paid_at).getTime())
+    ? new Date(transaction.paid_at)
+    : new Date();
+  const activatedAt = admin.firestore.Timestamp.fromDate(activationDate);
+  const nextBatch = db.batch();
+  const quotaUpdates = [];
+  const verifiedAllocations = [];
+
+  for (const allocation of allocations) {
+    const quote = calculateSubscriptionQuote({
+      planId: allocation.planId,
+      billingPeriod: allocation.billingPeriod,
+      subjectCount: allocation.subjectCount,
+    });
+    const discount = allocation.discountPercent ? calculateDiscount(quote.amount, Number(allocation.discountPercent)) : null;
+    const studentAmount = discount?.finalAmount ?? quote.amount;
+    const nextRenewalDate = admin.firestore.Timestamp.fromDate(
+      new Date(activationDate.getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000),
+    );
+    const studentRef = db.collection('users').doc(allocation.studentId);
+    const paymentRef = studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId);
+    const subscriptionRef = studentSubscriptionRef(db, allocation.studentId);
+    const authorizationRef = studentAuthorizationRef(db, allocation.studentId);
+    const studentSnapshot = await studentRef.get();
+    if (!studentSnapshot.exists || studentSnapshot.data()?.role !== 'student') {
+      throw new HttpsError('failed-precondition', 'A student profile in this family checkout is no longer available. Contact support before retrying payment verification.');
+    }
+
+    const discountEndsAt = discount && allocation.discountBillingDuration === 'fixed_months'
+      ? admin.firestore.Timestamp.fromDate(calculateDiscountEndAt(activationDate, allocation.discountDurationMonths, quote.billingCycleDays))
+      : null;
+    const recurringBenefit = discount && ['recurring', 'fixed_months'].includes(allocation.discountBillingDuration)
+      ? {
+        code: allocation.discountCode,
+        percentOff: Number(allocation.discountPercent),
+        planId: quote.planId,
+        billingPeriod: quote.billingPeriod,
+        subjectCount: quote.subjectCount,
+        activatedAt,
+        billingDuration: allocation.discountBillingDuration,
+        ...(allocation.discountBillingDuration === 'fixed_months' ? {
+          discountDurationMonths: allocation.discountDurationMonths,
+          discountEndsAt,
+        } : {}),
+      }
+      : null;
+    const subscription = {
+      studentId: allocation.studentId,
+      status: 'active',
+      ...quote,
+      amount: studentAmount,
+      ...(discount ? {
+        originalAmount: discount.originalAmount,
+        discountAmount: discount.discountAmount,
+        discountPercent: Number(allocation.discountPercent),
+        discountCode: allocation.discountCode,
+        discountBillingDuration: allocation.discountBillingDuration,
+        discountRedemptionReference: admin.firestore.FieldValue.delete(),
+        ...(allocation.discountBillingDuration === 'fixed_months' ? {
+          discountDurationMonths: allocation.discountDurationMonths,
+          discountEndsAt,
+        } : {}),
+        discountBenefit: recurringBenefit || admin.firestore.FieldValue.delete(),
+      } : {
+        originalAmount: admin.firestore.FieldValue.delete(),
+        discountAmount: admin.firestore.FieldValue.delete(),
+        discountPercent: admin.firestore.FieldValue.delete(),
+        discountCode: admin.firestore.FieldValue.delete(),
+        discountBillingDuration: admin.firestore.FieldValue.delete(),
+        discountDurationMonths: admin.firestore.FieldValue.delete(),
+        discountEndsAt: admin.firestore.FieldValue.delete(),
+        discountBenefit: admin.firestore.FieldValue.delete(),
+      }),
+      latestReference: reference,
+      activatedAt: activatedAt,
+      entitlementWindowStartAt: activatedAt,
+      renewedAt: activatedAt,
+      renewalDate: nextRenewalDate,
+      autoRenew: reusableAuthorization,
+      cancelAtPeriodEnd: false,
+      manualPaymentRequired: !reusableAuthorization,
+      renewalAttemptCount: 0,
+      graceEndsAt: admin.firestore.FieldValue.delete(),
+      renewalAttempt: admin.firestore.FieldValue.delete(),
+      renewalChargeLock: admin.firestore.FieldValue.delete(),
+      pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(),
+      pendingPlanSetAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const quotas = await getActiveSubjectLessonQuotaUpdates({
+      db,
+      studentId: allocation.studentId,
+      subscription: { ...quote, status: 'active', latestReference: reference, renewalDate: nextRenewalDate, entitlementWindowStartAt: activatedAt, activatedAt, renewedAt: activatedAt },
+      carryForward: false,
+      windowStartAt: activatedAt,
+      renewalDate: nextRenewalDate,
+      cycleId: reference,
+      updatedAt: activatedAt,
+    });
+    quotaUpdates.push(...quotas);
+    nextBatch.set(paymentRef, {
+      reference: allocation.paymentDocumentId,
+      gatewayReference: reference,
+      familyReference: reference,
+      familyCheckout: true,
+      familyAllocation: true,
+      studentId: allocation.studentId,
+      payerId: parentId,
+      parentId,
+      email: transaction.customer?.email ?? payment.email,
+      status: 'success',
+      currency: 'ZAR',
+      ...quote,
+      amount: studentAmount,
+      subscriptionAmountDue: studentAmount,
+      familyGatewayAmount: Number(transaction.amount || 0) / 100,
+      ...(discount ? {
+        originalAmount: discount.originalAmount,
+        discountAmount: discount.discountAmount,
+        discountPercent: Number(allocation.discountPercent),
+        discountCode: allocation.discountCode,
+        discountBillingDuration: allocation.discountBillingDuration,
+        discountRedemptionReference: allocation.discountRedemptionReference,
+        ...(allocation.discountBillingDuration === 'fixed_months' ? { discountDurationMonths: allocation.discountDurationMonths, discountEndsAt } : {}),
+      } : {}),
+      paidAt: transaction.paid_at ?? activatedAt,
+      gatewayTransactionId: transaction.id ?? null,
+      familyPaymentDocumentId: reference,
+      createdAt: payment.createdAt,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    nextBatch.set(subscriptionRef, subscription, { merge: true });
+    nextBatch.set(studentRef, {
+      paymentCompleted: true,
+      subscriptionStatus: 'active',
+      subscriptionPlanId: quote.planId,
+      subscriptionPlanName: quote.planName,
+      subscriptionBillingPeriod: quote.billingPeriod,
+      subscriptionSubjectCount: quote.subjectCount,
+      latestPaymentReference: reference,
+      subscriptionRenewalDate: nextRenewalDate,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    if (reusableAuthorization) {
+      nextBatch.set(authorizationRef, {
+        studentId: allocation.studentId,
+        payerId: parentId,
+        email: transaction.customer?.email ?? payment.email,
+        authorizationCode: authorization.authorization_code,
+        bin: authorization.bin ?? null,
+        last4: authorization.last4 ?? null,
+        expMonth: authorization.exp_month ?? null,
+        expYear: authorization.exp_year ?? null,
+        cardType: authorization.card_type ?? null,
+        bank: authorization.bank ?? null,
+        reusable: authorization.reusable === true,
+        signature: authorization.signature ?? null,
+        storedAt: admin.firestore.FieldValue.serverTimestamp(),
+        reference,
+        familyReference: reference,
+      }, { merge: true });
+    }
+    verifiedAllocations.push({ ...allocation, quote, amount: studentAmount });
+  }
+  quotaUpdates.forEach(({ ref, lessonQuota }) => nextBatch.set(ref, { lessonQuota, updatedAt: activatedAt }, { merge: true }));
+  nextBatch.set(groupPaymentRef, {
+    status: 'success',
+    gatewayTransactionId: transaction.id ?? null,
+    gatewayResponse: transaction.gateway_response ?? null,
+    channel: transaction.channel ?? null,
+    paidAt: transaction.paid_at ?? activatedAt,
+    email: transaction.customer?.email ?? payment.email,
+    amount: Number(transaction.amount || 0) / 100,
+    currency: 'ZAR',
+    subscriptionAmountDue: Number(payment.subscriptionAmountDue || 0),
+    authorizationStored: reusableAuthorization,
+    allocations: verifiedAllocations,
+    familyFinalizationStatus: 'completed',
+    finalizedAt: admin.firestore.FieldValue.serverTimestamp(),
+    finalizationLockedAt: admin.firestore.FieldValue.delete(),
+    ...(payment.authorizationOnly ? { authorizationRefundStatus: 'pending_initiation' } : {}),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  if (payment.familyCheckoutDraftId) {
+    nextBatch.set(familyDraftRef(db, parentId, payment.familyCheckoutDraftId), {
+      status: 'completed',
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+
+  try {
+    await nextBatch.commit();
+  } catch (error) {
+    logger.error('Paystack family transaction succeeded but subscription activation could not be finalized', {
+      parentId, reference, error: error?.message ?? String(error),
+    });
+    throw new HttpsError('internal', `Family payment succeeded but activation is still being finalized. Retry verification for ${reference}; do not pay again.`);
+  }
+  await transitionFamilyDiscounts({ db, allocations, status: 'success' });
+  await releaseFamilyCheckoutLocks({ db, parentId, reference, allocations });
+  const refund = payment.authorizationOnly ? await requestAuthorizationRefund({ db, studentId: parentId, reference }) : null;
+  return {
+    status: 'success',
+    reference,
+    studentCount: allocations.length,
+    authorizationStored: reusableAuthorization,
+    ...(payment.authorizationOnly ? {
+      authorizationOnly: true,
+      refundStatus: refund?.refundStatus ?? 'pending',
+      manualPaymentRequired: !reusableAuthorization,
+    } : {}),
+  };
+};
+
+export const initializeFamilySubscriptionCheckout = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 120 }, async (request) => {
+  const parentId = request.auth?.uid;
+  if (!parentId) throw new HttpsError('unauthenticated', 'Sign in as a parent before starting family checkout.');
+  const checkoutId = String(request.data?.checkoutId ?? '').trim();
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(checkoutId)) throw new HttpsError('invalid-argument', 'A valid family checkout ID is required.');
+  const draftId = String(request.data?.draftId ?? '').trim();
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(draftId)) throw new HttpsError('invalid-argument', 'A valid saved family setup is required.');
+  const db = getDb();
+  const requestedPaymentMode = request.data?.paymentMode;
+  if (requestedPaymentMode !== undefined && !['new', 'existing'].includes(requestedPaymentMode)) {
+    throw new HttpsError('invalid-argument', 'Choose a new card or an existing saved card.');
+  }
+  const paymentMode = requestedPaymentMode || 'new';
+  const savedPaymentMethodId = paymentMode === 'existing' ? String(request.data?.paymentMethodId ?? '').trim() : '';
+  if (paymentMode === 'existing' && !savedPaymentMethodId) throw new HttpsError('invalid-argument', 'Choose a saved card or select a new card.');
+  const parentSnapshot = await db.collection('users').doc(parentId).get();
+  if (!parentSnapshot.exists || parentSnapshot.data()?.role !== 'parent') throw new HttpsError('permission-denied', 'Only a parent can start family checkout.');
+  const draftSnapshot = await familyDraftRef(db, parentId, draftId).get();
+  if (!draftSnapshot.exists || draftSnapshot.data()?.parentId !== parentId) throw new HttpsError('not-found', 'The saved family setup was not found.');
+  const draft = draftSnapshot.data();
+  if (draft.expiresAt?.toDate?.() <= new Date()) throw new HttpsError('failed-precondition', 'The saved family setup has expired. Start a new setup.');
+  if (draft.status !== 'students_attached' || !Array.isArray(draft.studentIds) || draft.studentIds.length !== draft.slots?.length) {
+    throw new HttpsError('failed-precondition', 'Create and link every student profile before checkout.');
+  }
+  const selections = draft.slots.map((slot, index) => ({
+    studentId: draft.studentIds[index],
+    planId: slot.planId,
+    billingPeriod: slot.billingPeriod,
+    subjectCount: slot.subjectCount,
+    discountCode: slot.discountCode || '',
+  }));
+  try {
+    quoteFamilySelections({ selections, quoteSubscription: calculateSubscriptionQuote, discountForQuote: () => null });
+  } catch (error) {
+    throw new HttpsError('invalid-argument', error.message);
+  }
+  const email = request.auth.token?.email || parentSnapshot.data()?.email;
+  if (!email) throw new HttpsError('failed-precondition', 'A billing email is required.');
+  const customer = getPaystackCustomerDetails({ profile: parentSnapshot.data(), authName: request.auth.token?.name, authPhone: request.auth.token?.phone_number });
+
+  const existing = await db.collection('users').doc(parentId).collection('payments')
+    .where('familyCheckoutId', '==', checkoutId).limit(1).get();
+  if (!existing.empty) {
+    const prior = existing.docs[0].data();
+    if (prior.status === 'success') return { completed: true, reference: prior.reference, totalAmount: prior.subscriptionAmountDue };
+    if (prior.authorizationUrl && PAYMENT_BLOCKING_CHECKOUT_STATUSES.includes(prior.status)) {
+      return { authorizationUrl: prior.authorizationUrl, reference: prior.reference, totalAmount: prior.subscriptionAmountDue, authorizationOnly: prior.authorizationOnly === true };
+    }
+    if (PAYMENT_BLOCKING_CHECKOUT_STATUSES.includes(prior.status)) {
+      throw new HttpsError('aborted', 'This family checkout is still being confirmed. Check its status before starting another payment.', { pendingReference: prior.reference });
+    }
+  }
+
+  const userSnapshots = await Promise.all(selections.map(({ studentId }) => db.collection('users').doc(studentId).get()));
+  const studentById = new Map(userSnapshots.map((snapshot) => [snapshot.id, snapshot]));
+  for (const selection of selections) {
+    const studentSnapshot = studentById.get(selection.studentId);
+    if (!studentSnapshot.exists || studentSnapshot.data()?.role !== 'student' || studentSnapshot.data()?.parentId !== parentId) {
+      throw new HttpsError('permission-denied', 'Every selected student must be linked to your parent account.');
+    }
+    const subscriptionSnapshot = await studentSubscriptionRef(db, selection.studentId).get();
+    const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
+    const renewalDate = subscription?.renewalDate?.toDate?.();
+    if (subscription?.status === 'active' && renewalDate && renewalDate > new Date()) {
+      throw new HttpsError('failed-precondition', 'A selected student already has an active subscription. Manage that plan from the child’s subscription page.');
+    }
+    if (subscription?.status === 'past_due' || subscription?.pendingPlan?.planId) {
+      throw new HttpsError('failed-precondition', 'A selected student has an existing subscription change to resolve. Manage that plan from the child’s subscription page.');
+    }
+  }
+
+  const baseQuotes = quoteFamilySelections({ selections, quoteSubscription: calculateSubscriptionQuote, discountForQuote: () => null });
+  const familyReference = buildFamilyCheckoutReference(parentId, checkoutId);
+  const allocations = [];
+  let totalMinor = 0;
+  try {
+    for (const [index, item] of baseQuotes.allocations.entries()) {
+      const selection = selections[index];
+      let discount = null;
+      if (selection.discountCode) {
+        const quote = await getDiscountQuoteForCheckout({
+          db, code: selection.discountCode, uid: parentId, email, studentId: selection.studentId,
+          planId: selection.planId, billingPeriod: selection.billingPeriod, subjectCount: selection.subjectCount,
+        });
+        discount = await reserveDiscountRedemption({
+          db, code: quote.code, reference: `${familyReference}-${index + 1}`, studentId: selection.studentId,
+          payerId: parentId, email, quote: item.quote,
+        });
+      }
+      const amount = discount?.finalAmount ?? item.quote.amount;
+      const amountMinor = Math.round(Number(amount) * 100);
+      totalMinor += amountMinor;
+      allocations.push({
+        studentId: selection.studentId,
+        planId: selection.planId,
+        billingPeriod: selection.billingPeriod,
+        subjectCount: selection.subjectCount,
+        quote: item.quote,
+        amount: amountMinor / 100,
+        discountCode: discount?.code || null,
+        discountPercent: discount?.percentOff ?? null,
+        discountBillingDuration: discount?.billingDuration ?? null,
+        discountDurationMonths: discount?.discountDurationMonths ?? null,
+        discountRedemptionReference: discount ? `${familyReference}-${index + 1}` : null,
+        originalAmount: discount?.originalAmount ?? null,
+        discountAmount: discount?.discountAmount ?? null,
+        paymentDocumentId: `${familyReference}-child-${index + 1}`,
+      });
+    }
+  } catch (error) {
+    await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+    throw error instanceof HttpsError ? error : new HttpsError('failed-precondition', error.message || 'A discount could not be applied.');
+  }
+  let gatewayPlan;
+  try {
+    gatewayPlan = resolveFamilyGatewayPlan({ totalMinor, paymentMode });
+  } catch (error) {
+    await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+    throw new HttpsError('failed-precondition', error.message);
+  }
+  const { authorizationOnly, noChargeAuthorizationUse } = gatewayPlan;
+  let savedAuthorization = null;
+  if (paymentMode === 'existing') {
+    const methods = await getParentAuthorizationOptions({ db, parentId });
+    savedAuthorization = methods.find((entry) => entry.id === savedPaymentMethodId) ?? null;
+    if (!savedAuthorization) {
+      await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+      throw new HttpsError('failed-precondition', 'That saved card is no longer available. Refresh the payment methods and try again.');
+    }
+  }
+  const gatewayAmountMinor = gatewayPlan.gatewayAmountMinor;
+  const callbackConfig = getPaystackConfig();
+  let callbackUrl;
+  try {
+    callbackUrl = new URL(String(request.data?.callbackUrl || callbackConfig.paystackCallbackUrl || ''));
+    const localhost = ['localhost', '127.0.0.1'].includes(callbackUrl.hostname);
+    const allowedHosts = ['parents.examifying.bakayise.com', 'examifying-parents.web.app', 'examifying-parents.firebaseapp.com'];
+    if ((!localhost && (callbackUrl.protocol !== 'https:' || !allowedHosts.includes(callbackUrl.hostname)))
+      || (localhost && !['http:', 'https:'].includes(callbackUrl.protocol))
+      || !callbackUrl.pathname.startsWith('/parent/family-setup')) throw new Error('Invalid family callback URL');
+    callbackUrl.searchParams.set('familyCheckout', '1');
+  } catch {
+    await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+    throw new HttpsError('invalid-argument', 'A valid family checkout callback URL is required.');
+  }
+
+  const groupPayment = familyPaymentRef(db, parentId, familyReference);
+  const lockReads = await db.runTransaction(async (transaction) => {
+    const locks = allocations.map((allocation) => activeCheckoutRef(db, allocation.studentId));
+    const pendingQueries = allocations.map((allocation) => db.collection('users').doc(allocation.studentId).collection('payments')
+      .where('status', 'in', PAYMENT_BLOCKING_CHECKOUT_STATUSES).limit(1));
+    const [lockSnapshots, pendingSnapshots] = await Promise.all([
+      Promise.all(locks.map((ref) => transaction.get(ref))),
+      Promise.all(pendingQueries.map((queryRef) => transaction.get(queryRef))),
+    ]);
+    if (lockSnapshots.some((snapshot) => snapshot.exists) || pendingSnapshots.some((snapshot) => !snapshot.empty)) {
+      throw new HttpsError('aborted', 'A selected student already has a payment being processed. Check that payment before starting family checkout.');
+    }
+    const payment = {
+      reference: familyReference,
+      familyCheckout: true,
+      familyCheckoutId: checkoutId,
+      familyCheckoutDraftId: draftId,
+      familyStudentIds: allocations.map((allocation) => allocation.studentId),
+      studentId: allocations[0].studentId,
+      payerId: parentId,
+      parentId,
+      familyParentId: parentId,
+      email,
+      status: 'initializing',
+      currency: 'ZAR',
+      amount: gatewayAmountMinor / 100,
+      gatewayAmountMinor,
+      subscriptionAmountDue: totalMinor / 100,
+      authorizationOnly,
+      paymentMode,
+      ...(savedPaymentMethodId ? {
+        savedPaymentMethodId,
+        savedPaymentMethodStudentId: savedAuthorization.studentId,
+      } : {}),
+      ...(noChargeAuthorizationUse ? { noChargeAuthorizationUse: true } : {}),
+      ...(authorizationOnly ? { authorizationChargeAmount: 1 } : {}),
+      allocations,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    transaction.create(groupPayment, payment);
+    transaction.set(familyDraftRef(db, parentId, draftId), {
+      status: 'checkout_started',
+      checkoutReference: familyReference,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    allocations.forEach((allocation, index) => {
+      const lockRef = locks[index];
+      transaction.create(lockRef, {
+        reference: allocation.paymentDocumentId,
+        familyReference,
+        studentId: allocation.studentId,
+        payerId: parentId,
+        status: 'initializing',
+        startedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.create(studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId), {
+        reference: allocation.paymentDocumentId,
+        familyReference,
+        familyParentId: parentId,
+        familyCheckout: true,
+        familyAllocation: true,
+        studentId: allocation.studentId,
+        payerId: parentId,
+        parentId,
+        email,
+        status: 'initializing',
+        currency: 'ZAR',
+        ...allocation.quote,
+        amount: allocation.amount,
+        subscriptionAmountDue: allocation.amount,
+        ...(allocation.discountCode ? {
+          discountCode: allocation.discountCode,
+          discountPercent: allocation.discountPercent,
+          discountBillingDuration: allocation.discountBillingDuration,
+          discountDurationMonths: allocation.discountDurationMonths,
+          discountRedemptionReference: allocation.discountRedemptionReference,
+          originalAmount: allocation.originalAmount,
+          discountAmount: allocation.discountAmount,
+        } : {}),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+    return { created: true };
+  }).catch(async (error) => {
+    await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+    throw error;
+  });
+  if (!lockReads.created) throw new HttpsError('aborted', 'Could not lock the selected student subscriptions.');
+
+  try {
+    if (paymentMode === 'existing' && totalMinor === 0) {
+      await groupPayment.set({ status: 'initialized', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      const batch = db.batch();
+      allocations.forEach((allocation) => batch.set(studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId), {
+        status: 'initialized', updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }));
+      await batch.commit();
+      const result = await finalizeFamilyPaystackPayment({ parentId, reference: familyReference });
+      return {
+        ...result,
+        reference: familyReference,
+        totalAmount: 0,
+        studentCount: allocations.length,
+        paymentMethod: 'existing',
+        charged: false,
+      };
+    }
+
+    if (paymentMode === 'existing') {
+      const charge = await paystackRequest({
+        path: '/transaction/charge_authorization',
+        payload: {
+          authorization_code: savedAuthorization.authorization.authorizationCode,
+          email,
+          amount: gatewayAmountMinor,
+          currency: 'ZAR',
+          reference: familyReference,
+          ...(customer.firstName ? { first_name: customer.firstName } : {}),
+          ...(customer.lastName ? { last_name: customer.lastName } : {}),
+          ...(customer.phone ? { phone: customer.phone } : {}),
+          metadata: {
+            familyCheckout: true,
+            familyCheckoutId: checkoutId,
+            parentId,
+            studentCount: allocations.length,
+            studentIds: allocations.map((allocation) => allocation.studentId),
+            subscriptionAmountDue: totalMinor / 100,
+            product: 'Examifying family subscriptions',
+          },
+        },
+      });
+      const updateBatch = db.batch();
+      updateBatch.set(groupPayment, { status: 'processing', gatewayChargeAccepted: charge.status === 'success', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      allocations.forEach((allocation) => updateBatch.set(studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId), {
+        status: 'processing', updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }));
+      await updateBatch.commit();
+      const result = await finalizeFamilyPaystackPayment({ parentId, reference: familyReference });
+      return { ...result, reference: familyReference, totalAmount: totalMinor / 100, studentCount: allocations.length, paymentMethod: 'existing', charged: true };
+    }
+
+    const transaction = await paystackRequest({
+      path: '/transaction/initialize',
+      payload: {
+        email,
+        ...(customer.firstName ? { first_name: customer.firstName } : {}),
+        ...(customer.lastName ? { last_name: customer.lastName } : {}),
+        ...(customer.phone ? { phone: customer.phone } : {}),
+        amount: gatewayAmountMinor,
+        currency: 'ZAR',
+        reference: familyReference,
+        callback_url: callbackUrl.toString(),
+        metadata: {
+          familyCheckout: true,
+          familyCheckoutId: checkoutId,
+          parentId,
+          studentCount: allocations.length,
+          studentIds: allocations.map((allocation) => allocation.studentId),
+          subscriptionAmountDue: totalMinor / 100,
+          ...(customer.fullName ? { payerName: customer.fullName } : {}),
+          ...(customer.phone ? { payerPhone: customer.phone } : {}),
+          ...(authorizationOnly ? { checkoutPurpose: 'subscription_authorization', authorizationOnly: true, authorizationChargeAmount: 1 } : {}),
+          product: 'Examifying family subscriptions',
+        },
+      },
+    });
+    const updateBatch = db.batch();
+    updateBatch.set(groupPayment, { status: 'initialized', authorizationUrl: transaction.authorization_url, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    allocations.forEach((allocation) => updateBatch.set(studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId), {
+      status: 'initialized', updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true }));
+    await updateBatch.commit();
+    return {
+      authorizationUrl: transaction.authorization_url,
+      reference: familyReference,
+      totalAmount: totalMinor / 100,
+      studentCount: allocations.length,
+      authorizationOnly,
+      paymentMethod: 'new',
+      ...(authorizationOnly ? { authorizationChargeAmount: 1 } : {}),
+    };
+  } catch (error) {
+    const definitive = error instanceof HttpsError && (error.code === 'failed-precondition'
+      || (error.paystackRejected && Number(error.paystackStatusCode) < 500));
+    if (definitive) {
+      await groupPayment.set({ status: 'failed', initializationError: error.message, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      await familyDraftRef(db, parentId, draftId).set({ status: 'students_attached', checkoutReference: admin.firestore.FieldValue.delete(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      const batch = db.batch();
+      allocations.forEach((allocation) => batch.set(studentPaymentRef(db, allocation.studentId, allocation.paymentDocumentId), { status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true }));
+      await batch.commit();
+      await transitionFamilyDiscounts({ db, allocations, status: 'failed' });
+      await releaseFamilyCheckoutLocks({ db, parentId, reference: familyReference, allocations });
+    }
+    throw error instanceof HttpsError ? error : new HttpsError('internal', error?.message || 'Could not initialize family checkout. Check its status before retrying.');
+  }
+});
+
+export const verifyFamilySubscriptionCheckout = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 180 }, async (request) => {
+  const parentId = request.auth?.uid;
+  const reference = String(request.data?.reference ?? '').trim();
+  if (!parentId) throw new HttpsError('unauthenticated', 'Sign in as a parent to verify family checkout.');
+  if (!reference) throw new HttpsError('invalid-argument', 'A family payment reference is required.');
+  const db = getDb();
+  const parent = await db.collection('users').doc(parentId).get();
+  if (!parent.exists || parent.data()?.role !== 'parent') throw new HttpsError('permission-denied', 'Only a parent can verify family checkout.');
+  return finalizeFamilyPaystackPayment({ parentId, reference });
+});
+
+export const manageStudentSubscription = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const payerId = request.auth?.uid;
+  const { studentId, action } = request.data ?? {};
+  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to manage this subscription.');
+  if (!studentId || !['cancel', 'resume', 'cancel_pending_change'].includes(action)) {
+    throw new HttpsError('invalid-argument', 'A student account and valid subscription action are required.');
+  }
+
+  const db = getDb();
+  await assertCanManageStudentSubscription({ db, payerId, studentId });
+  const subscriptionRef = studentSubscriptionRef(db, studentId);
+  const userRef = db.collection('users').doc(studentId);
+  const authorizationSnapshot = await studentAuthorizationRef(db, studentId).get();
+  const reusableAuthorization = isReusableAuthorization(authorizationSnapshot.data());
+  const now = new Date();
+
+  const result = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(subscriptionRef);
+    if (!snapshot.exists) throw new HttpsError('failed-precondition', 'No subscription is available to manage.');
+    const subscription = snapshot.data();
+    const renewalDate = subscription.renewalDate?.toDate?.() ?? null;
+    const graceEndsAt = subscription.graceEndsAt?.toDate?.() ?? null;
+    const lockStartedAt = subscription.renewalChargeLock?.startedAt?.toDate?.() ?? null;
+    if (lockStartedAt && now.getTime() - lockStartedAt.getTime() < 10 * 60 * 1000) {
+      throw new HttpsError('aborted', 'A renewal charge is being processed. Please try again shortly.');
+    }
+    const attemptDate = subscription.renewalAttempt?.renewalDate?.toDate?.() ?? null;
+    if (renewalDate && renewalDate <= now
+      && attemptDate?.getTime() === renewalDate.getTime()
+      && ['processing', 'unknown'].includes(subscription.renewalAttempt?.status)) {
+      throw new HttpsError('aborted', 'A renewal payment is still being verified. Please try again shortly.');
+    }
+
+    const pendingReference = subscription.pendingPlanReference ?? null;
+    const pendingPaymentRef = pendingReference ? studentPaymentRef(db, studentId, pendingReference) : null;
+    const pendingPaymentSnapshot = pendingPaymentRef ? await transaction.get(pendingPaymentRef) : null;
+    const cancelPendingPayment = () => {
+      if (pendingPaymentRef && pendingPaymentSnapshot?.exists) {
+        transaction.set(pendingPaymentRef, {
+          status: 'cancelled',
+          cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+          cancellationReason: action,
+        }, { merge: true });
+      }
+    };
+
+    if (action === 'cancel_pending_change') {
+      if (!subscription.pendingPlan) return { action, unchanged: true };
+      cancelPendingPayment();
+      transaction.set(subscriptionRef, {
+        pendingPlan: admin.firestore.FieldValue.delete(),
+        pendingPlanReference: admin.firestore.FieldValue.delete(),
+        pendingPlanSetAt: admin.firestore.FieldValue.delete(),
+        cancelAtPeriodEnd: false,
+        autoRenew: reusableAuthorization && ['circle', 'personalized'].includes(subscription.planId) && renewalDate > now,
+        manualPaymentRequired: !reusableAuthorization && ['circle', 'personalized'].includes(subscription.planId),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      transaction.set(userRef, {
+        pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return {
+        action, cancelled: true, renewalDate: renewalDate?.toISOString?.() ?? null,
+        discountCode: subscription.pendingPlan?.discountCode ?? null,
+        discountRedemptionReference: subscription.pendingPlan?.discountRedemptionReference ?? null,
+      };
+    }
+
+    if (action === 'resume') {
+      if (!['circle', 'personalized'].includes(subscription.planId)
+        || subscription.status !== 'active'
+        || !renewalDate
+        || renewalDate <= now) {
+        throw new HttpsError('failed-precondition', 'Only a current paid subscription can be resumed.');
+      }
+      if (!reusableAuthorization) {
+        throw new HttpsError('failed-precondition', 'A reusable payment authorization is required to resume automatic renewal.');
+      }
+      if (subscription.autoRenew === true && subscription.cancelAtPeriodEnd !== true) {
+        return { action, unchanged: true, renewalDate: renewalDate.toISOString() };
+      }
+      transaction.set(subscriptionRef, {
+        status: 'active',
+        autoRenew: true,
+        cancelAtPeriodEnd: false,
+        cancellation: admin.firestore.FieldValue.delete(),
+        manualPaymentRequired: false,
+        graceEndsAt: admin.firestore.FieldValue.delete(),
+        nextRenewalAttemptAt: admin.firestore.FieldValue.delete(),
+        renewalAttempt: admin.firestore.FieldValue.delete(),
+        renewalAttemptCount: 0,
+        renewalChargeLock: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      transaction.set(userRef, {
+        subscriptionStatus: 'active',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return { action, resumed: true, renewalDate: renewalDate.toISOString() };
+    }
+
+    if (subscription.cancelAtPeriodEnd === true) {
+      return { action, unchanged: true, renewalDate: renewalDate?.toISOString?.() ?? null };
+    }
+
+    const activePaidPeriod = ['circle', 'personalized'].includes(subscription.planId)
+      && subscription.status === 'active'
+      && renewalDate
+      && renewalDate > now;
+    const activeGracePeriod = ['circle', 'personalized'].includes(subscription.planId)
+      && subscription.status === 'past_due'
+      && graceEndsAt
+      && graceEndsAt > now;
+    if (!activePaidPeriod && !activeGracePeriod) {
+      return { action, alreadyFree: true };
+    }
+
+    cancelPendingPayment();
+    if (activeGracePeriod) {
+      return {
+        action, graceEnded: true, pendingReference,
+        discountCode: subscription.pendingPlan?.discountCode ?? null,
+        discountRedemptionReference: subscription.pendingPlan?.discountRedemptionReference ?? null,
+      };
+    }
+
+    transaction.set(subscriptionRef, {
+      status: 'active',
+      autoRenew: false,
+      cancelAtPeriodEnd: true,
+      cancellation: {
+        requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+        requestedBy: payerId,
+        effectiveAt: admin.firestore.Timestamp.fromDate(renewalDate),
+      },
+      pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(),
+      pendingPlanSetAt: admin.firestore.FieldValue.delete(),
+      graceEndsAt: admin.firestore.FieldValue.delete(),
+      renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
+      nextRenewalAttemptAt: admin.firestore.FieldValue.delete(),
+      renewalAttempt: admin.firestore.FieldValue.delete(),
+      manualPaymentRequired: false,
+      renewalChargeLock: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    transaction.set(userRef, {
+      subscriptionStatus: 'cancel_at_period_end',
+      pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return {
+      action, cancelled: true, renewalDate: renewalDate.toISOString(),
+      discountCode: subscription.pendingPlan?.discountCode ?? null,
+      discountRedemptionReference: subscription.pendingPlan?.discountRedemptionReference ?? null,
+    };
+  });
+
+  if (result.discountRedemptionReference) {
+    await transitionDiscountRedemptionForPayment({
+      db, code: result.discountCode, reference: result.discountRedemptionReference, status: 'cancelled',
+    });
+  }
+  if (result.graceEnded) {
+    await applyFreeSubscription({
+      studentId,
+      pendingReference: result.pendingReference,
+      pendingStatus: 'cancelled',
+      reason: 'cancelled_during_renewal_grace',
+    });
+    return { action, cancelled: true, freeImmediately: true };
+  }
+  return result;
+});
+
+export const cancelPaystackCheckout = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const payerId = request.auth?.uid;
+  const { studentId, reference } = request.data ?? {};
+  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in before cancelling checkout.');
+  if (!studentId || !reference) throw new HttpsError('invalid-argument', 'studentId and reference are required.');
+  const db = getDb();
+  await assertCanManageStudentSubscription({ db, payerId, studentId });
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const result = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(paymentRef);
+    if (!snapshot.exists) throw new HttpsError('not-found', 'The pending checkout was not found.');
+    const payment = snapshot.data();
+    if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This checkout belongs to another account.');
+    if (payment.checkoutCancellationRequested === true) return { cancelled: true };
+    if (payment.status === 'success') return { cancelled: false, paymentSucceeded: true };
+    if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status)) {
+      throw new HttpsError('failed-precondition', 'This checkout can no longer be cancelled.');
+    }
+    transaction.set(paymentRef, {
+      checkoutCancellationRequested: true,
+      checkoutCancellationRequestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return {
+      cancelled: true,
+    };
+  });
+  return result;
+});
+
+const finalizePaystackPayment = async ({ reference, studentId, payerId }) => {
+  const db = getDb();
+  const paymentRef = studentPaymentRef(db, studentId, reference);
+  const paymentSnapshot = await paymentRef.get();
+  if (!paymentSnapshot.exists) throw new HttpsError('not-found', 'Payment record not found.');
+  const payment = paymentSnapshot.data();
+  if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This payment belongs to another account.');
+  if (payment.status === 'success') {
+    await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
+    const existingAuthorization = await studentAuthorizationRef(db, studentId).get();
+    const authorizationStored = isReusableAuthorization(existingAuthorization.data());
+    if (payment.discountCode && payment.discountReservationStatus !== 'scheduled') {
+      await transitionDiscountRedemptionForPayment({
+        db,
+        code: payment.discountCode,
+        reference: payment.discountRedemptionReference || reference,
+        status: 'success',
+      }).catch((error) => {
+        logger.error('Could not repair a redeemed discount after an idempotent payment verification', {
+          studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
+        });
+      });
+    }
+    const refund = payment.authorizationOnly === true
+      ? await requestAuthorizationRefund({ db, studentId, reference })
+      : null;
+    return {
+      status: 'success', reference, authorizationStored,
+      ...(payment.authorizationOnly ? {
+        authorizationOnly: true,
+        refundStatus: refund?.refundStatus ?? payment.authorizationRefundStatus ?? 'pending',
+        manualPaymentRequired: !authorizationStored,
+      } : {}),
+    };
+  }
+  if (['failed', 'abandoned', 'reversed', 'amount_mismatch', 'cancelled'].includes(payment.status)) {
+    if (payment.status !== 'amount_mismatch') {
+      await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
+    }
+    return { status: payment.status, reference, authorizationStored: false };
+  }
+  if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status) || !payment.planId || !payment.studentId) {
+    throw new HttpsError('failed-precondition', 'This payment cannot be verified. Please start a new subscription checkout.');
+  }
+
+  let quote;
+  try {
+    quote = calculateSubscriptionQuote({
+      planId: payment.planId,
+      billingPeriod: payment.billingPeriod,
+      subjectCount: payment.subjectCount,
+    });
+  } catch {
+    throw new HttpsError('failed-precondition', 'The saved subscription selection is invalid.');
+  }
+
+  const discount = payment.discountPercent
+    ? calculateDiscount(quote.amount, Number(payment.discountPercent))
+    : null;
+  const expectedSubscriptionAmount = Number.isFinite(Number(payment.subscriptionAmountDue))
+    ? Number(payment.subscriptionAmountDue)
+    : (discount?.finalAmount ?? quote.amount);
+  const expectedTransactionAmount = payment.authorizationOnly === true
+    ? Number(payment.authorizationChargeAmount)
+    : expectedSubscriptionAmount;
+  if (!Number.isFinite(expectedTransactionAmount) || expectedTransactionAmount < 0) {
+    throw new HttpsError('failed-precondition', 'The saved payment amount is invalid. Please start a new checkout.');
+  }
+
+  const transaction = await paystackRequest({
+    path: `/transaction/verify/${reference}`,
+    method: 'GET',
+  });
+
+  if (transaction.status === 'success' && (transaction.reference !== reference
+    || Number(transaction.amount) !== toMinorUnits(expectedTransactionAmount)
+    || transaction.currency !== quote.currency)) {
+    await paymentRef.set({ status: 'amount_mismatch', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    throw new HttpsError('failed-precondition', 'The verified payment does not match this subscription price.');
+  }
+
+  const authorization = transaction.authorization ?? null;
+  const succeeded = transaction.status === 'success';
+  const reusableAuthorization = Boolean(authorization?.authorization_code && authorization.reusable);
+  const activationDate = succeeded && transaction.paid_at && !Number.isNaN(new Date(transaction.paid_at).getTime())
+    ? new Date(transaction.paid_at)
+    : new Date();
+  const activationTimestamp = succeeded ? admin.firestore.Timestamp.fromDate(activationDate) : null;
+  const discountEndsAt = payment.discountBillingDuration === 'fixed_months' && discount
+    ? (payment.discountEndsAt || (succeeded
+      ? admin.firestore.Timestamp.fromDate(calculateDiscountEndAt(activationDate, payment.discountDurationMonths, quote.billingCycleDays))
+      : null))
+    : null;
+  const nextRenewalDate = succeeded
+    ? admin.firestore.Timestamp.fromDate(new Date(activationDate.getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000))
+    : null;
+  const batch = db.batch();
+  batch.set(paymentRef, {
+    reference,
+    currency: transaction.currency ?? quote.currency,
+    status: transaction.status,
+    gatewayResponse: transaction.gateway_response,
+    gatewayTransactionId: transaction.id ?? null,
+    paidAt: transaction.paid_at ?? null,
+    channel: transaction.channel ?? null,
+    studentId: payment.studentId,
+    payerId,
+    email: transaction.customer?.email ?? payment.email,
+    ...quote,
+    amount: Number(transaction.amount ?? 0) / 100,
+    subscriptionAmountDue: expectedSubscriptionAmount,
+    ...(payment.authorizationOnly === true ? {
+      authorizationOnly: true,
+      authorizationChargeAmount: expectedTransactionAmount,
+      ...(succeeded ? { authorizationRefundStatus: payment.authorizationRefundStatus || 'pending_initiation' } : {}),
+    } : {}),
+    ...(discount ? {
+      originalAmount: discount.originalAmount,
+      discountAmount: discount.discountAmount,
+      discountPercent: Number(payment.discountPercent),
+      discountCode: payment.discountCode,
+      discountBillingDuration: payment.discountBillingDuration,
+      ...(payment.discountBillingDuration === 'fixed_months' ? {
+        discountDurationMonths: payment.discountDurationMonths,
+        discountEndsAt,
+        discountStartedAt: payment.discountStartedAt || activationTimestamp,
+      } : {}),
+    } : {}),
+    ...(succeeded ? { finalizedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  let displacedPendingDiscount = null;
+  let reusableAuthorizationAvailable = reusableAuthorization;
+  if (succeeded) {
+    const subscriptionRef = studentSubscriptionRef(db, payment.studentId);
+    const authorizationRef = studentAuthorizationRef(db, payment.studentId);
+    const [currentSubscriptionSnapshot, currentAuthorizationSnapshot] = await Promise.all([
+      subscriptionRef.get(), authorizationRef.get(),
+    ]);
+    const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
+    const currentAuthorization = currentAuthorizationSnapshot.exists ? currentAuthorizationSnapshot.data() : null;
+    reusableAuthorizationAvailable = reusableAuthorization || isReusableAuthorization(currentAuthorization);
+    const subscriptionForQuota = {
+      ...quote, status: 'active', latestReference: reference,
+      renewalDate: nextRenewalDate, entitlementWindowStartAt: activationTimestamp,
+      activatedAt: activationTimestamp, renewedAt: activationTimestamp,
+    };
+    const activeSubjectQuotas = await getActiveSubjectLessonQuotaUpdates({
+      db, studentId: payment.studentId, subscription: subscriptionForQuota,
+      carryForward: false, windowStartAt: activationTimestamp,
+      renewalDate: nextRenewalDate, cycleId: reference, updatedAt: activationTimestamp,
+    });
+    const oldPendingReference = currentSubscription?.pendingPlanReference;
+    if (oldPendingReference && oldPendingReference !== reference) {
+      const oldPendingPlan = currentSubscription?.pendingPlan;
+      const pendingWasApplied = oldPendingPlan?.planId === quote.planId
+        && oldPendingPlan?.billingPeriod === quote.billingPeriod
+        && Number(oldPendingPlan?.subjectCount) === Number(quote.subjectCount)
+        && (!oldPendingPlan?.discountRedemptionReference
+          || oldPendingPlan.discountRedemptionReference === payment.discountRedemptionReference);
+      if (!pendingWasApplied && oldPendingPlan?.discountRedemptionReference) {
+        displacedPendingDiscount = oldPendingPlan;
+      }
+      batch.set(studentPaymentRef(db, payment.studentId, oldPendingReference), {
+        status: pendingWasApplied ? 'applied' : 'cancelled',
+        ...(pendingWasApplied ? { appliedAt: admin.firestore.FieldValue.serverTimestamp() } : { cancelledAt: admin.firestore.FieldValue.serverTimestamp() }),
+      }, { merge: true });
+    }
+    if (reusableAuthorization) {
+      batch.set(authorizationRef, {
+        studentId: payment.studentId,
+        payerId,
+        email: transaction.customer?.email ?? payment.email,
+        authorizationCode: authorization.authorization_code,
+        bin: authorization.bin ?? null,
+        last4: authorization.last4 ?? null,
+        expMonth: authorization.exp_month ?? null,
+        expYear: authorization.exp_year ?? null,
+        cardType: authorization.card_type ?? null,
+        bank: authorization.bank ?? null,
+        reusable: authorization.reusable,
+        signature: authorization.signature ?? null,
+        storedAt: admin.firestore.FieldValue.serverTimestamp(),
+        reference,
+      }, { merge: true });
+    }
+
+    batch.set(subscriptionRef, {
+      studentId: payment.studentId,
+      status: 'active',
+      ...quote,
+      amount: expectedSubscriptionAmount,
+      ...(discount ? {
+        originalAmount: discount.originalAmount,
+        discountAmount: discount.discountAmount,
+        discountPercent: Number(payment.discountPercent),
+        discountCode: payment.discountCode,
+        discountBillingDuration: payment.discountBillingDuration,
+        ...(payment.discountBillingDuration === 'fixed_months' ? {
+          discountDurationMonths: payment.discountDurationMonths,
+          discountEndsAt,
+        } : {}),
+        ...(['recurring', 'fixed_months'].includes(payment.discountBillingDuration) ? {
+          discountBenefit: {
+            code: payment.discountCode,
+            percentOff: Number(payment.discountPercent),
+            planId: quote.planId,
+            billingPeriod: quote.billingPeriod,
+            subjectCount: quote.subjectCount,
+            activatedAt: payment.discountStartedAt || activationTimestamp,
+            billingDuration: payment.discountBillingDuration,
+            ...(payment.discountBillingDuration === 'fixed_months' ? {
+              discountDurationMonths: payment.discountDurationMonths,
+              discountEndsAt,
+            } : {}),
+          },
+        } : { discountBenefit: admin.firestore.FieldValue.delete() }),
+      } : {
+        discountBenefit: admin.firestore.FieldValue.delete(),
+        originalAmount: admin.firestore.FieldValue.delete(),
+        discountAmount: admin.firestore.FieldValue.delete(),
+        discountPercent: admin.firestore.FieldValue.delete(),
+        discountCode: admin.firestore.FieldValue.delete(),
+        discountBillingDuration: admin.firestore.FieldValue.delete(),
+        discountDurationMonths: admin.firestore.FieldValue.delete(),
+        discountEndsAt: admin.firestore.FieldValue.delete(),
+        discountStartedAt: admin.firestore.FieldValue.delete(),
+      }),
+      latestReference: reference,
+      activatedAt: activationTimestamp,
+      entitlementWindowStartAt: activationTimestamp,
+      renewedAt: activationTimestamp,
+      renewalDate: nextRenewalDate,
+      autoRenew: reusableAuthorizationAvailable,
+      cancelAtPeriodEnd: false,
+      manualPaymentRequired: !reusableAuthorizationAvailable,
+      renewalAttemptCount: 0,
+      graceEndsAt: admin.firestore.FieldValue.delete(),
+      renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
+      nextRenewalAttemptAt: admin.firestore.FieldValue.delete(),
+      renewalAttempt: admin.firestore.FieldValue.delete(),
+      renewalChargeLock: admin.firestore.FieldValue.delete(),
+      pendingPlan: admin.firestore.FieldValue.delete(),
+      pendingPlanReference: admin.firestore.FieldValue.delete(),
+      pendingPlanSetAt: admin.firestore.FieldValue.delete(),
+      cancellation: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+
+    batch.set(db.collection('users').doc(payment.studentId), {
+      paymentCompleted: true,
+      subscriptionStatus: 'active',
+      subscriptionPlanId: quote.planId,
+      subscriptionPlanName: quote.planName,
+      subscriptionBillingPeriod: quote.billingPeriod,
+      subscriptionSubjectCount: quote.subjectCount,
+      latestPaymentReference: reference,
+      subscriptionRenewalDate: nextRenewalDate,
+      pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    activeSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: activationTimestamp }, { merge: true }));
+  }
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    if (succeeded) {
+      logger.error('Paystack succeeded but subscription finalization failed', {
+        studentId, payerId, reference, planId: quote.planId,
+        subjectCount: quote.subjectCount, amount: expectedSubscriptionAmount,
+        error: error?.message ?? String(error),
+      });
+      throw new HttpsError('internal', `Payment succeeded but subscription activation could not be finalized. Retry verification for reference ${reference}; do not make another payment.`);
+    }
+    throw error;
+  }
+
+  if (payment.discountReservationStatus !== 'scheduled' || succeeded) {
+    await transitionDiscountRedemptionForPayment({
+      db, code: payment.discountCode,
+      reference: payment.discountRedemptionReference || reference,
+      status: transaction.status,
+    }).catch((error) => {
+      logger.error('Could not finalize the discount redemption after subscription activation', {
+        studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
+      });
+    });
+  }
+
+  if (succeeded || ['failed', 'abandoned', 'reversed', 'cancelled'].includes(transaction.status)) {
+    await releaseActiveCheckoutLock({ db, studentId: payment.studentId, reference }).catch((error) => {
+      logger.warn('Could not release the finalized Paystack checkout lock', {
+        studentId: payment.studentId, reference, error: error?.message ?? String(error),
+      });
+    });
+  }
+
+  if (displacedPendingDiscount?.discountRedemptionReference) {
+    await transitionDiscountRedemptionForPayment({
+      db, code: displacedPendingDiscount.discountCode,
+      reference: displacedPendingDiscount.discountRedemptionReference, status: 'cancelled',
+    });
+  }
+
+  const authorizationRefund = succeeded && payment.authorizationOnly === true
+    ? await requestAuthorizationRefund({ db, studentId: payment.studentId, reference })
+    : null;
+  const nextActualCharge = succeeded && payment.authorizationOnly === true
+    ? getNextActualSubscriptionCharge({
+      baseAmount: quote.amount,
+      percentOff: Number(payment.discountPercent),
+      billingDuration: payment.discountBillingDuration,
+      discountDurationMonths: payment.discountDurationMonths,
+      billingCycleDays: quote.billingCycleDays,
+      activationDate,
+    })
+    : null;
+  return {
+    status: transaction.status,
+    reference,
+    authorizationStored: reusableAuthorizationAvailable,
     ...(payment.authorizationOnly === true ? {
       authorizationOnly: true,
       refundStatus: authorizationRefund?.refundStatus ?? 'pending',

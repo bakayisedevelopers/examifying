@@ -100,6 +100,12 @@ export {
 } from './peerMarking.js';
 
 export {
+  queueStudentExerciseAiMarking,
+  queuePeerMarkingAiReview,
+  processAiMarkingTask,
+} from './aiMarking.js';
+
+export {
   getCompletedPeerMarkingWorkForTutor,
   getPeerMarkingAssignmentsForTutor,
   reviewTutorPeerMarkingAssignment,

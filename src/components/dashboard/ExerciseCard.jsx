@@ -16,6 +16,23 @@ const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) 
   ? images
   : fallbackUrl ? [{ url: fallbackUrl, fileName: fallbackName || '' }] : [];
 
+const AiMarkingNotice = ({ record, label = 'AI-assisted marking', viewerRole = 'student' }) => {
+  const status = String(record?.aiMarking?.status ?? '');
+  if (!status || status === 'skipped') return null;
+  const content = {
+    pending: ['bg-sky-50 text-sky-900', `${label} is queued.`],
+    processing: ['bg-sky-50 text-sky-900', `${label} is processing in the background.`],
+    completed: ['bg-lime-50 text-lime-900', `${label} is complete. Tutors can still review and change these marks.`],
+    failed: ['bg-amber-50 text-amber-900', viewerRole === 'tutor'
+      ? 'AI marking did not complete. The original submission is available for manual marking.'
+      : 'AI marking did not complete. Your submitted work is saved for tutor review.'],
+    incorrect_submission: ['bg-amber-50 text-amber-900', record.aiMarking.message || 'The submitted images did not match this exercise. Please upload the correct work.'],
+    unclear_images: ['bg-amber-50 text-amber-900', record.aiMarking.message || 'We could not read your uploaded work clearly. Please upload clear images and submit again.'],
+  }[status];
+  if (!content) return null;
+  return <div role="status" className={`rounded-xl px-4 py-3 text-sm ${content[0]}`}>{content[1]}</div>;
+};
+
 export const ExerciseCard = ({
   exercise,
   availability,
@@ -162,6 +179,10 @@ export const ExerciseCard = ({
     && assignedWorkImages.length > 0;
   const canTutorAct = viewerRole === 'tutor' && accessRole !== 'viewer' && !isHistorical;
   const canEditTopicScores = canTutorAct && hasSubmittedImages;
+  const peerAiAssignments = completedMarkingAssignments.filter((item) =>
+    item.reviewerExerciseId === exercise.id
+    && item.reviewerSubjectInstanceId === exercise.subjectInstanceId
+    && item.aiMarking?.status);
 
   return (
     <div className="w-full space-y-5">
@@ -177,6 +198,13 @@ export const ExerciseCard = ({
           <span className="inline-flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1 font-semibold text-brand-700"><CalendarDays className="h-4 w-4" />{exercise.assignmentDate}</span>
           <ExerciseStatusBadges exercise={exercise} />
         </div>
+        <AiMarkingNotice record={exercise} viewerRole={viewerRole} />
+        {peerAiAssignments.map((assignment) => <AiMarkingNotice
+          key={assignment.assignmentPath || assignment.id}
+          record={assignment}
+          label="AI peer-marking review"
+          viewerRole={viewerRole}
+        />)}
         <div className="flex flex-wrap items-center gap-3">
           <h3 className="text-2xl font-bold text-slate-950">{exercise.title}</h3>
           {exerciseQuestionCount > 0 ? <span className="rounded-full bg-lime-100 px-3 py-1 text-sm font-semibold text-lime-800">{exerciseQuestionCount} {exerciseQuestionCount === 1 ? 'question' : 'questions'}</span> : null}

@@ -6,7 +6,7 @@ import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
-import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTopicUnderstandingQuestionScores, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData } from '../../services/firestoreService';
+import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTopicUnderstandingQuestionScores, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData, subscribeToExerciseAssignment, subscribeToPeerMarkingAssignmentsAtPaths, subscribeToTopicUnderstandingQuestionScores } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -117,6 +117,43 @@ export const TutorExerciseDetailsPage = () => {
       .catch((error) => setStatus(error.message || 'Could not load exercise.'))
       .finally(() => setIsLoading(false));
   }, [exerciseId, profile?.uid, periodId, studentId, subjectInstanceId]);
+
+  useEffect(() => {
+    if (!exercise?.documentPath || isHistorical) return undefined;
+    return subscribeToExerciseAssignment(exercise.documentPath, (latest) => {
+      if (latest) setExercise((current) => current ? { ...current, ...latest } : latest);
+    }, (error) => setStatus(error.message || 'Could not refresh exercise status.'));
+  }, [exercise?.documentPath, isHistorical]);
+
+  const peerAssignmentPathsKey = JSON.stringify(completedMarkingAssignments.map((item) => item.assignmentPath).filter(Boolean));
+  useEffect(() => {
+    const paths = JSON.parse(peerAssignmentPathsKey || '[]');
+    if (!paths.length || isHistorical) return undefined;
+    return subscribeToPeerMarkingAssignmentsAtPaths(paths, (records) => {
+      const updated = new Map(records.map((item) => [item.assignmentPath, item]));
+      setCompletedMarkingAssignments((current) => current.map((item) => updated.get(item.assignmentPath) ?? item));
+    }, (error) => setStatus(error.message || 'Could not refresh peer-marking status.'));
+  }, [peerAssignmentPathsKey, isHistorical]);
+
+  const scoreSubscriptionKey = JSON.stringify(exercise && !isHistorical ? {
+    studentId: exercise.studentId || studentId,
+    subjectInstanceId: exercise.subjectInstanceId,
+    topics: uniqueTopicNames([
+      ...getExerciseTopicNames(exercise),
+      ...completedMarkingAssignments.flatMap(getPeerMarkingTopicNames),
+    ]),
+    topicIds: [...new Set([
+      ...getQuestionTopicIds(exercise),
+      ...completedMarkingAssignments.flatMap(getQuestionTopicIds),
+    ])],
+    sourceIds: [exercise.id, ...completedMarkingAssignments.flatMap((item) => [item.id, item.assignmentPath])],
+  } : null);
+
+  useEffect(() => {
+    if (!scoreSubscriptionKey || scoreSubscriptionKey === 'null') return undefined;
+    return subscribeToTopicUnderstandingQuestionScores(JSON.parse(scoreSubscriptionKey), setScoreEntries,
+      (error) => setStatus(error.message || 'Could not refresh understanding scores.'));
+  }, [scoreSubscriptionKey]);
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
   const exerciseStatus = exercise ? getExerciseStatusLabels(exercise) : null;

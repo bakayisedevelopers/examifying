@@ -92,6 +92,8 @@ export const ProfileSettingsPage = ({ role }) => {
   const { profile, logout, refreshProfile } = useAuth();
   const { runOperation } = useOperationStatus();
   const [preferences, setPreferences] = useState(() => buildNotificationPreferences(profile));
+  const canConfigureAiMarking = ['tutor', 'teacher'].includes(String(role ?? '').toLowerCase());
+  const [aiMarkingEnabled, setAiMarkingEnabled] = useState(profile?.settings?.aiMarkingEnabled !== false);
   const [marketingEmailOptIn, setMarketingEmailOptIn] = useState(profile?.marketingEmailOptIn === true);
   const [status, setStatus] = useState('');
   const [deletionStatus, setDeletionStatus] = useState('');
@@ -101,6 +103,7 @@ export const ProfileSettingsPage = ({ role }) => {
   useEffect(() => {
     setPreferences(buildNotificationPreferences(profile));
     setMarketingEmailOptIn(profile?.marketingEmailOptIn === true);
+    setAiMarkingEnabled(profile?.settings?.aiMarkingEnabled !== false);
   }, [profile]);
 
   const handleToggle = (type, channel) => (event) => {
@@ -115,16 +118,16 @@ export const ProfileSettingsPage = ({ role }) => {
   const handleSave = async () => {
     try {
       setSaving(true);
-      setStatus('Saving notification settings…');
-      await runOperation({ operationName: 'Saving notification settings', successMessage: 'Your notification preferences are saved.' }, async () => {
+      setStatus('Saving settings…');
+      await runOperation({ operationName: 'Saving settings', successMessage: 'Your settings are saved.' }, async () => {
         await updateUserSettings({
           uid: profile.uid,
-          settings: { notificationPreferences: preferences },
+          settings: { notificationPreferences: preferences, ...(canConfigureAiMarking ? { aiMarkingEnabled } : {}) },
           marketingEmailOptIn,
         });
         await refreshProfile(profile.uid);
       });
-      setStatus('Notification settings saved.');
+      setStatus('Settings saved.');
     } catch (error) {
       setStatus(error.message || 'Could not save notification settings.');
     } finally {
@@ -224,6 +227,28 @@ export const ProfileSettingsPage = ({ role }) => {
           {status ? <p role="status" className="text-sm text-slate-600">{status}</p> : null}
         </div>
       </section>
+
+      {canConfigureAiMarking ? <section className="panel max-w-4xl space-y-4 p-5 sm:p-6">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-lime-600">Marking</p>
+          <h2 className="mt-1 text-xl font-bold text-slate-950">AI-assisted marking</h2>
+          <p className="mt-2 text-sm text-slate-600">When enabled, submitted student exercises and peer-marking work are assessed in the background. You can still review and change every mark manually.</p>
+        </div>
+        <label className="flex items-start gap-3 rounded-xl border border-slate-200 p-4">
+          <input
+            type="checkbox"
+            className="mt-1 h-4 w-4 accent-lime-500"
+            checked={aiMarkingEnabled}
+            disabled={saving || deleting}
+            onChange={(event) => setAiMarkingEnabled(event.target.checked)}
+            aria-label="AI-assisted marking"
+          />
+          <span>
+            <span className="block font-semibold text-slate-950">Enable AI-assisted marking</span>
+            <span className="mt-1 block text-sm text-slate-600">This feature is available without billing restrictions. Existing tutors default to enabled unless they turn it off.</span>
+          </span>
+        </label>
+      </section> : null}
 
       <section className="panel max-w-4xl space-y-4 border-rose-200 p-6">
         <div>

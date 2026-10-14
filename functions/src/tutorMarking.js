@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { admin, getDb } from './admin.js';
 import { getExerciseTopicNames } from './peerMarkingAllocation.js';
+import { shouldPreserveAuthoritativeMark } from './aiMarkingCore.js';
 
 const normalizeTopicKey = (value = '') => String(value)
   .normalize('NFKD')
@@ -291,9 +292,10 @@ export const getPeerMarkingAssignmentsForTutor = onCall({ cpu: 'gcf_gen1', cors:
     .filter((item) => item.subject === subject && item.reviewerSubjectInstanceId === subjectInstanceId);
 });
 
-export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  const uid = request.auth?.uid;
-  const { peerAssignmentId, peerAssignmentPath, reviewerExerciseId: requestedReviewerExerciseId, studentId, topicMarks, scoreEventId } = request.data ?? {};
+const reviewTutorPeerMarkingAssignmentCore = async ({
+  uid, peerAssignmentId, peerAssignmentPath, reviewerExerciseId: requestedReviewerExerciseId,
+  studentId, topicMarks, scoreEventId, markSource = 'manual', aiMarkingVersion = '',
+}) => {
   if ((!peerAssignmentId && !peerAssignmentPath) || !studentId || !Array.isArray(topicMarks) || !topicMarks.length
     || !/^[a-zA-Z0-9_-]{1,100}$/.test(String(scoreEventId ?? ''))) {
     throw new HttpsError('invalid-argument', 'A peer assignment, student, per-topic question marks, and score event ID are required.');
@@ -380,6 +382,10 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
     if (current.status !== 'completed' || current.reviewerId !== studentId) {
       throw new HttpsError('failed-precondition', 'The peer-marking assignment is no longer available.');
     }
+    if (markSource === 'ai' && (current.aiMarking?.version !== aiMarkingVersion
+      || current.aiMarking?.status !== 'processing')) {
+      throw new HttpsError('failed-precondition', 'This AI marking result is no longer current.');
+    }
     requireEpisodeAccess({ episode: currentEpisode.data(), uid, isAdmin: actor.role === 'admin' });
     scoreResults = scoreEntries.map((entry, index) => {
       const [topicSnapshot, recentScores, sourceScores] = topicReads[index];
@@ -409,8 +415,18 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
           replacedIds.add(item.id);
           if (item.ref.path !== scoreRef.path) transaction.delete(item.ref);
         });
-        const score = scoreForQuestion(mark);
-        transaction.set(scoreRef, {
+        const preservedManual = markSource === 'ai'
+          ? matches.find((item) => shouldPreserveAuthoritativeMark(markSource, item.data().markSource))
+          : null;
+        const existingData = preservedManual?.data();
+        const effectiveMark = existingData ? {
+          ...mark,
+          earnedMarks: Number(existingData.earnedMarks),
+          totalMarks: Number(existingData.totalMarks),
+          markSource: existingData.markSource || 'manual',
+        } : { ...mark, markSource };
+        const score = scoreForQuestion(effectiveMark);
+        if (!preservedManual) transaction.set(scoreRef, {
           sourceType: 'Marking', sourceId: resolvedPeerAssignmentPath,
           studentId,
           subjectInstanceId,
@@ -426,11 +442,13 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
           scoreEventId,
           questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
           earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks,
-          score, scoreScale: 'ratio-0-to-1', tutorId: uid,
+          score, scoreScale: 'ratio-0-to-1', tutorId: uid, markSource,
+          ...(markSource === 'ai' ? { aiMarkingVersion } : {}),
           notes: `Tutor evaluation of peer marking ${resolvedPeerAssignmentPath} for marked exercise ${markedExerciseId} and reviewer exercise ${reviewerExerciseId}; question ${mark.questionReference}`,
           createdAt: now, updatedAt: now,
         }, { merge: true });
-        return { questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber, score, earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks };
+        return { questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
+          score, earnedMarks: effectiveMark.earnedMarks, totalMarks: effectiveMark.totalMarks, markSource: effectiveMark.markSource };
       });
       const effectiveRecentScores = recentScores.docs
         .filter((item) => !replacedIds.has(item.id))
@@ -496,24 +514,34 @@ export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, asyn
     });
   });
   return { peerAssignmentId: resolvedPeerAssignmentId, peerAssignmentPath: resolvedPeerAssignmentPath, topicScores: scoreResults, reviewed: isFullyReviewed };
+};
+
+export const applyAiTutorPeerMarkingScores = async (request) => reviewTutorPeerMarkingAssignmentCore({
+  ...request,
+  uid: request.tutorId,
+  markSource: 'ai',
 });
 
-export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  const uid = request.auth?.uid;
-  const { studentId, subjectInstanceId, exerciseId, subject, topic, topicId = '', scoreEventId, questionMarks } = request.data ?? {};
+export const reviewTutorPeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) =>
+  reviewTutorPeerMarkingAssignmentCore({ ...request.data, uid: request.auth?.uid, markSource: 'manual' }));
+
+const saveTutorExerciseScoreCore = async ({
+  uid, studentId, subjectInstanceId, exerciseId, subject, topic, topicId = '', scoreEventId,
+  questionMarks, markSource = 'manual', aiMarkingVersion = '',
+}) => {
   const canonicalTopicKey = normalizeTopicKey(topic);
   if (!studentId || !subjectInstanceId || !exerciseId || !subject || !canonicalTopicKey
     || !/^[a-zA-Z0-9_-]{1,100}$/.test(String(scoreEventId ?? ''))) {
     throw new HttpsError('invalid-argument', 'Student, subject episode, exercise, topic, question marks, and score event are required.');
   }
   const normalizedQuestionMarks = normalizeQuestionMarks(questionMarks);
-  const score = scoreFromQuestionMarks(normalizedQuestionMarks);
   const db = getDb();
   const actor = await requireActor(db, uid);
   const episodeRef = db.collection('users').doc(studentId).collection('subjects').doc(subjectInstanceId);
   const exerciseRef = episodeRef.collection('exercises').doc(exerciseId);
   const now = admin.firestore.Timestamp.now();
   let average = null;
+  let appliedQuestionScores = normalizedQuestionMarks;
   await db.runTransaction(async (transaction) => {
     const topicResolution = await resolveTopicDocument(transaction, episodeRef, { topic, topicId });
     const { topicRef } = topicResolution;
@@ -530,6 +558,10 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
     }
     if (!exerciseSnapshot.exists) throw new HttpsError('not-found', 'Exercise not found.');
     const exercise = exerciseSnapshot.data();
+    if (markSource === 'ai' && (exercise.aiMarking?.version !== aiMarkingVersion
+      || exercise.aiMarking?.status !== 'processing')) {
+      throw new HttpsError('failed-precondition', 'This AI marking result is no longer current.');
+    }
     if (exercise.studentId && exercise.studentId !== studentId) throw new HttpsError('permission-denied', 'This exercise belongs to another student.');
     if (normalizeSubject(exercise.subject) !== normalizeSubject(subject)) throw new HttpsError('failed-precondition', 'The exercise subject does not match.');
     const submitted = Boolean(exercise.submittedImageUrl || exercise.submittedAt
@@ -559,41 +591,65 @@ export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request
     const questionScores = normalizedQuestionMarks.map((mark) => {
       const matches = matchingScoreRecords({ sourceScoreSnapshot: sourceScores, sourceType: 'Exercise', sourceId: exerciseId, questionMark: mark });
       const stableRef = questionScoreRef({ topicRef, sourceType: 'Exercise', sourceId: exerciseId, questionReference: mark.questionReference, paperId: mark.paperId });
-      const existing = matches.find((item) => item.id === stableRef.id) || matches
-        .sort((left, right) => (right.data().createdAt?.toMillis?.() ?? 0) - (left.data().createdAt?.toMillis?.() ?? 0))[0];
+      const orderedMatches = [...matches].sort((left, right) => (right.data().updatedAt?.toMillis?.() ?? right.data().createdAt?.toMillis?.() ?? 0)
+        - (left.data().updatedAt?.toMillis?.() ?? left.data().createdAt?.toMillis?.() ?? 0));
+      const preservedManual = markSource === 'ai'
+        ? orderedMatches.find((item) => shouldPreserveAuthoritativeMark(markSource, item.data().markSource))
+        : null;
+      const existing = preservedManual || matches.find((item) => item.id === stableRef.id) || orderedMatches[0];
       const scoreRef = existing?.ref || stableRef;
       matches.forEach((item) => {
         replacedIds.add(item.id);
         if (item.ref.path !== scoreRef.path) transaction.delete(item.ref);
       });
-      const questionScore = scoreForQuestion(mark);
-      transaction.set(scoreRef, {
-        sourceType: 'Exercise', sourceId: exerciseId, exerciseId, scoreEventId,
-        questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
-        earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks,
-        score: questionScore, scoreScale: 'ratio-0-to-1', tutorId: uid,
-        notes: `Tutor mark for exercise ${exerciseId} (${exercise.title || 'Exercise'}); question ${mark.questionReference}`,
-        createdAt: now, updatedAt: now,
-      }, { merge: true });
-      return { ...mark, score: questionScore };
+      const existingData = preservedManual?.data();
+      const effectiveMark = existingData ? {
+        ...mark,
+        earnedMarks: Number(existingData.earnedMarks),
+        totalMarks: Number(existingData.totalMarks),
+        markSource: existingData.markSource || 'manual',
+        createdAt: existingData.createdAt || now,
+      } : { ...mark, markSource };
+      const questionScore = scoreForQuestion(effectiveMark);
+      if (!preservedManual) transaction.set(scoreRef, {
+          sourceType: 'Exercise', sourceId: exerciseId, exerciseId, scoreEventId,
+          questionReference: mark.questionReference, paperId: mark.paperId, pageNumber: mark.pageNumber,
+          earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks,
+          score: questionScore, scoreScale: 'ratio-0-to-1', tutorId: uid, markSource,
+          ...(markSource === 'ai' ? { aiMarkingVersion } : {}),
+          notes: `${markSource === 'ai' ? 'AI-assisted mark' : 'Tutor mark'} for exercise ${exerciseId} (${exercise.title || 'Exercise'}); question ${mark.questionReference}`,
+          createdAt: now, updatedAt: now,
+        }, { merge: true });
+      return { ...effectiveMark, score: questionScore };
     });
+    appliedQuestionScores = questionScores;
 
     const effectiveRecentScores = recentScores.docs
       .filter((item) => !replacedIds.has(item.id))
       .map((item) => ({ data: () => item.data() }));
-    effectiveRecentScores.push(...questionScores.map((item) => ({ data: () => ({ ...item, scoreScale: 'ratio-0-to-1', createdAt: now }) })));
+    effectiveRecentScores.push(...questionScores.map((item) => ({ data: () => ({ ...item, scoreScale: 'ratio-0-to-1', createdAt: item.createdAt || now }) })));
     const rollup = makeTopicRollup({ docs: effectiveRecentScores }, now);
     average = rollup.understandingLevel;
     transaction.update(topicRef, {
       ...rollup,
-      tutorReport: `Tutor mark for exercise: ${exercise.title || 'Exercise'}`, updatedAt: now,
+      tutorReport: `${markSource === 'ai' ? 'AI-assisted mark' : 'Tutor mark'} for exercise: ${exercise.title || 'Exercise'}`, updatedAt: now,
     });
     transaction.update(exerciseRef, {
       updatedAt: now,
     });
   });
-  return { topic: String(topic).trim(), understandingLevel: average, averageUnderstandingLevel: average, exerciseId, score, questionScores: normalizedQuestionMarks.map((item) => ({ ...item, score: scoreForQuestion(item) })) };
+  return { topic: String(topic).trim(), understandingLevel: average, averageUnderstandingLevel: average, exerciseId,
+    score: scoreFromQuestionMarks(appliedQuestionScores), questionScores: appliedQuestionScores };
+};
+
+export const applyAiTutorExerciseScores = async (request) => saveTutorExerciseScoreCore({
+  ...request,
+  uid: request.tutorId,
+  markSource: 'ai',
 });
+
+export const saveTutorExerciseScore = onCall({ cpu: 'gcf_gen1' }, async (request) =>
+  saveTutorExerciseScoreCore({ ...request.data, uid: request.auth?.uid, markSource: 'manual' }));
 
 export const removeCompletedTopicFromLesson = onCall({ cpu: 'gcf_gen1', maxInstances: 1, concurrency: 1 }, async (request) => {
   const uid = request.auth?.uid;

@@ -1,6 +1,7 @@
 import { randomBytes, createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { admin, getDb } from './admin.js';
+import { isManagedStudentInviteProfileEligible } from './managedStudentAccountsCore.js';
 
 const inviteCollection = (db, studentId) => db.collection('users').doc(studentId)
   .collection('private').doc('managedStudentInvites').collection('tokens');
@@ -84,17 +85,19 @@ export const redeemManagedStudentInvite = onCall({ cpu: 'gcf_gen1' }, async (req
       || invite.expiresAt?.toDate?.() <= new Date()) {
       throw new HttpsError('permission-denied', 'This student account link is invalid or expired.');
     }
-    if (student.role !== 'student' || student.parentId !== invite.parentId || student.authUserExists === true) {
+    if (!isManagedStudentInviteProfileEligible(student, invite.parentId)) {
       throw new HttpsError('failed-precondition', 'This student profile can no longer be connected with this link.');
     }
     transaction.set(tokenRef, { status: 'redeeming', claimId, claimedAt: now }, { merge: true });
   });
 
+  let stage = 'checking_email';
   try {
     const sameEmailProfiles = await db.collection('users').where('emailLowercase', '==', email).limit(2).get();
     if (sameEmailProfiles.docs.some((snapshot) => snapshot.id !== studentId)) {
       throw new HttpsError('already-exists', 'That email is already used by another Examifying profile. Use a different email.');
     }
+    stage = 'resolving_auth_account';
     let authUser = null;
     try {
       authUser = await admin.auth().getUser(studentId);
@@ -116,6 +119,7 @@ export const redeemManagedStudentInvite = onCall({ cpu: 'gcf_gen1' }, async (req
       }
     }
 
+    stage = 'saving_student_profile';
     const legalVersion = String(request.data?.legalVersion ?? '2026-10-14').slice(0, 40);
     await studentRef.set({
       uid: studentId,
@@ -134,9 +138,9 @@ export const redeemManagedStudentInvite = onCall({ cpu: 'gcf_gen1' }, async (req
       marketingEmailOptIn: request.data?.marketingEmailOptIn === true,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    const customToken = await admin.auth().createCustomToken(studentId);
+    stage = 'consuming_invite';
     await tokenRef.set({ status: 'consumed', consumedAt: admin.firestore.FieldValue.serverTimestamp(), claimId: admin.firestore.FieldValue.delete() }, { merge: true });
-    return { customToken, studentId };
+    return { studentId, email: authUser.email || email };
   } catch (error) {
     await db.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(tokenRef);
@@ -148,6 +152,11 @@ export const redeemManagedStudentInvite = onCall({ cpu: 'gcf_gen1' }, async (req
         }, { merge: true });
       }
     }).catch(() => {});
+    console.error('Managed student invite redemption failed.', {
+      stage,
+      errorCode: error?.code || 'unknown',
+      errorName: error?.name || 'Error',
+    });
     if (error instanceof HttpsError) throw error;
     if (error?.code === 'auth/email-already-exists') throw new HttpsError('already-exists', 'That email is already connected to another Examifying account. Use a different email.');
     throw new HttpsError('internal', 'Could not finish setting up this student account. The student profile was preserved; try again or contact support.');

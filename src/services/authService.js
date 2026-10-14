@@ -3,7 +3,6 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
-  signInWithCustomToken,
   signOut,
   updateProfile,
   updatePassword,
@@ -199,7 +198,7 @@ export const completeManagedStudentInvite = async ({ token, email, password, dis
     privacyNoticeAcknowledged: true,
     legalVersion: LEGAL_POLICY_VERSION,
   });
-  const credential = await signInWithCustomToken(auth, invitation.customToken);
+  const credential = await signInWithEmailAndPassword(auth, invitation.email || email.trim(), password);
   const profile = await getUserProfile(credential.user.uid);
   if (!profile || profile.role !== 'student' || credential.user.uid !== invitation.studentId) {
     await signOut(auth);

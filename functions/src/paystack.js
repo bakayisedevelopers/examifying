@@ -14,12 +14,57 @@ import { getActiveSubjectLessonQuotaUpdates } from './lessonEntitlements.js';
 import { applyRecurringDiscount, applyScheduledDiscount, calculateDiscount, calculateDiscountEndAt, normalizeDiscountCode } from './discountCodesCore.js';
 import { getDiscountQuoteForCheckout, reserveDiscountRedemption, transitionDiscountRedemptionForPayment } from './discountCodes.js';
 import { buildFamilyCheckoutReference, quoteFamilySelections, resolveFamilyGatewayPlan } from './familyCheckoutCore.js';
+import { isVerifiedSubscriptionPaymentRecord } from './subscriptionPaymentCore.js';
 
 const studentSubscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
 const studentPaymentRef = (db, studentId, reference) => db.collection('users').doc(studentId).collection('payments').doc(reference);
 const studentAuthorizationRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptionAuthorizations').doc('current');
 const familyPaymentRef = (db, parentId, reference) => db.collection('users').doc(parentId).collection('payments').doc(reference);
 const familyDraftRef = (db, parentId, draftId) => db.collection('users').doc(parentId).collection('familyCheckoutDrafts').doc(draftId);
+
+const findVerifiedSubscriptionPayment = async ({ db, studentId, subscription, latestPaymentReference }) => {
+  const latestReference = subscription?.latestReference || latestPaymentReference;
+  if (!latestReference) return null;
+  const subscriptionWithReference = subscription.latestReference
+    ? subscription
+    : { ...subscription, latestReference };
+  let quote;
+  try {
+    quote = calculateSubscriptionQuote({
+      planId: subscription.planId,
+      billingPeriod: subscription.billingPeriod,
+      subjectCount: subscription.subjectCount,
+    });
+  } catch {
+    return null;
+  }
+  const payments = db.collection('users').doc(studentId).collection('payments');
+  const directSnapshot = await payments.doc(latestReference).get();
+  if (directSnapshot.exists && isVerifiedSubscriptionPaymentRecord({
+    studentId,
+    subscription: subscriptionWithReference,
+    payment: directSnapshot.data(),
+    paymentDocumentId: directSnapshot.id,
+    quote,
+  })) return { id: directSnapshot.id, payment: directSnapshot.data() };
+
+  // Earlier family checkouts stored the gateway/group reference on the
+  // subscription, while the student's successful allocation has its own ID.
+  const familyAllocations = await payments.where('familyReference', '==', latestReference).limit(20).get();
+  const match = familyAllocations.docs.find((snapshot) => {
+    const payment = snapshot.data();
+    return payment.familyAllocation === true
+      && payment.familyReference === latestReference
+      && isVerifiedSubscriptionPaymentRecord({
+        studentId,
+        subscription: subscriptionWithReference,
+        payment,
+        paymentDocumentId: snapshot.id,
+        quote,
+      });
+  });
+  return match ? { id: match.id, payment: match.data() } : null;
+};
 
 const paystackRequest = async ({ path, method = 'POST', payload }) => {
   const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
@@ -646,7 +691,7 @@ const assertCanManageStudentSubscription = async ({ db, payerId, studentId }) =>
   if (!isStudent && !isParent) {
     throw new HttpsError('permission-denied', 'Only the student or their linked parent can manage this subscription.');
   }
-  return { isParent, payer };
+  return { isParent, payer, student };
 };
 
 const getParentAuthorizationOptions = async ({ db, parentId }) => {
@@ -701,7 +746,7 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
     }
 
     const db = getDb();
-    const { isParent, payer } = await assertCanManageStudentSubscription({ db, payerId, studentId });
+    const { isParent, payer, student } = await assertCanManageStudentSubscription({ db, payerId, studentId });
     const email = request.auth.token?.email || payer.email;
     if (!email) throw new HttpsError('failed-precondition', 'A billing email is required.');
     const customer = getPaystackCustomerDetails({
@@ -745,10 +790,14 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
       && ['processing', 'unknown'].includes(currentSubscription?.renewalAttempt?.status)) {
       throw new HttpsError('aborted', 'A renewal payment is still being verified. Please try changing plans again shortly.');
     }
-    const subscriptionIsCurrent = ['circle', 'personalized'].includes(currentSubscription?.planId)
+    const subscriptionLooksCurrent = ['circle', 'personalized'].includes(currentSubscription?.planId)
       && currentSubscription?.status === 'active'
       && renewalDate
       && renewalDate > new Date();
+    const subscriptionIsCurrent = subscriptionLooksCurrent
+      && Boolean(await findVerifiedSubscriptionPayment({
+        db, studentId, subscription: currentSubscription, latestPaymentReference: student.latestPaymentReference,
+      }));
     const samePlan = subscriptionIsCurrent
       && currentSubscription.planId === quote.planId
       && currentSubscription.billingPeriod === quote.billingPeriod
@@ -1436,7 +1485,7 @@ const finalizeFamilyPaystackPayment = async ({ parentId, reference }) => {
         discountEndsAt: admin.firestore.FieldValue.delete(),
         discountBenefit: admin.firestore.FieldValue.delete(),
       }),
-      latestReference: reference,
+      latestReference: allocation.paymentDocumentId,
       activatedAt: activatedAt,
       entitlementWindowStartAt: activatedAt,
       renewedAt: activatedAt,
@@ -1456,11 +1505,11 @@ const finalizeFamilyPaystackPayment = async ({ parentId, reference }) => {
     const quotas = await getActiveSubjectLessonQuotaUpdates({
       db,
       studentId: allocation.studentId,
-      subscription: { ...quote, status: 'active', latestReference: reference, renewalDate: nextRenewalDate, entitlementWindowStartAt: activatedAt, activatedAt, renewedAt: activatedAt },
+      subscription: { ...quote, status: 'active', latestReference: allocation.paymentDocumentId, renewalDate: nextRenewalDate, entitlementWindowStartAt: activatedAt, activatedAt, renewedAt: activatedAt },
       carryForward: false,
       windowStartAt: activatedAt,
       renewalDate: nextRenewalDate,
-      cycleId: reference,
+      cycleId: allocation.paymentDocumentId,
       updatedAt: activatedAt,
     });
     quotaUpdates.push(...quotas);
@@ -1503,7 +1552,7 @@ const finalizeFamilyPaystackPayment = async ({ parentId, reference }) => {
       subscriptionPlanName: quote.planName,
       subscriptionBillingPeriod: quote.billingPeriod,
       subscriptionSubjectCount: quote.subjectCount,
-      latestPaymentReference: reference,
+      latestPaymentReference: allocation.paymentDocumentId,
       subscriptionRenewalDate: nextRenewalDate,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -1642,7 +1691,18 @@ export const initializeFamilySubscriptionCheckout = onCall({ cpu: 'gcf_gen1', ti
     const subscriptionSnapshot = await studentSubscriptionRef(db, selection.studentId).get();
     const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
     const renewalDate = subscription?.renewalDate?.toDate?.();
-    if (subscription?.status === 'active' && renewalDate && renewalDate > new Date()) {
+    const subscriptionLooksCurrent = ['circle', 'personalized'].includes(subscription?.planId)
+      && subscription?.status === 'active'
+      && renewalDate
+      && renewalDate > new Date();
+    const subscriptionIsVerifiedCurrent = subscriptionLooksCurrent
+      && Boolean(await findVerifiedSubscriptionPayment({
+        db,
+        studentId: selection.studentId,
+        subscription,
+        latestPaymentReference: studentSnapshot.data()?.latestPaymentReference,
+      }));
+    if (subscriptionIsVerifiedCurrent) {
       throw new HttpsError('failed-precondition', 'A selected student already has an active subscription. Manage that plan from the child’s subscription page.');
     }
     if (subscription?.status === 'past_due' || subscription?.pendingPlan?.planId) {

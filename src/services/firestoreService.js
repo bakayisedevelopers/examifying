@@ -46,7 +46,8 @@ import {
 } from '../data/mockData';
 import { DEFAULT_SUBJECT, MAX_EXERCISES_PER_DATE, MAX_QUESTIONS_PER_EXERCISE, REGIONS, SOUTH_AFRICAN_GRADES, WEEKLY_EXERCISE_DAYS } from '../lib/constants';
 import { getApprovedTutorSubjects, getUserSubjects, mergeBestTutorSubjectMarks, normalizeEligibleSubject } from '../utils/tutorSubjects';
-import { calculateSubscriptionQuote, getEffectiveSubscriptionState, isSubscriptionPaymentConsistent } from '../utils/subscriptionPlans';
+import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../utils/subscriptionPlans';
+import { isVerifiedSubscriptionPaymentRecord } from '../../functions/src/subscriptionPaymentCore.js';
 import { normalizeWhatsAppLessonLink, normalizeWhatsAppNumber } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
@@ -1159,9 +1160,9 @@ const getSubscriptionLifecycleFields = (subscription) => ({
   amount: Number(subscription?.amount) || 0,
 });
 
-const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => {
+const resolveVerifiedSubscriptionState = async ({ studentId, subscription, latestPaymentReference }) => {
   const state = getEffectiveSubscriptionState({ subscription });
-  const subscriptionPaymentReference = subscription?.latestReference ?? null;
+  const subscriptionPaymentReference = subscription?.latestReference || latestPaymentReference || null;
   const base = {
     ...state,
     ...getSubscriptionLifecycleFields(subscription),
@@ -1184,8 +1185,6 @@ const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => 
     };
   }
 
-  const paymentSnapshot = await getDoc(doc(db, 'users', studentId, 'payments', subscriptionPaymentReference));
-  const payment = paymentSnapshot.exists() ? paymentSnapshot.data() : null;
   let expectedQuote;
   try {
     expectedQuote = calculateSubscriptionQuote({
@@ -1196,15 +1195,33 @@ const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => 
   } catch {
     expectedQuote = null;
   }
-  const paymentMatchesSubscription = Boolean(expectedQuote && payment
-    && payment.status === 'success'
-    && payment.reference === subscriptionPaymentReference
-    && payment.studentId === studentId
-    && payment.planId === subscription.planId
-    && payment.billingPeriod === subscription.billingPeriod
-    && Number(payment.subjectCount) === Number(subscription.subjectCount)
-    && payment.currency === expectedQuote.currency
-    && isSubscriptionPaymentConsistent({ quote: expectedQuote, subscription, payment }));
+  let verifiedPayment = null;
+  const paymentSnapshot = await getDoc(doc(db, 'users', studentId, 'payments', subscriptionPaymentReference));
+  if (paymentSnapshot.exists()) {
+    const payment = paymentSnapshot.data();
+    if (isVerifiedSubscriptionPaymentRecord({
+      studentId, subscription, payment, paymentDocumentId: paymentSnapshot.id, quote: expectedQuote,
+    })) verifiedPayment = { id: paymentSnapshot.id, payment };
+  }
+  if (!verifiedPayment && expectedQuote) {
+    // Older family checkouts stored the parent gateway reference on the child
+    // subscription, although the child's allocation payment has a separate ID.
+    const familyPayments = await getDocs(query(
+      collection(db, 'users', studentId, 'payments'),
+      where('familyReference', '==', subscriptionPaymentReference),
+      limit(20),
+    ));
+    const matchingAllocation = familyPayments.docs.find((snapshot) => {
+      const payment = snapshot.data();
+      return payment.familyAllocation === true
+        && payment.familyReference === subscriptionPaymentReference
+        && isVerifiedSubscriptionPaymentRecord({
+          studentId, subscription, payment, paymentDocumentId: snapshot.id, quote: expectedQuote,
+        });
+    });
+    if (matchingAllocation) verifiedPayment = { id: matchingAllocation.id, payment: matchingAllocation.data() };
+  }
+  const paymentMatchesSubscription = Boolean(verifiedPayment);
 
   if (!paymentMatchesSubscription) {
     return {
@@ -1218,7 +1235,13 @@ const resolveVerifiedSubscriptionState = async ({ studentId, subscription }) => 
     };
   }
 
-  return { ...base, paymentCompleted: true, paidSubscriptionActive: true, subscriptionPaymentVerified: true };
+  return {
+    ...base,
+    paymentCompleted: true,
+    paidSubscriptionActive: true,
+    subscriptionPaymentReference: verifiedPayment.id,
+    subscriptionPaymentVerified: true,
+  };
 };
 
 export const getStudentSubscriptionState = async (student) => {
@@ -1282,6 +1305,7 @@ export const getStudentSubscriptionState = async (student) => {
   return resolveVerifiedSubscriptionState({
     studentId: student.uid,
     subscription: subData,
+    latestPaymentReference: student.latestPaymentReference,
   });
 };
 
@@ -1442,7 +1466,11 @@ export const getStudentAccessState = async (student, subject = DEFAULT_SUBJECT, 
     ? await knownSubscriptionState
     : tutorContext
     ? await getStudentSubscriptionState(student)
-    : await resolveVerifiedSubscriptionState({ studentId: student.uid, subscription: subData });
+    : await resolveVerifiedSubscriptionState({
+      studentId: student.uid,
+      subscription: subData,
+      latestPaymentReference: student.latestPaymentReference,
+    });
   const normalizedSubject = normalizeEligibleSubject(subject) ?? subject;
   const coveredSubjects = episode?.id ? [normalizeEligibleSubject(episode.subjectKey) ?? subject] : [];
   const paidSubscriptionActive = subscriptionState.paidSubscriptionActive && coveredSubjects.includes(normalizedSubject);

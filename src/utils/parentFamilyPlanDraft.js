@@ -41,9 +41,31 @@ const asDate = (value) => {
 };
 
 export const hasCurrentPaidParentStudentSubscription = (student, now = new Date()) => {
+  // Only a positively verified subscription summary may schedule a plan change.
+  // Raw user documents can retain stale payment fields if the subscription read
+  // failed; treating those as paid can delay a free student's first activation.
+  if (student?.summaryUnavailable === true || student?.paidSubscriptionActive !== true) return false;
   if (!['circle', 'personalized'].includes(student?.subscriptionPlanId)
     || student?.subscriptionStatus !== 'active'
     || student?.paymentCompleted !== true) return false;
   const renewalDate = asDate(student.subscriptionRenewalDate);
   return renewalDate instanceof Date && !Number.isNaN(renewalDate.getTime()) && renewalDate > now;
+};
+
+export const partitionParentGroupCheckoutEntries = (entries = [], students = [], now = new Date()) => {
+  const studentsById = new Map(students.map((student) => [student.uid, student]));
+  return entries.reduce((groups, entry) => {
+    const student = studentsById.get(entry.studentId);
+    const group = hasCurrentPaidParentStudentSubscription(student, now) ? 'activePaid' : 'immediate';
+    groups[group].push(entry);
+    return groups;
+  }, { activePaid: [], immediate: [] });
+};
+
+export const getSharedParentFamilyDiscountCode = (entries = []) => {
+  const codes = [...new Set(entries.map((entry) => String(entry.selection?.discountCode || '').trim().toUpperCase()).filter(Boolean))];
+  if (codes.length > 1) {
+    throw new Error('Group checkout supports one discount code at a time. Check out students with different codes separately.');
+  }
+  return codes[0] || '';
 };

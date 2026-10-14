@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   decodeParentFamilyPlanDraft,
   encodeParentFamilyPlanDraft,
+  getSharedParentFamilyDiscountCode,
   hasCurrentPaidParentStudentSubscription,
+  partitionParentGroupCheckoutEntries,
 } from './parentFamilyPlanDraft.js';
 
 test('family signup state round-trips all student plan slots and the shared discount', () => {
@@ -32,6 +34,7 @@ test('parent uses immediate family checkout for free or expired plans, schedulin
   const now = new Date('2026-10-14T00:00:00Z');
   assert.equal(hasCurrentPaidParentStudentSubscription({
     subscriptionPlanId: 'circle', subscriptionStatus: 'active', paymentCompleted: true,
+    paidSubscriptionActive: true,
     subscriptionRenewalDate: new Date('2026-11-14T00:00:00Z'),
   }, now), true);
   assert.equal(hasCurrentPaidParentStudentSubscription({
@@ -43,6 +46,38 @@ test('parent uses immediate family checkout for free or expired plans, schedulin
   }, now), false);
   assert.equal(hasCurrentPaidParentStudentSubscription({
     subscriptionPlanId: 'circle', subscriptionStatus: 'active', paymentCompleted: true,
+    paidSubscriptionActive: true,
     subscriptionRenewalDate: new Date('2026-10-13T00:00:00Z'),
   }, now), false);
+});
+
+test('group checkout keeps free and unverified students out of scheduled plan changes', () => {
+  const now = new Date('2026-10-14T00:00:00Z');
+  const entries = [
+    { studentId: 'paid', selection: { planId: 'personalized' } },
+    { studentId: 'free', selection: { planId: 'circle' } },
+    { studentId: 'unverified', selection: { planId: 'circle' } },
+    { studentId: 'stale', selection: { planId: 'circle' } },
+  ];
+  const students = [
+    { uid: 'paid', subscriptionPlanId: 'circle', subscriptionStatus: 'active', paymentCompleted: true, paidSubscriptionActive: true, subscriptionRenewalDate: new Date('2026-11-14T00:00:00Z') },
+    { uid: 'free', subscriptionPlanId: 'free', subscriptionStatus: 'active', paymentCompleted: false, paidSubscriptionActive: false },
+    { uid: 'unverified', subscriptionPlanId: 'circle', subscriptionStatus: 'active', paymentCompleted: true, subscriptionRenewalDate: new Date('2026-11-14T00:00:00Z'), summaryUnavailable: true },
+    { uid: 'stale', subscriptionPlanId: 'circle', subscriptionStatus: 'active', paymentCompleted: true, paidSubscriptionActive: false, subscriptionRenewalDate: new Date('2026-11-14T00:00:00Z') },
+  ];
+  const partition = partitionParentGroupCheckoutEntries(entries, students, now);
+  assert.deepEqual(partition.activePaid.map(({ studentId }) => studentId), ['paid']);
+  assert.deepEqual(partition.immediate.map(({ studentId }) => studentId), ['free', 'unverified', 'stale']);
+});
+
+test('family group checkout preserves a shared discount and rejects mixed codes', () => {
+  assert.equal(getSharedParentFamilyDiscountCode([
+    { selection: { discountCode: ' SAVE2026 ' } },
+    { selection: { discountCode: 'save2026' } },
+    { selection: { discountCode: '' } },
+  ]), 'SAVE2026');
+  assert.throws(() => getSharedParentFamilyDiscountCode([
+    { selection: { discountCode: 'SAVE2026' } },
+    { selection: { discountCode: 'OTHER2026' } },
+  ]), /one discount code/);
 });

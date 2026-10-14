@@ -21,7 +21,7 @@ import { REGIONS, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { attachStudentsToParentFamilyCheckoutDraft, createManagedStudentInvite, saveParentFamilyCheckoutDraft } from '../../services/parentFamilyService';
 import { getPortalSiteUrl } from '../../utils/portal';
-import { hasCurrentPaidParentStudentSubscription } from '../../utils/parentFamilyPlanDraft';
+import { getSharedParentFamilyDiscountCode, hasCurrentPaidParentStudentSubscription, partitionParentGroupCheckoutEntries } from '../../utils/parentFamilyPlanDraft';
 
 const PARENT_GROUP_CHECKOUT_STORAGE_KEY = 'examifying-parent-group-checkout';
 
@@ -168,13 +168,20 @@ export const ParentDashboardPage = () => {
 
   const startGroupCheckout = useCallback(async (entries) => {
     if (!profile?.uid || !entries.length) return;
-    let remaining = [...entries];
     setLoading(true);
     setStatus('Preparing subscriptions for the selected kids…');
     try {
-      while (remaining.length) {
-        window.sessionStorage.setItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY, JSON.stringify(remaining));
-        const [entry, ...rest] = remaining;
+      const currentStudents = await loadStudents();
+      const studentById = new Map(currentStudents.map((student) => [student.uid, student]));
+      if (entries.some((entry) => studentById.get(entry.studentId)?.summaryUnavailable)) {
+        throw new Error('A student’s subscription status could not be verified. Retry the status check before starting group checkout.');
+      }
+      const { activePaid, immediate } = partitionParentGroupCheckoutEntries(entries, currentStudents);
+      const sharedDiscountCode = getSharedParentFamilyDiscountCode(immediate);
+      let remainingActive = [...activePaid];
+      while (remainingActive.length) {
+        window.sessionStorage.setItem(PARENT_GROUP_CHECKOUT_STORAGE_KEY, JSON.stringify([...remainingActive, ...immediate]));
+        const [entry, ...rest] = remainingActive;
         const result = await initializeSubscriptionPayment({
           studentId: entry.studentId,
           ...entry.selection,
@@ -186,8 +193,7 @@ export const ParentDashboardPage = () => {
           return;
         }
         if (result.freeCheckout || result.free || result.scheduledChange || result.pendingChangeCancelled || result.alreadyActive) {
-          await loadStudents();
-          remaining = rest;
+          remainingActive = rest;
           continue;
         }
         throw new Error(`Could not prepare a subscription for ${entry.displayName || 'the selected student'}.`);
@@ -196,14 +202,33 @@ export const ParentDashboardPage = () => {
       setGroupCheckoutOpen(false);
       setGroupStudentIds([]);
       setGroupSelections({});
-      setStatus('The selected kids’ subscription actions are complete. Each student’s payment and card authorization remain on that student’s record.');
+      if (immediate.length) {
+        const draftId = `family-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+        await saveParentFamilyCheckoutDraft({
+          draftId,
+          discountCode: sharedDiscountCode,
+          slots: immediate.map(({ selection }) => ({
+            planId: selection.planId,
+            billingPeriod: selection.billingPeriod,
+            subjectCount: selection.subjectCount,
+          })),
+        });
+        await attachStudentsToParentFamilyCheckoutDraft({
+          draftId,
+          studentIds: immediate.map(({ studentId }) => studentId),
+        });
+        setStatus('Any current paid-plan changes are scheduled for renewal. Continue to family checkout to activate the other students now using a saved or new card.');
+        navigate(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}`);
+        return;
+      }
+      setStatus('The selected current paid-plan changes are scheduled for renewal.');
       await loadStudents();
     } catch (error) {
       setStatus(error?.message || 'The group checkout could not be started.');
     } finally {
       setLoading(false);
     }
-  }, [loadStudents, location.pathname, profile?.uid]);
+  }, [loadStudents, location.pathname, navigate, profile?.uid]);
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -805,7 +830,7 @@ export const ParentDashboardPage = () => {
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Group checkout</p>
                 <h2 className="mt-1 text-2xl font-bold text-white">Choose a plan for each child</h2>
-                <p className="mt-2 max-w-3xl text-sm text-slate-300">Each child keeps an individual subscription and payment record. Paystack opens separately for each child so their card authorization stays with their own student record.</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-300">Each child keeps an individual subscription and payment record. Changes to current paid plans take effect at renewal; free or unpaid students continue to family checkout so their selected plans can activate now with a saved or new card.</p>
               </div>
               <button type="button" className="btn-secondary h-11 w-11 p-0" onClick={() => setGroupCheckoutOpen(false)} aria-label="Close group checkout"><X className="h-5 w-5" /></button>
             </div>

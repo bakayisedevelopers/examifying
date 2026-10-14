@@ -13,7 +13,10 @@ import { callMarkingWithFallback } from './aiMarkingProviders.js';
 import {
   aiMarkingTaskId,
   buildCompactQuestionContext,
+  getPendingMarkingQuestions,
   getRequestedMarkingQuestions,
+  groupAiContextRequestsByPaper,
+  mergeAiMarkingResults,
   resolvePaperPageContext,
   submissionVersion,
   tutorAiMarkingEnabled,
@@ -22,9 +25,11 @@ import {
 import { applyAiTutorExerciseScores, applyAiTutorPeerMarkingScores } from './tutorMarking.js';
 
 const MAX_ATTEMPTS = 3;
+const MAX_CONTEXT_FALLBACK_PASSES = 2;
 const LEASE_MS = 12 * 60 * 1000;
 const MAX_IMAGE_SIDE = 2200;
 const PAGE_RENDER_SCALE = 1.55;
+const MAX_FALLBACK_SOURCE_PAGES = 80;
 const TASK_OPTIONS = {
   retryConfig: { maxAttempts: MAX_ATTEMPTS, minBackoffSeconds: 30, maxBackoffSeconds: 180, maxDoublings: 2 },
   rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 1 },
@@ -233,10 +238,17 @@ class StorageRangeTransport extends PDFDataRangeTransport {
   }
 }
 
-const loadPageImages = async ({ paper, pageNumbers, bucket }) => {
-  const parsed = parseStorageUrl(paper.paperUrl);
+const loadPageImages = async ({ paper, pageNumbers = [], bucket, documentType = 'paper', allPages = false }) => {
+  const sourceUrl = documentType === 'memo' ? paper.memoUrl : paper.paperUrl;
+  const parsed = parseStorageUrl(sourceUrl);
   if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith('questionPapers/')) {
-    throw new Error(`Source question paper ${paper.id} is not stored in the configured Firebase Storage bucket.`);
+    throw new Error(`Source ${documentType} ${paper.id} is not stored in the configured Firebase Storage bucket.`);
+  }
+  const pathType = String(parsed.path.split('/')[2] || '').toLocaleLowerCase();
+  const isMemoPath = /^(memo|memorandum|marking[-_ ]?(?:memo|scheme|guide))$/.test(pathType);
+  const isQuestionPath = /^(question|paper|question[-_ ]paper)$/.test(pathType);
+  if ((documentType === 'memo' && isQuestionPath) || (documentType === 'paper' && isMemoPath)) {
+    throw new Error(`Source ${documentType} ${paper.id} points to a different document type in Storage.`);
   }
   const file = bucket.file(parsed.path);
   const [metadata] = await file.getMetadata();
@@ -249,18 +261,26 @@ const loadPageImages = async ({ paper, pageNumbers, bucket }) => {
   const pdf = await loading.promise;
   try {
     const output = [];
-    for (const pageNumber of pageNumbers) {
-      if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdf.numPages) {
-        throw new Error(`Analyzed page ${pageNumber} is outside source question paper ${paper.id}.`);
-      }
+    if (pdf.numPages > MAX_FALLBACK_SOURCE_PAGES) throw new Error(`Source ${documentType} ${paper.id} exceeds the safe page limit.`);
+    const requestedPageNumbers = allPages
+      ? Array.from({ length: pdf.numPages }, (_, index) => index + 1)
+      : [...new Set(pageNumbers)].sort((left, right) => left - right);
+    const invalidPageNumbers = requestedPageNumbers.filter((pageNumber) =>
+      !Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdf.numPages);
+    for (const pageNumber of requestedPageNumbers.filter((page) => !invalidPageNumbers.includes(page))) {
       const page = await pdf.getPage(pageNumber);
       const viewport = page.getViewport({ scale: PAGE_RENDER_SCALE });
       const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
       await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      output.push({ paperId: paper.id, pageNumber, dataUrl: `data:image/jpeg;base64,${canvas.toBuffer('image/jpeg', 0.82).toString('base64')}` });
+      output.push({
+        paperId: paper.id,
+        pageNumber,
+        documentType,
+        dataUrl: `data:image/jpeg;base64,${canvas.toBuffer('image/jpeg', 0.82).toString('base64')}`,
+      });
       page.cleanup?.();
     }
-    return output;
+    return { pages: output, pageCount: pdf.numPages, invalidPageNumbers };
   } finally {
     await pdf.destroy?.();
   }
@@ -305,20 +325,187 @@ const buildSubmissionContext = async ({ db, sourceRecord, bucket }) => {
   paperSnapshots.forEach((snapshot, index) => {
     if (!snapshot.exists) throw new Error(`Question paper ${paperIds[index]} is unavailable.`);
     const paper = snapshot.data();
-    if (!Array.isArray(paper.questions)) throw new Error(`Analysis data for question paper ${paperIds[index]} is unavailable.`);
-    analysesByPaper[paperIds[index]] = paper.questions;
+    analysesByPaper[paperIds[index]] = Array.isArray(paper.questions) ? paper.questions : [];
     paperDocuments.set(paperIds[index], { id: snapshot.id, ...paper });
   });
   const pageContext = resolvePaperPageContext({ requestedQuestions: questions, analysesByPaper });
+  const questionContexts = new Map(pageContext.questionContexts.map((item) => [item.questionId, item]));
   const pagesByPaper = new Map();
   for (const page of pageContext.pages) {
     const pages = pagesByPaper.get(page.paperId) ?? [];
     pages.push(page.pageNumber);
     pagesByPaper.set(page.paperId, pages);
   }
-  const contextPages = (await Promise.all([...pagesByPaper].map(([paperId, pageNumbers]) =>
-    loadPageImages({ paper: paperDocuments.get(paperId), pageNumbers, bucket })))).flat();
-  return { questions, contextPages, requestedPageCount: contextPages.length };
+  const renderedPagesByPaper = new Map();
+  const invalidPagesByPaper = new Map();
+  const unreadablePaperIds = new Set();
+  await Promise.all([...pagesByPaper].map(async ([paperId, pageNumbers]) => {
+    try {
+      const loaded = await loadPageImages({ paper: paperDocuments.get(paperId), pageNumbers, bucket });
+      renderedPagesByPaper.set(paperId, loaded.pages);
+      invalidPagesByPaper.set(paperId, new Set(loaded.invalidPageNumbers));
+    } catch (error) {
+      unreadablePaperIds.add(paperId);
+      logger.warn('AI marking will request a full paper after source-page retrieval failed', {
+        paperIdHash: hash(paperId), code: safeErrorCode(error),
+      });
+    }
+  }));
+
+  const fallbackQuestionIds = new Set(pageContext.fallbackQuestionIds);
+  for (const context of questionContexts.values()) {
+    const invalidPages = invalidPagesByPaper.get(context.paperId) ?? new Set();
+    if (unreadablePaperIds.has(context.paperId)
+      || !context.pageNumbers.length
+      || context.pageNumbers.some((pageNumber) => invalidPages.has(pageNumber))) {
+      fallbackQuestionIds.add(context.questionId);
+    }
+  }
+  const initialQuestions = questions.filter((question) => !fallbackQuestionIds.has(question.questionId));
+  const initialIds = new Set(initialQuestions.map((question) => question.questionId));
+  const requiredPageKeys = new Set(initialQuestions.flatMap((question) => {
+    const context = questionContexts.get(question.questionId);
+    return (context?.pageNumbers ?? []).map((pageNumber) => `${question.paperId}::${pageNumber}`);
+  }));
+  const contextPages = [...renderedPagesByPaper.values()].flat()
+    .filter((page) => requiredPageKeys.has(`${page.paperId}::${page.pageNumber}`));
+  const questionContextPages = new Map();
+  for (const question of questions) {
+    if (!initialIds.has(question.questionId)) continue;
+    const context = questionContexts.get(question.questionId);
+    const pages = (context?.pageNumbers ?? []).map((pageNumber) =>
+      renderedPagesByPaper.get(question.paperId)?.find((page) => page.pageNumber === pageNumber)).filter(Boolean);
+    questionContextPages.set(question.questionId, pages);
+  }
+  return {
+    questions,
+    initialQuestions,
+    contextPages,
+    questionContextPages,
+    contextRequests: [...fallbackQuestionIds].map((questionId) => ({ questionId, material: 'full_paper' })),
+    paperDocuments,
+    requestedPageCount: contextPages.length,
+  };
+};
+
+const buildRequestedSourceContext = async ({
+  contextRequests,
+  pendingQuestions,
+  suppliedMaterialsByQuestion = {},
+  questionContextPages = new Map(),
+  paperDocuments = new Map(),
+  bucket,
+}) => {
+  const pendingById = new Map(pendingQuestions.map((question) => [question.questionId, question]));
+  const requestedByQuestion = new Map();
+  for (const paperGroup of groupAiContextRequestsByPaper(contextRequests)) {
+    for (const [questionId, requestedMaterials] of Object.entries(paperGroup.materialsByQuestion)) {
+      if (!pendingById.has(questionId)) continue;
+      const materials = requestedByQuestion.get(questionId) ?? new Set();
+      requestedMaterials.forEach((material) => materials.add(material));
+      requestedByQuestion.set(questionId, materials);
+    }
+  }
+
+  const materialsByQuestion = new Map();
+  const plansByPaper = new Map();
+  for (const question of pendingQuestions) {
+    const materials = new Set(requestedByQuestion.get(question.questionId) ?? []);
+    for (const priorMaterial of suppliedMaterialsByQuestion[question.questionId] ?? []) {
+      if (['full_paper', 'memo'].includes(priorMaterial)) materials.add(priorMaterial);
+    }
+    materialsByQuestion.set(question.questionId, materials);
+    for (const material of materials) {
+      const questions = plansByPaper.get(`${question.paperId}::${material}`) ?? { paperId: question.paperId, material, questionIds: new Set() };
+      questions.questionIds.add(question.questionId);
+      plansByPaper.set(`${question.paperId}::${material}`, questions);
+    }
+  }
+
+  const loadedMaterialsByQuestion = new Map();
+  const unavailableQuestionIds = new Set();
+  const contextPages = [];
+  await Promise.all([...plansByPaper.values()].map(async (plan) => {
+    const paper = paperDocuments.get(plan.paperId);
+    const sourceUrl = plan.material === 'memo' ? paper?.memoUrl : paper?.paperUrl;
+    if (!paper || !sourceUrl) {
+      plan.questionIds.forEach((questionId) => unavailableQuestionIds.add(questionId));
+      return;
+    }
+    try {
+      const loaded = await loadPageImages({ paper, bucket, documentType: plan.material === 'memo' ? 'memo' : 'paper', allPages: true });
+      contextPages.push(...loaded.pages);
+      plan.questionIds.forEach((questionId) => {
+        const materials = loadedMaterialsByQuestion.get(questionId) ?? new Set();
+        materials.add(plan.material);
+        loadedMaterialsByQuestion.set(questionId, materials);
+      });
+    } catch (error) {
+      logger.warn('AI marking could not load requested source context', {
+        paperIdHash: hash(plan.paperId), material: plan.material, code: safeErrorCode(error),
+      });
+      plan.questionIds.forEach((questionId) => unavailableQuestionIds.add(questionId));
+    }
+  }));
+
+  for (const question of pendingQuestions) {
+    const materials = materialsByQuestion.get(question.questionId) ?? new Set();
+    if (materials.has('memo') && !materials.has('full_paper')) {
+      contextPages.push(...(questionContextPages.get(question.questionId) ?? []));
+    }
+    const requestedMaterials = requestedByQuestion.get(question.questionId) ?? new Set();
+    const loadedMaterials = loadedMaterialsByQuestion.get(question.questionId) ?? new Set();
+    if ([...materials].some((material) => !loadedMaterials.has(material))
+      || [...requestedMaterials].some((material) => !loadedMaterials.has(material))) {
+      unavailableQuestionIds.add(question.questionId);
+    }
+  }
+
+  const uniquePages = new Map();
+  for (const page of contextPages) {
+    const key = `${page.paperId}::${page.documentType || 'paper'}::${page.pageNumber}`;
+    if (!uniquePages.has(key)) uniquePages.set(key, page);
+  }
+  const availableQuestions = pendingQuestions.filter((question) => !unavailableQuestionIds.has(question.questionId)
+    && requestedByQuestion.has(question.questionId));
+  return {
+    contextPages: [...uniquePages.values()].sort((left, right) => String(left.paperId).localeCompare(String(right.paperId))
+      || String(left.documentType).localeCompare(String(right.documentType)) || left.pageNumber - right.pageNumber),
+    availableQuestions,
+    unavailableQuestionIds: [...unavailableQuestionIds],
+  };
+};
+
+const mergeContextRequests = (...requestLists) => {
+  const unique = new Map();
+  for (const request of requestLists.flat()) {
+    const key = `${request.questionId}::${request.material}`;
+    if (!unique.has(key)) unique.set(key, request);
+  }
+  return [...unique.values()];
+};
+
+const mergeModelMetadata = (prior = {}, next = {}, { pageCount = 0, answerImageCount = 0 } = {}) => {
+  const providers = new Set([prior.provider, next.provider].filter(Boolean));
+  const models = new Set([prior.model, next.model].filter(Boolean));
+  const priorUsage = prior.usage ?? {};
+  const nextUsage = next.usage ?? {};
+  const usageKeys = ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteTokens'];
+  const usage = Object.fromEntries(usageKeys.map((key) => [key, (Number(priorUsage[key]) || 0) + (Number(nextUsage[key]) || 0)]));
+  return {
+    model: [...models].join('+'),
+    provider: [...providers].join('+'),
+    fallbackUsed: prior.fallbackUsed === true || next.fallbackUsed === true,
+    fallbackReasonCode: String(next.fallbackReasonCode || prior.fallbackReasonCode || ''),
+    contextCacheStatus: prior.contextCacheStatus && next.contextCacheStatus && prior.contextCacheStatus !== next.contextCacheStatus
+      ? 'multiple' : String(next.contextCacheStatus || prior.contextCacheStatus || 'none'),
+    contextCacheUsed: prior.contextCacheUsed === true || next.contextCacheUsed === true,
+    usage,
+    requestDurationMs: (Number(prior.requestDurationMs) || 0) + (Number(next.requestDurationMs) || 0),
+    responseId: String(next.responseId || prior.responseId || ''),
+    pdfPageCount: (Number(prior.pdfPageCount) || 0) + pageCount,
+    answerImageCount: (Number(prior.answerImageCount) || 0) + answerImageCount,
+  };
 };
 
 const getTaskData = async ({ db, task, exerciseRef, assignmentRef }) => {
@@ -483,7 +670,7 @@ const claimTask = async ({ ref, version }) => {
     const ai = record.aiMarking ?? {};
     const images = normalizeImageRefs(record, { preferReview: record.aiMarking?.submissionType === 'peer_marking' });
     if (currentVersionFor(record, images) !== version || ai.version !== version) return { run: false, reason: 'stale' };
-    if (['completed', 'incorrect_submission', 'unclear_images', 'skipped'].includes(ai.status)) return { run: false, reason: 'terminal' };
+    if (['completed', 'incorrect_submission', 'unclear_images', 'failed', 'skipped'].includes(ai.status)) return { run: false, reason: 'terminal' };
     if (ai.status === 'processing' && timestampMillis(ai.leaseExpiresAt) > Date.now()) return { run: false, reason: 'already_processing' };
     const attemptCount = Number(ai.attemptCount || 0) + 1;
     if (attemptCount > MAX_ATTEMPTS) return { run: false, reason: 'attempt_limit' };
@@ -526,7 +713,7 @@ const persistValidatedResult = async ({ ref, version, validated, metadata }) => 
   });
 };
 
-const logMarkingStats = ({ operation, task, model, provider, fallbackUsed, fallbackReasonCode, contextCacheStatus, contextCacheUsed, usage, requestDurationMs, pdfPageCount, answerImageCount, status, attemptCount }) => {
+const logMarkingStats = ({ operation, task, model, provider, fallbackUsed, fallbackReasonCode, contextCacheStatus, contextCacheUsed, usage, requestDurationMs, pdfPageCount, answerImageCount, status, attemptCount, contextFallbackPasses, contextRequestCount }) => {
   logger.info('AI marking request finished', {
     operation,
     requestId: hash(`${task.documentPath}:${task.version}`),
@@ -544,6 +731,8 @@ const logMarkingStats = ({ operation, task, model, provider, fallbackUsed, fallb
     requestDurationMs: Number(requestDurationMs) || 0,
     pdfPageCount: Number(pdfPageCount) || 0,
     answerImageCount: Number(answerImageCount) || 0,
+    contextFallbackPasses: Number(contextFallbackPasses) || 0,
+    contextRequestCount: Number(contextRequestCount) || 0,
     status,
     attemptCount,
   });
@@ -587,8 +776,9 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       return;
     }
     const { tutorId } = tutorContext;
-    const { questions, contextPages: resolvedPages, requestedPageCount } = await buildSubmissionContext({ db, sourceRecord, bucket });
-    contextPages = resolvedPages;
+    const sourceContext = await buildSubmissionContext({ db, sourceRecord, bucket });
+    const { questions, initialQuestions } = sourceContext;
+    contextPages = sourceContext.contextPages;
 
     if (task.submissionType === 'student_exercise') {
       const allowedPrefix = `${exerciseRef.path}/submissions/`;
@@ -602,78 +792,233 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       originalAnswerImages = await readAnswerImages({ refs: originalRefs, bucket, prefix: originalPrefix, label: 'Original learner answer' });
     }
 
-    if (!claimed.cachedResult) aiRequestAttempted = true;
-    const modelRequest = {
-      submissionType: task.submissionType,
-      questions: buildCompactQuestionContext(questions),
-      contextPages,
-      originalAnswerImages: task.submissionType === 'peer_marking' ? originalAnswerImages : [],
-      answerImages,
-      requestId: hash(`${task.documentPath}:${task.version}`),
+    const emptyMetadata = {
+      model: '', provider: '', fallbackUsed: false, fallbackReasonCode: '', contextCacheStatus: 'none',
+      contextCacheUsed: false, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 },
+      requestDurationMs: 0, responseId: '', pdfPageCount: 0, answerImageCount: 0,
     };
-    const rawResponse = claimed.cachedResult ? null : await callMarkingWithFallback({
-      request: modelRequest,
-      callPrimary: callOpenAiMarkingOnce,
-      callFallback: callGeminiMarkingOnce,
-      validateResponse: (response) => validateAiMarkingResponse({ response, requestedQuestions: questions }),
-      onPrimaryFailure: (error) => logger.warn('OpenAI marking failed; trying Gemini fallback', {
-        operation: task.submissionType,
-        requestId: hash(`${task.documentPath}:${task.version}`),
-        code: safeErrorCode(error),
-        status: Number(error?.status) || null,
-      }),
-    });
-    const rawResult = claimed.cachedResult?.result ?? rawResponse;
-    const validated = claimed.cachedResult?.status ? claimed.cachedResult
-      : validateAiMarkingResponse({ response: rawResult, requestedQuestions: questions });
-    modelMeta = claimed.cachedResult?.metadata ?? rawResponse ?? {};
-    const meta = {
-      model: String(modelMeta.model || ''),
-      provider: String(modelMeta.provider || ''),
-      fallbackUsed: modelMeta.fallbackUsed === true,
-      fallbackReasonCode: String(modelMeta.fallbackReasonCode || ''),
-      contextCacheStatus: String(modelMeta.contextCacheStatus || 'none'),
-      contextCacheUsed: modelMeta.contextCacheUsed === true,
-      usage: modelMeta.usage ?? null,
-      requestDurationMs: Number(modelMeta.requestDurationMs) || 0,
-      responseId: String(modelMeta.responseId ?? ''),
-      pdfPageCount: requestedPageCount,
-      answerImageCount: answerImages.length + originalAnswerImages.length,
-    };
-    const saved = await persistValidatedResult({ ref: sourceRef, version: task.version, validated, metadata: meta });
-    if (!saved) return;
+    let progress = claimed.cachedResult?.pipelineVersion === 1 ? claimed.cachedResult : null;
+    const legacyCachedResult = claimed.cachedResult && !progress ? claimed.cachedResult : null;
+    let metadata = progress?.metadata ?? legacyCachedResult?.metadata ?? emptyMetadata;
+    modelMeta = metadata;
 
-    if (validated.status === 'completed') {
-      await applyMarks({ task, sourceRecord: { ...sourceRecord, ...exercise }, questions, results: validated.results, tutorId, assignmentRef });
+    const saveProgress = async (nextProgress) => {
+      progress = { pipelineVersion: 1, ...nextProgress, metadata };
+      const saved = await persistValidatedResult({ ref: sourceRef, version: task.version, validated: progress, metadata });
+      if (!saved) throw new Error('The AI marking submission changed before its validated results could be saved.');
+    };
+    const applyAcceptedResults = async (results) => {
+      if (!results.length) return;
+      await applyMarks({ task, sourceRecord: { ...sourceRecord, ...exercise }, questions, results, tutorId, assignmentRef });
+    };
+    const finalize = async ({ status, message = '', errorCode = '' }) => {
       await db.runTransaction(async (transaction) => {
         const current = await transaction.get(sourceRef);
         if (!current.exists || current.data().aiMarking?.version !== task.version
           || current.data().aiMarking?.status !== 'processing'
           || currentVersionFor(current.data(), normalizeImageRefs(current.data(), { preferReview: task.submissionType === 'peer_marking' })) !== task.version) return;
         transaction.set(sourceRef, { aiMarking: {
-          status: 'completed', version: task.version, attemptCount,
+          status, version: task.version, attemptCount,
           completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
-          model: meta.model, usage: meta.usage, requestDurationMs: meta.requestDurationMs,
-          provider: meta.provider, fallbackUsed: meta.fallbackUsed, fallbackReasonCode: meta.fallbackReasonCode,
-          contextCacheStatus: meta.contextCacheStatus, contextCacheUsed: meta.contextCacheUsed,
-          pdfPageCount: meta.pdfPageCount, answerImageCount: meta.answerImageCount,
-          validatedResult: FieldValue.delete(), leaseExpiresAt: FieldValue.delete(), message: '',
+          model: metadata.model, usage: metadata.usage, requestDurationMs: metadata.requestDurationMs,
+          provider: metadata.provider, fallbackUsed: metadata.fallbackUsed, fallbackReasonCode: metadata.fallbackReasonCode,
+          contextCacheStatus: metadata.contextCacheStatus, contextCacheUsed: metadata.contextCacheUsed,
+          pdfPageCount: metadata.pdfPageCount, answerImageCount: metadata.answerImageCount,
+          contextFallbackPasses: progress?.fallbackPasses ?? 0,
+          contextRequestCount: progress?.contextRequestCount ?? 0,
+          ...(status === 'failed' ? { errorCode, errorMessage: message } : { errorCode: FieldValue.delete(), errorMessage: FieldValue.delete() }),
+          validatedResult: FieldValue.delete(), leaseExpiresAt: FieldValue.delete(), message,
         }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
       });
-      logMarkingStats({ operation: task.submissionType, task, ...meta, status: 'completed', attemptCount });
+      logMarkingStats({
+        operation: task.submissionType, task, ...metadata, status, attemptCount,
+        contextFallbackPasses: progress?.fallbackPasses ?? 0,
+        contextRequestCount: progress?.contextRequestCount ?? 0,
+      });
+    };
+    const handleRejectedSubmission = async (validated) => {
+      const message = validated.status === 'incorrect_submission'
+        ? 'The submitted images did not match the assigned exercise. Please upload the correct work.'
+        : 'We could not read your uploaded work clearly. Please upload clear images and submit again.';
+      await persistValidatedResult({ ref: sourceRef, version: task.version, validated, metadata });
+      if (task.submissionType === 'student_exercise') {
+        await clearExerciseSubmission({ db, bucket, exerciseRef, exerciseId: task.exerciseId, version: task.version, status: validated.status, message });
+      } else {
+        await clearPeerSubmission({ db, bucket, assignmentRef, assignment, studentId: task.studentId, subjectInstanceId: task.subjectInstanceId, version: task.version, status: validated.status, message });
+      }
+      logMarkingStats({ operation: task.submissionType, task, ...metadata, status: validated.status, attemptCount });
+    };
+    const callModelForQuestions = async ({ requestedQuestions, pages, contextPass, suppliedMaterialsByQuestion }) => {
+      if (!requestedQuestions.length) throw new Error('No questions were available for the requested AI marking pass.');
+      aiRequestAttempted = true;
+      const requestMetadata = {
+        submissionType: task.submissionType,
+        questions: buildCompactQuestionContext(requestedQuestions),
+        contextPages: pages,
+        originalAnswerImages: task.submissionType === 'peer_marking' ? originalAnswerImages : [],
+        answerImages,
+        contextPass,
+        suppliedMaterialsByQuestion,
+        requestId: hash(`${task.documentPath}:${task.version}:${contextPass}:${progress?.fallbackPasses ?? 0}`),
+      };
+      const response = await callMarkingWithFallback({
+        request: requestMetadata,
+        callPrimary: callOpenAiMarkingOnce,
+        callFallback: callGeminiMarkingOnce,
+        validateResponse: (result) => validateAiMarkingResponse({
+          response: result, requestedQuestions, suppliedMaterialsByQuestion,
+        }),
+        onPrimaryFailure: (error) => logger.warn('OpenAI marking failed; trying Gemini fallback', {
+          operation: task.submissionType,
+          requestId: hash(`${task.documentPath}:${task.version}:${contextPass}`),
+          code: safeErrorCode(error),
+          status: Number(error?.status) || null,
+        }),
+      });
+      const validated = validateAiMarkingResponse({ response, requestedQuestions, suppliedMaterialsByQuestion });
+      metadata = mergeModelMetadata(metadata, response, {
+        pageCount: pages.length,
+        answerImageCount: answerImages.length + originalAnswerImages.length,
+      });
+      modelMeta = response;
+      return validated;
+    };
+
+    if (legacyCachedResult?.status === 'incorrect_submission' || legacyCachedResult?.status === 'unclear_images') {
+      await handleRejectedSubmission(legacyCachedResult);
+      return;
+    }
+    if (legacyCachedResult?.status === 'completed') {
+      await applyAcceptedResults(legacyCachedResult.results ?? []);
+      progress = { fallbackPasses: 0, contextRequestCount: 0 };
+      await finalize({ status: 'completed' });
       return;
     }
 
-    const status = validated.status;
-    const message = status === 'incorrect_submission'
-      ? 'The submitted images did not match the assigned exercise. Please upload the correct work.'
-      : 'We could not read your uploaded work clearly. Please upload clear images and submit again.';
-    if (task.submissionType === 'student_exercise') {
-      await clearExerciseSubmission({ db, bucket, exerciseRef, exerciseId: task.exerciseId, version: task.version, status, message });
-    } else {
-      await clearPeerSubmission({ db, bucket, assignmentRef, assignment, studentId: task.studentId, subjectInstanceId: task.subjectInstanceId, version: task.version, status, message });
+    if (progress) await applyAcceptedResults(progress.results ?? []);
+    if (progress?.status === 'completed') {
+      await finalize({ status: 'completed' });
+      return;
     }
-    logMarkingStats({ operation: task.submissionType, task, ...meta, status, attemptCount });
+    if (progress?.status === 'manual_review') {
+      await finalize({ status: 'failed', errorCode: 'source_context_unavailable', message: 'Some questions need tutor review because their source paper or memo could not be retrieved.' });
+      return;
+    }
+
+    if (!progress) {
+      let initialValidated = { status: 'full_paper_search', results: [], contextRequests: [] };
+      if (initialQuestions.length) {
+        initialValidated = await callModelForQuestions({
+          requestedQuestions: initialQuestions,
+          pages: sourceContext.contextPages,
+          contextPass: 'analysis_pages',
+          suppliedMaterialsByQuestion: Object.fromEntries(initialQuestions.map((question) => [question.questionId, ['analysis_pages']])),
+        });
+        if (['incorrect_submission', 'unclear_images'].includes(initialValidated.status)) {
+          await handleRejectedSubmission(initialValidated);
+          return;
+        }
+      }
+      const completedIds = new Set(initialValidated.results.map((result) => result.questionId));
+      const forcedFallbackRequests = sourceContext.contextRequests
+        .filter((item) => !completedIds.has(item.questionId));
+      const contextRequests = mergeContextRequests(initialValidated.contextRequests, forcedFallbackRequests);
+      const initialSuppliedMaterials = Object.fromEntries(initialQuestions.map((question) => [question.questionId, ['analysis_pages']]));
+      progress = {
+        pipelineVersion: 1,
+        status: contextRequests.length ? 'full_paper_search' : 'completed',
+        results: initialValidated.results,
+        contextRequests,
+        suppliedMaterialsByQuestion: initialSuppliedMaterials,
+        fallbackPasses: 0,
+        contextRequestCount: contextRequests.length,
+      };
+      await saveProgress(progress);
+      await applyAcceptedResults(progress.results);
+      if (progress.status === 'completed') {
+        await finalize({ status: 'completed' });
+        return;
+      }
+    }
+
+    while (progress.contextRequests?.length && progress.fallbackPasses < MAX_CONTEXT_FALLBACK_PASSES) {
+      const pendingQuestions = getPendingMarkingQuestions(questions, progress.results ?? []);
+      const pendingIds = new Set(pendingQuestions.map((question) => question.questionId));
+      const requests = (progress.contextRequests ?? []).filter((item) => pendingIds.has(item.questionId));
+      if (!requests.length) break;
+      const fallbackContext = await buildRequestedSourceContext({
+        contextRequests: requests,
+        pendingQuestions,
+        suppliedMaterialsByQuestion: progress.suppliedMaterialsByQuestion ?? {},
+        questionContextPages: sourceContext.questionContextPages,
+        paperDocuments: sourceContext.paperDocuments,
+        bucket,
+      });
+      const availableIds = new Set(fallbackContext.availableQuestions.map((question) => question.questionId));
+      const availableRequests = requests.filter((item) => availableIds.has(item.questionId));
+      if (!fallbackContext.availableQuestions.length) {
+        progress = {
+          ...progress,
+          status: 'manual_review',
+          contextRequests: [],
+          unavailableQuestionIds: [...new Set([...(progress.unavailableQuestionIds ?? []), ...fallbackContext.unavailableQuestionIds])],
+        };
+        await saveProgress(progress);
+        break;
+      }
+
+      const suppliedForPass = { ...(progress.suppliedMaterialsByQuestion ?? {}) };
+      for (const requestItem of availableRequests) {
+        const materials = new Set(suppliedForPass[requestItem.questionId] ?? []);
+        materials.add(requestItem.material);
+        suppliedForPass[requestItem.questionId] = [...materials];
+      }
+      const contextPass = availableRequests.some((item) => item.material === 'full_paper') ? 'full_paper_search' : 'memo_search';
+      const validated = await callModelForQuestions({
+        requestedQuestions: fallbackContext.availableQuestions,
+        pages: fallbackContext.contextPages,
+        contextPass,
+        suppliedMaterialsByQuestion: suppliedForPass,
+      });
+      if (['incorrect_submission', 'unclear_images'].includes(validated.status)) {
+        progress = {
+          ...progress,
+          status: 'manual_review',
+          contextRequests: [],
+          suppliedMaterialsByQuestion: suppliedForPass,
+          fallbackPasses: progress.fallbackPasses + 1,
+          contextRequestCount: (progress.contextRequestCount ?? 0) + requests.length,
+        };
+        await saveProgress(progress);
+        break;
+      }
+
+      const results = mergeAiMarkingResults(progress.results ?? [], validated.results);
+      const remainingIds = new Set(getPendingMarkingQuestions(questions, results).map((question) => question.questionId));
+      const nextRequests = validated.contextRequests.filter((item) => remainingIds.has(item.questionId));
+      progress = {
+        ...progress,
+        status: nextRequests.length ? validated.status : 'completed',
+        results,
+        contextRequests: nextRequests,
+        suppliedMaterialsByQuestion: suppliedForPass,
+        fallbackPasses: progress.fallbackPasses + 1,
+        contextRequestCount: (progress.contextRequestCount ?? 0) + requests.length,
+        unavailableQuestionIds: [...new Set([...(progress.unavailableQuestionIds ?? []), ...fallbackContext.unavailableQuestionIds])],
+      };
+      await saveProgress(progress);
+      await applyAcceptedResults(validated.results);
+    }
+
+    const unmarkedQuestions = getPendingMarkingQuestions(questions, progress.results ?? []);
+    if (unmarkedQuestions.length) {
+      const message = 'Some questions need tutor review because their source paper or memo was unavailable or insufficient.';
+      progress = { ...progress, status: 'manual_review', contextRequests: [] };
+      await saveProgress(progress);
+      await finalize({ status: 'failed', errorCode: 'source_context_incomplete', message });
+      return;
+    }
+    await finalize({ status: 'completed' });
   } catch (error) {
     const current = await sourceRef.get().catch(() => null);
     if (current?.exists && current.data()?.aiMarking?.version === task.version

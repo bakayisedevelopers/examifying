@@ -41,6 +41,8 @@ export const callGeminiMarkingOnce = async ({
   contextPages = [],
   originalAnswerImages = [],
   answerImages = [],
+  contextPass = 'analysis_pages',
+  suppliedMaterialsByQuestion = {},
   fetchImpl = globalThis.fetch,
 }) => {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -53,15 +55,18 @@ export const callGeminiMarkingOnce = async ({
     || Number(left.pageNumber) - Number(right.pageNumber));
   const sourceParts = [];
   orderedContextPages.forEach((page) => {
-    sourceParts.push({ text: `Original question paper ${page.paperId}, page ${page.pageNumber}.` });
+    const documentLabel = page.documentType === 'memo' ? 'Official marking memo' : 'Original question paper';
+    sourceParts.push({ text: `${documentLabel} ${page.paperId}, page ${page.pageNumber}.` });
     sourceParts.push(imagePart(page));
   });
   const dynamicParts = [{ text: JSON.stringify({
     operation: submissionType,
+    contextPass,
+    suppliedMaterialsByQuestion,
     requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({
       questionId, paperId, questionNumber, topic, maximumMark,
     })),
-    instruction: 'Use the supplied source-paper context and assess only the requested questions.',
+    instruction: 'Use the supplied source images and assess only the requested questions. If pages are blank, incorrect, or insufficient, request full_paper_search for the affected question IDs. Request memo_search only when an official memo is genuinely required. Do not request material already listed in suppliedMaterialsByQuestion.',
   }) }];
   if (submissionType === 'peer_marking') {
     addImages(dynamicParts, originalAnswerImages, 'Original learner answer image');

@@ -14,6 +14,8 @@ export const callOpenAiMarkingOnce = async ({
   contextPages,
   originalAnswerImages = [],
   answerImages,
+  contextPass = 'analysis_pages',
+  suppliedMaterialsByQuestion = {},
   requestId = '',
   clientFactory = (options) => new OpenAI(options),
 }) => {
@@ -25,7 +27,8 @@ export const callOpenAiMarkingOnce = async ({
     || Number(left.pageNumber) - Number(right.pageNumber));
   const sharedContent = [];
   orderedContextPages.forEach((page) => {
-    sharedContent.push({ type: 'input_text', text: `Original question paper ${page.paperId}, page ${page.pageNumber}.` });
+    const documentLabel = page.documentType === 'memo' ? 'Official marking memo' : 'Original question paper';
+    sharedContent.push({ type: 'input_text', text: `${documentLabel} ${page.paperId}, page ${page.pageNumber}.` });
     sharedContent.push({ type: 'input_image', image_url: page.dataUrl, detail: 'high' });
   });
   if (sharedContent.length) {
@@ -40,10 +43,12 @@ export const callOpenAiMarkingOnce = async ({
     type: 'input_text',
     text: JSON.stringify({
       operation: submissionType,
+      contextPass,
+      suppliedMaterialsByQuestion,
       requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({
         questionId, paperId, questionNumber, topic, maximumMark,
       })),
-      instruction: 'Use the shared source-page images as context only. Mark only the requested questions.',
+      instruction: 'Use the shared source images as context only. Mark only the requested questions. If the source pages are blank, wrong, or insufficient for a requested question, use contextRequests to request its full paper or a memo only if needed. Do not repeat source material already listed in suppliedMaterialsByQuestion.',
     }),
   }];
 
@@ -69,6 +74,7 @@ export const callOpenAiMarkingOnce = async ({
     .update(getSystemInstructions(submissionType));
   orderedContextPages.forEach((page) => {
     cacheKeyDigest.update('\0paper\0').update(String(page.paperId));
+    cacheKeyDigest.update('\0documentType\0').update(String(page.documentType || 'paper'));
     cacheKeyDigest.update('\0page\0').update(String(page.pageNumber));
     cacheKeyDigest.update('\0image\0').update(String(page.dataUrl));
   });

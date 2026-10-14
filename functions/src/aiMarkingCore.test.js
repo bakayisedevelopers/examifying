@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   aiMarkingTaskId,
+  getPendingMarkingQuestions,
   getRequestedMarkingQuestions,
+  groupAiContextRequestsByPaper,
+  mergeAiMarkingResults,
   resolvePaperPageContext,
   runAiMarkingOnce,
   shouldPreserveAuthoritativeMark,
@@ -73,6 +76,17 @@ test('deduplicates duplicate analyzed page numbers', () => {
   assert.deepEqual(context.pages, [{ paperId: 'paper-a', pageNumber: 3 }, { paperId: 'paper-a', pageNumber: 4 }]);
 });
 
+test('routes missing analysis, parent, or page references to full-paper fallback', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [
+    link('paper-a', '1.1'), link('paper-a', '2.1', 'Geometry'), link('paper-b', '3.1', 'Statistics'),
+  ] });
+  const context = resolvePaperPageContext({ requestedQuestions: questions, analysesByPaper: {
+    'paper-a': [analysis('1.1', '', 3), analysis('2.1', '2', 0)],
+  } });
+  assert.deepEqual(new Set(context.fallbackQuestionIds), new Set(questions.map((question) => question.questionId)));
+  assert.deepEqual(context.pages, []);
+});
+
 test('question identity includes paper ID when an exercise spans papers', () => {
   const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1'), link('paper-b', '1.1')] });
   const response = { status: 'completed', message: '', results: questions.map((item) => ({
@@ -89,6 +103,52 @@ test('validates all questions and uses the authoritative maximum mark', () => {
   }] };
   const result = validateAiMarkingResponse({ response, requestedQuestions: questions });
   assert.equal(result.results[0].totalMarks, 2);
+});
+
+test('accepts partial marks with a full-paper request for only unresolved questions', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1'), link('paper-b', '2.1', 'Geometry')] });
+  const [markedQuestion, fallbackQuestion] = questions;
+  const result = validateAiMarkingResponse({ response: {
+    status: 'full_paper_search',
+    results: [{ questionId: markedQuestion.questionId, awardedMark: 1 }],
+    contextRequests: [{ questionId: fallbackQuestion.questionId, material: 'full_paper' }],
+  }, requestedQuestions: questions, suppliedMaterialsByQuestion: {
+    [markedQuestion.questionId]: ['analysis_pages'],
+  } });
+  assert.equal(result.results[0].earnedMarks, 1);
+  assert.deepEqual(result.contextRequests.map(({ questionId, material }) => ({ questionId, material })), [
+    { questionId: fallbackQuestion.questionId, material: 'full_paper' },
+  ]);
+  assert.deepEqual(getPendingMarkingQuestions(questions, result.results).map((question) => question.questionId), [fallbackQuestion.questionId]);
+});
+
+test('allows a memo request only for an unresolved question and blocks repeated material', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1')] });
+  const response = { status: 'memo_search', results: [], contextRequests: [{
+    questionId: questions[0].questionId, material: 'memo',
+  }] };
+  assert.equal(validateAiMarkingResponse({ response, requestedQuestions: questions }).contextRequests[0].material, 'memo');
+  assert.throws(() => validateAiMarkingResponse({ response, requestedQuestions: questions, suppliedMaterialsByQuestion: {
+    [questions[0].questionId]: ['memo'],
+  } }), /already supplied/);
+});
+
+test('deduplicates full paper and memo retrieval plans by paper while retaining question mapping', () => {
+  const groups = groupAiContextRequestsByPaper([
+    { paperId: 'paper-a', questionId: 'a::1.1', material: 'full_paper' },
+    { paperId: 'paper-a', questionId: 'a::1.2', material: 'full_paper' },
+    { paperId: 'paper-a', questionId: 'a::1.2', material: 'memo' },
+    { paperId: 'paper-b', questionId: 'b::1.1', material: 'full_paper' },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].materials, ['full_paper', 'memo']);
+  assert.deepEqual(groups[0].materialsByQuestion['a::1.2'], ['full_paper', 'memo']);
+  assert.equal(mergeAiMarkingResults([{ questionId: 'a::1.1', earnedMarks: 1, totalMarks: 2 }], [])
+    .length, 1);
+  assert.throws(() => mergeAiMarkingResults(
+    [{ questionId: 'a::1.1', earnedMarks: 1, totalMarks: 2 }],
+    [{ questionId: 'a::1.1', earnedMarks: 2, totalMarks: 2 }],
+  ), /conflicting marks/);
 });
 
 test('rejects AI marks greater than the authoritative maximum', () => {

@@ -72,30 +72,45 @@ const storedQuestionKey = (question) => questionIdentity(
 
 export const resolvePaperPageContext = ({ requestedQuestions = [], analysesByPaper = {} }) => {
   const parentGroups = new Map();
+  const questionContexts = new Map();
+  const fallbackQuestionIds = new Set();
   for (const requested of requestedQuestions) {
     const paperQuestions = analysesByPaper[requested.paperId];
-    if (!Array.isArray(paperQuestions)) throw new Error(`Analysis data for paper ${requested.paperId} is unavailable.`);
+    if (!Array.isArray(paperQuestions)) {
+      questionContexts.set(requested.questionId, { questionId: requested.questionId, paperId: requested.paperId, parentQuestion: '', pageNumbers: [] });
+      fallbackQuestionIds.add(requested.questionId);
+      continue;
+    }
     const question = paperQuestions.find((item) => storedQuestionKey({ ...item, paperId: requested.paperId }) === requested.questionId);
-    if (!question) throw new Error(`Question ${requested.questionNumber} was not found in the analysis for paper ${requested.paperId}.`);
+    if (!question) {
+      questionContexts.set(requested.questionId, { questionId: requested.questionId, paperId: requested.paperId, parentQuestion: '', pageNumbers: [] });
+      fallbackQuestionIds.add(requested.questionId);
+      continue;
+    }
     const parentQuestion = String(question.parentQuestion ?? '').trim();
-    if (!parentQuestion) throw new Error(`Parent question for ${requested.questionNumber} is missing from its analysis record.`);
+    if (!parentQuestion) {
+      questionContexts.set(requested.questionId, { questionId: requested.questionId, paperId: requested.paperId, parentQuestion: '', pageNumbers: [] });
+      fallbackQuestionIds.add(requested.questionId);
+      continue;
+    }
     const groupKey = `${requested.paperId}::${normalizeQuestionReference(parentQuestion)}`;
-    const group = parentGroups.get(groupKey) ?? { paperId: requested.paperId, parentQuestion, pageNumbers: new Set() };
+    const group = parentGroups.get(groupKey) ?? { paperId: requested.paperId, parentQuestion, pageNumbers: new Set(), questionIds: new Set() };
+    group.questionIds.add(requested.questionId);
     for (const sibling of paperQuestions) {
-      if (String(sibling?.parentQuestion ?? '').trim() !== parentQuestion) continue;
+      if (normalizeQuestionReference(sibling?.parentQuestion) !== normalizeQuestionReference(parentQuestion)) continue;
       const pageNumber = Number(sibling?.pageNumber ?? sibling?.page);
       if (Number.isInteger(pageNumber) && pageNumber > 0) group.pageNumbers.add(pageNumber);
     }
-    if (!group.pageNumbers.size) {
-      const pageNumber = Number(question.pageNumber ?? question.page ?? requested.pageNumber);
-      if (Number.isInteger(pageNumber) && pageNumber > 0) group.pageNumbers.add(pageNumber);
-    }
-    if (!group.pageNumbers.size) throw new Error(`Source pages for ${requested.questionNumber} are missing from its analysis record.`);
+    if (!group.pageNumbers.size) fallbackQuestionIds.add(requested.questionId);
     parentGroups.set(groupKey, group);
   }
 
   const pagesByPaper = new Map();
   for (const group of parentGroups.values()) {
+    const pageNumbers = [...group.pageNumbers].sort((left, right) => left - right);
+    group.questionIds.forEach((questionId) => questionContexts.set(questionId, {
+      questionId, paperId: group.paperId, parentQuestion: group.parentQuestion, pageNumbers,
+    }));
     const pages = pagesByPaper.get(group.paperId) ?? new Set();
     group.pageNumbers.forEach((pageNumber) => pages.add(pageNumber));
     pagesByPaper.set(group.paperId, pages);
@@ -104,8 +119,11 @@ export const resolvePaperPageContext = ({ requestedQuestions = [], analysesByPap
     parentGroups: [...parentGroups.values()].map((group) => ({
       paperId: group.paperId,
       parentQuestion: group.parentQuestion,
+      questionIds: [...group.questionIds],
       pageNumbers: [...group.pageNumbers].sort((left, right) => left - right),
     })),
+    questionContexts: [...questionContexts.values()],
+    fallbackQuestionIds: [...fallbackQuestionIds],
     pages: [...pagesByPaper.entries()].flatMap(([paperId, pageNumbers]) => [...pageNumbers]
       .sort((left, right) => left - right).map((pageNumber) => ({ paperId, pageNumber })))
       .sort((left, right) => left.paperId.localeCompare(right.paperId) || left.pageNumber - right.pageNumber),
@@ -116,25 +134,30 @@ export const buildCompactQuestionContext = (questions = []) => questions.map(({ 
   questionId, paperId, questionNumber, topic, maximumMark,
 }));
 
-export const validateAiMarkingResponse = ({ response, requestedQuestions = [] }) => {
-  if (!response || typeof response !== 'object' || !AI_MARKING_STATUSES.slice(2, 5).includes(response.status)) {
+export const validateAiMarkingResponse = ({ response, requestedQuestions = [], suppliedMaterialsByQuestion = {} }) => {
+  const supportedStatuses = ['completed', 'incorrect_submission', 'unclear_images', 'full_paper_search', 'memo_search'];
+  if (!response || typeof response !== 'object' || !supportedStatuses.includes(response.status)) {
     throw new Error('The AI marking response used an unsupported status.');
   }
   const results = response.results;
   if (!Array.isArray(results)) throw new Error('The AI marking response did not include a results list.');
+  const contextRequests = Array.isArray(response.contextRequests) ? response.contextRequests : [];
   if (response.status !== 'completed') {
-    if (results.length) throw new Error('A non-completed AI response contained marks.');
-    return {
-      status: response.status,
-      results: [],
-      message: response.status === 'incorrect_submission'
-        ? 'The uploaded images do not appear to match this exercise.'
-        : 'We could not read the uploaded work clearly. Please upload clear images and submit again.',
-    };
+    if (['incorrect_submission', 'unclear_images'].includes(response.status)) {
+      if (results.length || contextRequests.length) throw new Error('A non-completed AI response contained marks or context requests.');
+      return {
+        status: response.status,
+        results: [],
+        contextRequests: [],
+        message: response.status === 'incorrect_submission'
+          ? 'The uploaded images do not appear to match this exercise.'
+          : 'We could not read the uploaded work clearly. Please upload clear images and submit again.',
+      };
+    }
   }
 
   const allowed = new Map(requestedQuestions.map((question) => [question.questionId, question]));
-  if (results.length !== allowed.size) throw new Error('The AI marking response did not score every requested question.');
+  if (!allowed.size) throw new Error('The AI marking request did not include any exercise questions.');
   const seen = new Set();
   const normalizedResults = results.map((result) => {
     const questionId = String(result?.questionId ?? '').trim();
@@ -157,7 +180,81 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [] })
       totalMarks: requested.maximumMark,
     };
   });
-  return { status: 'completed', results: normalizedResults, message: '' };
+
+  const normalizedRequests = [];
+  const requestKeys = new Set();
+  const requestedQuestionIds = new Set();
+  for (const request of contextRequests) {
+    const questionId = String(request?.questionId ?? '').trim();
+    if (!allowed.has(questionId)) throw new Error('The AI marking response requested context for an unknown exercise question.');
+    if (!['full_paper', 'memo'].includes(request?.material)) throw new Error('The AI marking response requested unsupported source material.');
+    if (seen.has(questionId)) throw new Error('The AI marking response both marked and requested context for the same question.');
+    if (requestedQuestionIds.has(questionId)) throw new Error('The AI marking response requested multiple source types for the same question.');
+    if ((suppliedMaterialsByQuestion[questionId] ?? []).includes(request.material)) {
+      throw new Error('The AI marking response requested source material that was already supplied.');
+    }
+    const key = `${questionId}::${request.material}`;
+    if (requestKeys.has(key)) throw new Error('The AI marking response duplicated a source-context request.');
+    requestKeys.add(key);
+    requestedQuestionIds.add(questionId);
+    normalizedRequests.push({ questionId, paperId: allowed.get(questionId).paperId, material: request.material });
+  }
+
+  if (response.status === 'completed') {
+    if (normalizedResults.length !== allowed.size || normalizedRequests.length) {
+      throw new Error('The AI marking response did not score every requested question.');
+    }
+    return { status: 'completed', results: normalizedResults, contextRequests: [], message: '' };
+  }
+
+  if (!normalizedRequests.length) throw new Error('The AI marking response requested more context without identifying any questions.');
+  const resolvedIds = new Set([...seen, ...normalizedRequests.map((request) => request.questionId)]);
+  if (resolvedIds.size !== allowed.size) throw new Error('The AI marking response neither scored nor requested context for every question.');
+  if (response.status === 'full_paper_search' && !normalizedRequests.some((request) => request.material === 'full_paper')) {
+    throw new Error('The full-paper search response did not request any full papers.');
+  }
+  if (response.status === 'memo_search' && !normalizedRequests.some((request) => request.material === 'memo')) {
+    throw new Error('The memo search response did not request any memos.');
+  }
+  return {
+    status: response.status,
+    results: normalizedResults,
+    contextRequests: normalizedRequests,
+    message: '',
+  };
+};
+
+export const mergeAiMarkingResults = (priorResults = [], newResults = []) => {
+  const byQuestionId = new Map();
+  for (const result of [...priorResults, ...newResults]) {
+    const previous = byQuestionId.get(result.questionId);
+    if (previous && (previous.earnedMarks !== result.earnedMarks || previous.totalMarks !== result.totalMarks)) {
+      throw new Error('The AI marking passes returned conflicting marks for an exercise question.');
+    }
+    if (!previous) byQuestionId.set(result.questionId, result);
+  }
+  return [...byQuestionId.values()];
+};
+
+export const getPendingMarkingQuestions = (requestedQuestions = [], results = []) => {
+  const completedIds = new Set(results.map((result) => result.questionId));
+  return requestedQuestions.filter((question) => !completedIds.has(question.questionId));
+};
+
+export const groupAiContextRequestsByPaper = (contextRequests = []) => {
+  const grouped = new Map();
+  for (const request of contextRequests) {
+    const entry = grouped.get(request.paperId) ?? { paperId: request.paperId, materialsByQuestion: new Map() };
+    const materials = entry.materialsByQuestion.get(request.questionId) ?? new Set();
+    materials.add(request.material);
+    entry.materialsByQuestion.set(request.questionId, materials);
+    grouped.set(request.paperId, entry);
+  }
+  return [...grouped.values()].map((entry) => ({
+    paperId: entry.paperId,
+    materialsByQuestion: Object.fromEntries([...entry.materialsByQuestion].map(([questionId, materials]) => [questionId, [...materials]])),
+    materials: [...new Set([...entry.materialsByQuestion.values()].flatMap((materials) => [...materials]))],
+  }));
 };
 
 export const tutorAiMarkingEnabled = (profile = {}) => profile?.settings?.aiMarkingEnabled !== false;

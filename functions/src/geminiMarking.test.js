@@ -34,7 +34,7 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
         return {
           ok: true,
           json: async () => ({
-            candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}]}' }] } }],
+            candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[]}' }] } }],
             usageMetadata: { promptTokenCount: 80, candidatesTokenCount: 12, totalTokenCount: 92 },
           }),
         };
@@ -47,7 +47,7 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
     assert.equal(call.body.generationConfig.maxOutputTokens, 512);
     assert.equal(call.body.generationConfig.thinkingConfig.thinkingLevel, 'MINIMAL');
     assert.equal(call.body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
-    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties), ['status', 'results']);
+    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties), ['status', 'results', 'contextRequests']);
     assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties.results.items.properties), ['questionId', 'awardedMark']);
     assert.equal(call.body.contents[0].parts.filter((part) => part.inline_data).length, 2);
     assert.equal(result.status, 'completed');
@@ -68,7 +68,7 @@ test('peer-marking request carries both original work and marker images', async 
       answerImages: [{ pageNumber: 1, dataUrl: 'data:image/jpeg;base64,AQ==' }],
       fetchImpl: async (_url, options) => {
         requestBody = JSON.parse(options.body);
-        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[]}' }] } }] }) };
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[]}' }] } }] }) };
       },
     });
     const parts = requestBody.contents[0].parts;
@@ -76,6 +76,27 @@ test('peer-marking request carries both original work and marker images', async 
     assert.equal(parts.filter((part) => part.inline_data).length, 2);
     assert.match(parts[1].text, /Original learner answer image 2/);
     assert.match(parts[3].text, /Peer marker's submitted marking image 1/);
+  });
+});
+
+test('Gemini source labels distinguish fallback memos from full question papers', async () => {
+  resetGeminiContextCacheForTests();
+  await withGeminiEnv(async () => {
+    let requestBody;
+    await callGeminiMarkingOnce({
+      submissionType: 'student_exercise',
+      contextPass: 'memo_search',
+      questions: [{ questionId: 'paper-a::1.1', paperId: 'paper-a', questionNumber: '1.1', topic: 'Algebra', maximumMark: 2 }],
+      contextPages: [{ paperId: 'paper-a', pageNumber: 2, documentType: 'memo', dataUrl: 'data:image/jpeg;base64,AA==' }],
+      answerImages: [],
+      suppliedMaterialsByQuestion: { 'paper-a::1.1': ['analysis_pages', 'memo'] },
+      fetchImpl: async (_url, options) => {
+        requestBody = JSON.parse(options.body);
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[]}' }] } }] }) };
+      },
+    });
+    assert.match(requestBody.contents[0].parts[0].text, /Official marking memo paper-a, page 2/);
+    assert.match(requestBody.contents[0].parts[1].inline_data.mime_type, /image/);
   });
 });
 

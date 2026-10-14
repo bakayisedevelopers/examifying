@@ -9,6 +9,7 @@ import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 import { LEGAL_POLICY_VERSION } from '../../lib/legalPolicyVersion';
 import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, isProfileAllowedOnPortal } from '../../utils/portal';
 import { saveParentFamilyCheckoutDraft } from '../../services/parentFamilyService';
+import { decodeParentFamilyPlanDraft } from '../../utils/parentFamilyPlanDraft';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
@@ -38,6 +39,7 @@ export const SignupPage = () => {
   const pendingDiscountCode = new URLSearchParams(location.search).get('discountCode')?.toUpperCase() || '';
   const selectionParams = new URLSearchParams(location.search);
   const familyDraftId = selectionParams.get('familyDraftId') || '';
+  const encodedFamilyPlan = selectionParams.get('familyPlan') || '';
   const managedStudentInvite = selectionParams.get('managedStudentInvite') || '';
   const familyHandoffStarted = useRef(false);
   const [familyHandoffStatus, setFamilyHandoffStatus] = useState('Preparing your saved family plan…');
@@ -47,13 +49,16 @@ export const SignupPage = () => {
     if (profile?.role !== ROLES.PARENT || !familyDraftId || familyHandoffStarted.current) return;
     familyHandoffStarted.current = true;
     try {
-      const rawDraft = window.localStorage.getItem('examifying-parent-family-draft');
-      const saved = rawDraft ? JSON.parse(rawDraft) : null;
-      if (!saved || saved.draftId !== familyDraftId || !Array.isArray(saved.slots)) {
-        throw new Error('Your family plan details were not found in this browser. Return to the parent pricing page and build the plan again.');
+      let rawDraft = null;
+      try { rawDraft = window.localStorage.getItem('examifying-parent-family-draft'); } catch { /* Restore from the signup URL below. */ }
+      let saved = null;
+      if (rawDraft) {
+        try { saved = decodeParentFamilyPlanDraft(rawDraft, familyDraftId); } catch { /* Restore from the signup URL below. */ }
       }
+      if (!saved && encodedFamilyPlan) saved = decodeParentFamilyPlanDraft(encodedFamilyPlan, familyDraftId);
+      if (!saved) throw new Error('Your family plan details were not found. Return to parent pricing and build the plan again.');
       void saveParentFamilyCheckoutDraft(saved).then(() => {
-        window.localStorage.removeItem('examifying-parent-family-draft');
+        try { window.localStorage.removeItem('examifying-parent-family-draft'); } catch { /* Draft is already safely stored server-side. */ }
         navigate(`/parent/family-setup?draftId=${encodeURIComponent(familyDraftId)}`, { replace: true });
       }).catch((error) => {
         familyHandoffStarted.current = false;
@@ -63,7 +68,7 @@ export const SignupPage = () => {
       familyHandoffStarted.current = false;
       setFamilyHandoffStatus(error?.message || 'Could not load the family plan.');
     }
-  }, [familyDraftId, navigate, profile?.role]);
+  }, [encodedFamilyPlan, familyDraftId, navigate, profile?.role]);
 
   if (portal === 'admin') return <Navigate to="/login" replace />;
 

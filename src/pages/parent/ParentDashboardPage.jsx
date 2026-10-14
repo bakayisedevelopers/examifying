@@ -21,6 +21,7 @@ import { REGIONS, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
 import { attachStudentsToParentFamilyCheckoutDraft, createManagedStudentInvite, saveParentFamilyCheckoutDraft } from '../../services/parentFamilyService';
 import { getPortalSiteUrl } from '../../utils/portal';
+import { hasCurrentPaidParentStudentSubscription } from '../../utils/parentFamilyPlanDraft';
 
 const PARENT_GROUP_CHECKOUT_STORAGE_KEY = 'examifying-parent-group-checkout';
 
@@ -374,7 +375,62 @@ export const ParentDashboardPage = () => {
     }
   };
 
+  const startFamilyCheckoutForStudent = async (student, selection, paymentMode, paymentMethodId = '') => {
+    setLoading(true);
+    setParentCardCheckout(null);
+    setStatus(paymentMode === 'existing'
+      ? 'Preparing the student subscription using your saved card…'
+      : 'Preparing the student subscription checkout…');
+    try {
+      const draftId = `family-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+      const checkoutId = `checkout-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+      await saveParentFamilyCheckoutDraft({
+        draftId,
+        discountCode: selection.discountCode || '',
+        slots: [{ planId: selection.planId, billingPeriod: selection.billingPeriod, subjectCount: selection.subjectCount }],
+      });
+      await attachStudentsToParentFamilyCheckoutDraft({ draftId, studentIds: [student.uid] });
+      const result = await initializeFamilySubscriptionCheckout({
+        draftId,
+        checkoutId,
+        paymentMode,
+        ...(paymentMethodId ? { paymentMethodId } : {}),
+        callbackUrl: `${window.location.origin}/parent/family-setup?draftId=${encodeURIComponent(draftId)}`,
+      });
+      if (result.authorizationUrl) {
+        setStatus('Opening Paystack…');
+        window.location.assign(result.authorizationUrl);
+        return;
+      }
+      if (result.status === 'success' || result.completed) {
+        setSubscriptionStudent(null);
+        setParentCardCheckout(null);
+        setStatus(paymentMode === 'existing' && (result.totalAmount === 0 || result.charged === false)
+          ? `${student.displayName || 'Student'}’s subscription is active now. No amount was charged to the saved card.`
+          : result.totalAmount === 0
+            ? `${student.displayName || 'Student'}’s subscription is active now; no subscription fee was due.`
+          : `Payment received and ${student.displayName || 'the student'}’s subscription is active now.`);
+        await loadStudents();
+        navigate(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}`);
+        return;
+      }
+      if (result.reference) {
+        window.location.assign(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}&familyCheckout=1&reference=${encodeURIComponent(result.reference)}`);
+        return;
+      }
+      throw new Error(`The payment returned status ${result.status || 'unknown'}. Check the family setup before trying again.`);
+    } catch (error) {
+      setStatus(error?.message || 'Could not start this student’s subscription checkout. No new payment was started.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const startNewCardStudentPayment = async (student, selection) => {
+    if (!hasCurrentPaidParentStudentSubscription(student)) {
+      await startFamilyCheckoutForStudent(student, selection, 'new');
+      return;
+    }
     try {
       setLoading(true);
       setParentCardCheckout(null);
@@ -433,7 +489,7 @@ export const ParentDashboardPage = () => {
   };
 
   const handlePayForStudent = async (student, selection) => {
-    if (student.paymentCompleted === true) {
+    if (hasCurrentPaidParentStudentSubscription(student)) {
       await startNewCardStudentPayment(student, selection);
       return;
     }
@@ -456,41 +512,7 @@ export const ParentDashboardPage = () => {
   const startSavedCardStudentPayment = async () => {
     if (!parentCardCheckout || !profile?.uid) return;
     const { student, selection, paymentMethodId } = parentCardCheckout;
-    setLoading(true);
-    setStatus('Preparing the student subscription using your saved card…');
-    try {
-      const draftId = `family-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
-      const checkoutId = `checkout-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
-      await saveParentFamilyCheckoutDraft({
-        draftId,
-        discountCode: selection.discountCode || '',
-        slots: [{ planId: selection.planId, billingPeriod: selection.billingPeriod, subjectCount: selection.subjectCount }],
-      });
-      await attachStudentsToParentFamilyCheckoutDraft({ draftId, studentIds: [student.uid] });
-      const result = await initializeFamilySubscriptionCheckout({
-        draftId,
-        checkoutId,
-        paymentMode: 'existing',
-        paymentMethodId,
-        callbackUrl: `${window.location.origin}/parent/family-setup?draftId=${encodeURIComponent(draftId)}`,
-      });
-      if (result.status === 'success' || result.completed) {
-        setSubscriptionStudent(null);
-        setParentCardCheckout(null);
-        await loadStudents();
-        navigate(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}`);
-        return;
-      }
-      if (result.reference) {
-        window.location.assign(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}&familyCheckout=1&reference=${encodeURIComponent(result.reference)}`);
-        return;
-      }
-      throw new Error(`The saved-card charge returned status ${result.status || 'unknown'}. Check the family setup before trying again.`);
-    } catch (error) {
-      setStatus(error?.message || 'Could not charge the saved card. No new card checkout was started.');
-    } finally {
-      setLoading(false);
-    }
+    await startFamilyCheckoutForStudent(student, selection, 'existing', paymentMethodId);
   };
 
   const checkPendingCheckout = async () => {
@@ -582,7 +604,7 @@ export const ParentDashboardPage = () => {
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-lime-400/20 bg-lime-400/5 p-4">
         <div><p className="font-semibold text-white">Set up subscriptions for your family</p><p className="mt-1 text-sm text-slate-400">Choose a different plan and subject count for each child, then pay once.</p></div>
-        <Link to={`/parent/family-setup${location.search}`} className="btn-primary">Family checkout</Link>
+        <Link to={`/parent/family-setup${location.search}`} className="btn-primary">Add students &amp; subscriptions</Link>
       </div>
       
       <div className="panel p-6 mb-8 flex flex-col md:flex-row gap-4 items-end">

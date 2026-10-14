@@ -5,6 +5,7 @@ import { SubscriptionPlanSelector } from '../billing/SubscriptionPlanSelector';
 import { useAuth } from '../../hooks/useAuth';
 import { calculateSubscriptionQuote } from '../../utils/subscriptionPlans';
 import { previewParentFamilyDiscount, saveParentFamilyCheckoutDraft } from '../../services/parentFamilyService';
+import { encodeParentFamilyPlanDraft } from '../../utils/parentFamilyPlanDraft';
 
 export const PARENT_FAMILY_DRAFT_STORAGE_KEY = 'examifying-parent-family-draft';
 
@@ -12,7 +13,7 @@ const newDraftId = () => globalThis.crypto?.randomUUID?.() || `family-${Date.now
 const formatRand = (amount) => `R${Number(amount || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const defaultSlot = () => ({ planId: 'circle', billingPeriod: 'monthly', subjectCount: 1 });
 
-const FamilyStudentPlan = ({ index, slot, onChange }) => {
+const FamilyStudentPlan = ({ index, slot, discountCode, onChange }) => {
   const handleSelectionChange = useCallback((selection) => onChange(index, selection), [index, onChange]);
   return (
     <article className="rounded-2xl border border-white/10 bg-slate-950/45 p-4 sm:p-5">
@@ -28,6 +29,8 @@ const FamilyStudentPlan = ({ index, slot, onChange }) => {
         enableYearly
         idPrefix={`family-${index + 1}`}
         initialSelection={slot}
+        initialDiscountCode={discountCode}
+        hideDiscountInput
         onSelectionChange={handleSelectionChange}
       />
     </article>
@@ -115,8 +118,10 @@ export const ParentFamilyPlanBuilder = () => {
         navigate(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}`);
         return;
       }
-      window.localStorage.setItem(PARENT_FAMILY_DRAFT_STORAGE_KEY, JSON.stringify(payload));
-      navigate(`/signup?familyDraftId=${encodeURIComponent(draftId)}`);
+      const serializedPlan = encodeParentFamilyPlanDraft(payload);
+      try { window.localStorage.setItem(PARENT_FAMILY_DRAFT_STORAGE_KEY, serializedPlan); } catch { /* The signup URL also carries this draft. */ }
+      const signupParams = new URLSearchParams({ familyDraftId: draftId, familyPlan: serializedPlan });
+      navigate(`/signup?${signupParams.toString()}`);
     } catch (error) {
       setDiscountStatus(error?.message || 'Could not save this family plan. Please try again.');
     } finally {
@@ -150,7 +155,7 @@ export const ParentFamilyPlanBuilder = () => {
       </div>
       {discountStatus ? <p role="status" className={`mt-3 text-sm ${discountPreview?.valid ? 'text-lime-300' : 'text-amber-200'}`}>{discountStatus}</p> : null}
       <div className="mt-5 space-y-4">
-        {slots.map((slot, index) => <FamilyStudentPlan key={index} index={index} slot={slot} onChange={onSlotChange} />)}
+        {slots.map((slot, index) => <FamilyStudentPlan key={index} index={index} slot={slot} discountCode={discountCode} onChange={onSlotChange} />)}
       </div>
       <div className="mt-5 rounded-2xl border border-lime-300/25 bg-slate-950/50 p-5">
         <div className="space-y-2">
@@ -160,7 +165,10 @@ export const ParentFamilyPlanBuilder = () => {
             const amount = quote?.finalAmount ?? baseAmount;
             return <div key={index} className="flex items-center justify-between gap-3 text-sm">
               <span className="text-slate-300">Student {index + 1} · {slot.planId === 'personalized' ? 'Personalized' : 'Circle'} · {slot.subjectCount} {slot.subjectCount === 1 ? 'subject' : 'subjects'} · {slot.billingPeriod}</span>
-              <span className="font-semibold text-white">{formatRand(amount)}</span>
+              <span className="text-right font-semibold text-white">
+                {quote && Number(quote.originalAmount) > Number(amount) ? <del className="mr-2 text-sm font-normal text-slate-400">{formatRand(quote.originalAmount)}</del> : null}
+                {formatRand(amount)}
+              </span>
             </div>;
           })}
         </div>

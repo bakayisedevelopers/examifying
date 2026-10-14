@@ -157,7 +157,7 @@ export const ParentHomePage = () => {
             <h2 className="text-xl font-bold text-white">Your kids</h2>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link to={`/parent/family-setup${location.search}`} className="btn-primary inline-flex items-center gap-2"><CreditCard className="h-4 w-4" aria-hidden="true" />Family checkout</Link>
+            <Link to={`/parent/family-setup${location.search}`} className="btn-primary inline-flex items-center gap-2"><CreditCard className="h-4 w-4" aria-hidden="true" />Add students &amp; subscriptions</Link>
             <Link to="/parent/kids" className="btn-secondary inline-flex items-center gap-2"><Users className="h-4 w-4" aria-hidden="true" />Manage kids</Link>
           </div>
         </div>

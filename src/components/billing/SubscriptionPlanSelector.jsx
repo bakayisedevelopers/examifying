@@ -233,6 +233,7 @@ export const SubscriptionPlanSelector = ({
   studentId = null,
   initialDiscountCode = '',
   allowDiscountInput = false,
+  hideDiscountInput = false,
   submitLabel = 'Continue to checkout',
   selectionOnly = false,
   onSelectionChange,
@@ -244,7 +245,7 @@ export const SubscriptionPlanSelector = ({
     : 'circle');
   const [billingPeriod, setBillingPeriod] = useState(initialSelection.billingPeriod === 'yearly' ? 'yearly' : 'monthly');
   const [discountCode, setDiscountCode] = useState(String(initialDiscountCode || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10));
-  const showDiscountInput = Boolean(studentId || allowDiscountInput || initialDiscountCode);
+  const showDiscountInput = !hideDiscountInput && Boolean(studentId || allowDiscountInput || initialDiscountCode);
 
   useEffect(() => {
     setDiscountCode(String(initialDiscountCode || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10));

@@ -247,12 +247,12 @@ export const ParentFamilySetupPage = () => {
   if (step === 'loading') return <main className="min-h-screen bg-slate-950 p-8"><LoadingState label="Loading family subscription setup…" /></main>;
 
   return (
-    <AppShell title="Family subscriptions" subtitle="Set up each child’s plan and choose how to pay." role="parent" user={profile} onLogout={logout}>
+    <AppShell title="Set up your children’s subscriptions" subtitle="Add or link each child from your saved plan, then choose a saved card or a new card to finish checkout." role="parent" user={profile} onLogout={logout}>
       <main className="mx-auto max-w-4xl space-y-6 pb-12">
         <section className="panel p-5 sm:p-7">
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-400">Family checkout</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-400">Family setup · {step === 'students' ? 'Step 1 of 2' : step === 'payment' ? 'Step 2 of 2' : step === 'complete' ? 'Complete' : 'Setup'}</p>
           <h1 className="mt-2 text-2xl font-black text-white">{step === 'complete' ? 'Subscriptions activated' : step === 'payment' ? 'Choose a payment method' : 'Add the students'}</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-300">Each student will have their own subscription, payment record, and renewal amount. A parent card can be reused for each student’s future renewal.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">This step connects each plan you selected to a child profile. Each student keeps an individual subscription, payment record, and renewal amount. A parent card can be reused for each student’s future renewal.</p>
           {status ? <p role="status" className="mt-4 rounded-xl border border-lime-300/20 bg-lime-300/5 p-3 text-sm text-lime-100">{status}</p> : null}
         </section>
 
@@ -283,7 +283,19 @@ export const ParentFamilySetupPage = () => {
         </form> : null}
 
         {step === 'payment' ? <section className="panel space-y-5 p-5 sm:p-7">
-          <div><h2 className="text-xl font-bold text-white">Family total: {formatRand(totalAmount)}</h2><p className="mt-1 text-sm text-slate-400">The final prices are confirmed by the subscription service before checkout.</p></div>
+          <div>
+            <h2 className="text-xl font-bold text-white">{draft?.slots?.length === 1 ? `Subscription total: ${formatRand(totalAmount)}` : `Family total: ${formatRand(totalAmount)}`}</h2>
+            <p className="mt-1 text-sm text-slate-400">Review the students and plans attached to this checkout. The final prices are confirmed by the subscription service.</p>
+          </div>
+          <div className="divide-y divide-white/10 rounded-xl border border-white/10 bg-slate-950/35 px-4">
+            {draft?.slots?.map((slot, index) => {
+              const student = linkedStudents.find((entry) => entry.uid === draft.studentIds?.[index]);
+              return <div key={`${draft.studentIds?.[index] || index}-${slot.planId}`} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+                <span className="font-semibold text-white">{student?.displayName || student?.email || `Student ${index + 1}`}</span>
+                <span className="text-slate-300">{slot.planId === 'personalized' ? 'Personalized' : 'Circle'} · {slot.subjectCount} {slot.subjectCount === 1 ? 'subject' : 'subjects'} · {slot.billingPeriod}</span>
+              </div>;
+            })}
+          </div>
           <div className="space-y-3">
             <label className={`flex cursor-pointer gap-3 rounded-xl border p-4 ${paymentMode === 'new' ? 'border-lime-400/60 bg-lime-400/5' : 'border-white/10'}`}>
               <input type="radio" name="family-payment" checked={paymentMode === 'new'} onChange={() => setPaymentMode('new')} className="mt-1" />

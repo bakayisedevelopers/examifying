@@ -53,7 +53,9 @@ service firebase.storage {
     }
     match /users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/{folder}/{fileName} {
       allow read: if signedIn() && (request.auth.uid == studentId || isParentOf(studentId) || isStaff(studentId, subjectInstanceId)
-        || isPrimaryTutor(studentId, subjectInstanceId) || isAdmin());
+        || isPrimaryTutor(studentId, subjectInstanceId) || isAdmin()
+        || (folder == 'system-generated-peer-work'
+          && firestore.exists(/databases/(default)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)/peerMarkingAssignments/$(request.auth.uid))));
       allow create: if validImage() && ((folder == 'tutor-marking' && (canMark(studentId, subjectInstanceId) || isAdmin()))
         || (folder == 'peer-reviews' && signedIn() && (request.auth.uid == studentId || isParentOf(studentId))));
       allow update, delete: if folder in ['tutor-marking', 'peer-reviews']

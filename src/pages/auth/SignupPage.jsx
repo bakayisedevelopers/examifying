@@ -57,7 +57,11 @@ export const SignupPage = () => {
       }
       if (!saved && encodedFamilyPlan) saved = decodeParentFamilyPlanDraft(encodedFamilyPlan, familyDraftId);
       if (!saved) throw new Error('Your family plan details were not found. Return to parent pricing and build the plan again.');
-      void saveParentFamilyCheckoutDraft(saved).then(() => {
+      void runOperation({
+        operationName: 'Saving your family plan',
+        successMessage: 'Your family plan is saved. Opening student setup…',
+        autoDismissMs: 650,
+      }, () => saveParentFamilyCheckoutDraft(saved)).then(() => {
         try { window.localStorage.removeItem('examifying-parent-family-draft'); } catch { /* Draft is already safely stored server-side. */ }
         navigate(`/parent/family-setup?draftId=${encodeURIComponent(familyDraftId)}`, { replace: true });
       }).catch((error) => {
@@ -68,7 +72,7 @@ export const SignupPage = () => {
       familyHandoffStarted.current = false;
       setFamilyHandoffStatus(error?.message || 'Could not load the family plan.');
     }
-  }, [encodedFamilyPlan, familyDraftId, navigate, profile?.role]);
+  }, [encodedFamilyPlan, familyDraftId, navigate, profile?.role, runOperation]);
 
   if (portal === 'admin') return <Navigate to="/login" replace />;
 
@@ -78,7 +82,7 @@ export const SignupPage = () => {
 
   if (profile?.role && !managedStudentInvite) {
     if (profile.role === ROLES.PARENT && familyDraftId) {
-      return <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12"><div className="panel w-full p-8 text-center"><Logo className="mx-auto" /><h1 className="mt-5 text-xl font-bold text-white">Finishing family setup</h1><p className="mt-2 text-sm text-slate-300">{familyHandoffStatus}</p><Link className="mt-5 inline-flex text-sm font-semibold text-lime-300 underline" to="/parent">Return to Family Home</Link></div></main>;
+      return <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12"><div className="panel w-full p-8 text-center"><Logo className="mx-auto" /><h1 className="mt-5 text-xl font-bold text-white">Finishing family setup</h1><p className="mt-2 text-sm text-slate-300">{familyHandoffStatus}</p></div></main>;
     }
     if (profile.accountSetupStatus === 'required') {
       const setupPath = profile.role === ROLES.STUDENT ? '/student/account-setup'

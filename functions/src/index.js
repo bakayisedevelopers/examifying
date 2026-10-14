@@ -113,6 +113,7 @@ export {
   assignPeerMarkingOnSubmission,
   completePeerMarkingAssignment,
 } from './peerMarking.js';
+export { generateSystemPeerWorkTask } from './systemPeerWork.js';
 
 export {
   queueStudentExerciseAiMarking,

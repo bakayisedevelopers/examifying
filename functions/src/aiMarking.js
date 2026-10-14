@@ -238,7 +238,7 @@ class StorageRangeTransport extends PDFDataRangeTransport {
   }
 }
 
-const loadPageImages = async ({ paper, pageNumbers = [], bucket, documentType = 'paper', allPages = false }) => {
+export const loadPageImages = async ({ paper, pageNumbers = [], bucket, documentType = 'paper', allPages = false }) => {
   const sourceUrl = documentType === 'memo' ? paper.memoUrl : paper.paperUrl;
   const parsed = parseStorageUrl(sourceUrl);
   if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith('questionPapers/')) {
@@ -788,7 +788,9 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       const peerReviewPrefix = `users/${task.studentId}/subjects/${task.subjectInstanceId}/exercises/${assignment.reviewerExerciseId}/peer-reviews/`;
       answerImages = await readAnswerImages({ refs: reviewRefs, bucket, prefix: peerReviewPrefix, label: 'Peer marking' });
       const originalRefs = normalizeImageRefs({ submittedImages: assignment.submittedImages, submittedImageUrl: assignment.submittedImageUrl });
-      const originalPrefix = `${exerciseRef.path}/submissions/`;
+      const originalPrefix = assignment.systemGenerated === true
+        ? `${taskData.reviewerExerciseRef.path}/system-generated-peer-work/`
+        : `${exerciseRef.path}/submissions/`;
       originalAnswerImages = await readAnswerImages({ refs: originalRefs, bucket, prefix: originalPrefix, label: 'Original learner answer' });
     }
 
@@ -853,6 +855,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       aiRequestAttempted = true;
       const requestMetadata = {
         submissionType: task.submissionType,
+        sourceType: assignment?.sourceType || 'student_submission',
         questions: buildCompactQuestionContext(requestedQuestions),
         contextPages: pages,
         originalAnswerImages: task.submissionType === 'peer_marking' ? originalAnswerImages : [],

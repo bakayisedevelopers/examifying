@@ -2936,18 +2936,22 @@ export const getPeerMarkingAssignmentsForStudent = async (reviewerId) => {
   if (!reviewerId || !isFirebaseConfigured) return [];
   ensureDb();
   const snapshot = await getDocs(query(collectionGroup(db, 'peerMarkingAssignments'),
-    where('reviewerId', '==', reviewerId), where('status', '==', 'assigned')));
+    where('reviewerId', '==', reviewerId)));
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data(), assignmentPath: item.ref.path }))
+    .filter((item) => ['assigned', 'preparing', 'fallback_failed'].includes(item.status))
     .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
 };
 
-export const subscribePeerMarkingAssignmentsForStudent = (reviewerId, onChange) => {
+export const subscribePeerMarkingAssignmentsForStudent = (reviewerId, onChange, onError = () => {}) => {
   if (!reviewerId || !isFirebaseConfigured) { onChange([]); return () => {}; }
   const assignmentQuery = query(collectionGroup(db, 'peerMarkingAssignments'),
-    where('reviewerId', '==', reviewerId), where('status', '==', 'assigned'));
-  return onSnapshot(assignmentQuery, (snapshot) => onChange(snapshot.docs.map((item) => ({
-    id: item.id, ...item.data(), assignmentPath: item.ref.path,
-  }))));
+    where('reviewerId', '==', reviewerId));
+  return onSnapshot(assignmentQuery, (snapshot) => {
+    const assignments = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), assignmentPath: item.ref.path }))
+      .filter((item) => ['assigned', 'preparing', 'fallback_failed'].includes(item.status))
+      .sort((left, right) => String(right.assignmentDate ?? '').localeCompare(String(left.assignmentDate ?? '')));
+    onChange(assignments);
+  }, onError);
 };
 
 export const completePeerMarkingAssignment = async ({ assignmentId, assignmentPath, reviewerId, reviewImages = [], reviewImageUrl, reviewFileName }) => {

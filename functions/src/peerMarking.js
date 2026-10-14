@@ -3,6 +3,9 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
 import { buildAssignments, getExerciseQuestionLinks, getExerciseTopicKeys, getExerciseTopicNames, normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
+import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
+import { peerMarkingAllocationLockId } from './peerMarkingFallbackCore.js';
+import { assignFallbackPeerWork } from './systemPeerWork.js';
 import { sendNotificationToUsers } from './notifications.js';
 
 const hasSubmission = (exercise = {}) => exercise.submissionStatus === 'submitted'
@@ -38,6 +41,10 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
       .where('subject', '==', cohort.subject)
       .where('grade', '==', cohort.grade).get();
     const assignedReviewerIds = new Set(assignmentSnapshot.docs.map((document) => document.data().reviewerId));
+    const lockSnapshots = await Promise.all([...new Set(submitted.map((item) => item.studentId))].map((reviewerId) =>
+      db.collection('peerMarkingAssignmentLocks').doc(peerMarkingAllocationLockId({ ...cohort, reviewerId })).get()));
+    const lockedReviewerIds = new Set(lockSnapshots.filter((snapshot) => snapshot.exists).map((snapshot) => snapshot.data().reviewerId));
+    lockedReviewerIds.forEach((reviewerId) => assignedReviewerIds.add(reviewerId));
     const reviewers = submitted.filter((exercise) => !assignedReviewerIds.has(exercise.studentId));
     if (!reviewers.length) return;
     const historicalSnapshot = await db.collectionGroup('exercises')
@@ -50,8 +57,10 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
       markedExerciseIdsByReviewer: new Map(), recentRevieweesByReviewer: new Map(), assignedReviewerIds,
       currentDate: cohort.assignmentDate, subject: cohort.subject, grade: cohort.grade,
     });
+    const consideredReviewerIds = new Set();
     for (const { reviewer, target } of pairs) {
       if (!sameCohort(cohortFor(reviewer), cohort)) continue;
+      consideredReviewerIds.add(reviewer.studentId);
       const assignmentRef = target.ref.collection('peerMarkingAssignments').doc(reviewer.studentId);
       const reviewerTopics = getExerciseTopicKeys(reviewer);
       const matchedTopics = getExerciseTopicNames(target)
@@ -61,7 +70,7 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
       const assignedTopicKeys = new Set(assignedTopics.map(normalizeExerciseTopicKey));
       const assignedQuestionLinks = getExerciseQuestionLinks(target)
         .filter((link) => !matchedTopics.length || assignedTopicKeys.has(normalizeExerciseTopicKey(link.topic)));
-      await assignmentRef.set({
+      const assignment = {
         assignmentId: assignmentRef.id,
         reviewerId: reviewer.studentId, reviewerSubjectInstanceId: reviewer.subjectInstanceId,
         reviewerExerciseId: reviewer.id, revieweeId: target.studentId, revieweeSubjectInstanceId: target.subjectInstanceId,
@@ -75,10 +84,25 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
         paperIds: Array.isArray(target.paperIds) ? target.paperIds : [],
         title: target.title ?? '', submittedImageUrl: target.submittedImageUrl ?? '', submittedImages: target.submittedImages ?? [],
         status: 'assigned', createdAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      const assigned = await claimPeerMarkingAssignmentSlot({
+        db, assignmentRef, reviewerId: reviewer.studentId, cohort, assignment,
       });
+      if (!assigned) continue;
       await sendNotificationToUsers({ userIds: [reviewer.studentId], title: 'New work to mark',
         body: `${cohort.subject} exercise is ready for peer marking.`, type: 'peer-marking.assigned', url: '/student?tab=mark',
         data: { assignmentId: assignmentRef.id, assignmentPath: assignmentRef.path, exerciseId: target.id }, tag: `peer-marking-${assignmentRef.id}` });
+    }
+    const fallbackReviewers = reviewers.filter((reviewer) => !assignedReviewerIds.has(reviewer.studentId)
+      && !consideredReviewerIds.has(reviewer.studentId));
+    if (fallbackReviewers.length) {
+      const excludedPaperIds = new Set(exerciseSnapshot.docs.flatMap((document) => {
+        const exercise = document.data();
+        return [...(Array.isArray(exercise.paperIds) ? exercise.paperIds : []),
+          ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((link) => link.paperId) : [])]
+          .map((paperId) => String(paperId ?? '').trim()).filter(Boolean);
+      }));
+      await assignFallbackPeerWork({ db, cohort, reviewers: fallbackReviewers, excludedPaperIds });
     }
     logger.info('Nested peer-marking allocation completed', { reviewerCount: reviewers.length, pairCount: pairs.length });
   },

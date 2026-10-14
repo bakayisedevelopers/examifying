@@ -1628,7 +1628,7 @@ const finalizeFamilyPaystackPayment = async ({ parentId, reference }) => {
   };
 };
 
-export const initializeFamilySubscriptionCheckout = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 120 }, async (request) => {
+export const initializeFamilySubscriptionCheckout = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 120, memory: '512MiB' }, async (request) => {
   const parentId = request.auth?.uid;
   if (!parentId) throw new HttpsError('unauthenticated', 'Sign in as a parent before starting family checkout.');
   const checkoutId = String(request.data?.checkoutId ?? '').trim();

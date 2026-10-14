@@ -37,6 +37,7 @@ const providerError = (message, { code, status } = {}) => {
 
 export const callGeminiMarkingOnce = async ({
   submissionType,
+  sourceType = 'student_submission',
   questions = [],
   contextPages = [],
   originalAnswerImages = [],
@@ -61,6 +62,7 @@ export const callGeminiMarkingOnce = async ({
   });
   const dynamicParts = [{ text: JSON.stringify({
     operation: submissionType,
+    sourceType,
     contextPass,
     suppliedMaterialsByQuestion,
     requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({

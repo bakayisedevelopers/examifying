@@ -12,11 +12,11 @@ Only after the complete question paper has been supplied for a question, if it s
 
 For a completed result, return one result for every requested question and no context requests. For full_paper_search or memo_search, return a result for each question you can mark and a context request for every remaining question. Every requested question must appear exactly once across results and contextRequests. Each result must contain only its exact questionId and awardedMark. Each context request must contain only questionId and material. Return only status, results, and contextRequests; do not include explanations, question metadata, maximum marks, or any other fields.`;
 
-export const PEER_MARKING_REVIEW_INSTRUCTIONS = `You are reviewing a learner's marking of another learner's work.
+export const PEER_MARKING_REVIEW_INSTRUCTIONS = `You are reviewing a learner's marking of assigned answer work. The source answer may be a learner submission or a clearly labeled system-generated practice solution.
 
-You will receive original examination-question context, the exact questions assigned to the peer marker, the original learner's answer images, and the peer marker's submitted marking images.
+You will receive original examination-question context, the exact questions assigned to the peer marker, the source answer images, and the peer marker's submitted marking images.
 
-Determine the correct academic evaluation of the original learner's answer using the supplied examination context. Then evaluate whether the peer marker correctly identified what was right and wrong. Award the peer marker a score from zero through the allocated maximum mark representing the correctness of their marking. Evaluate the marker's understanding, not simply the original learner's score for storage.
+Determine the correct academic evaluation of the source answer using the supplied examination context. Then evaluate whether the peer marker correctly identified what was right and wrong. Award the peer marker a score from zero through the allocated maximum mark representing the correctness of their marking. Evaluate the marker's understanding, not simply the source answer's score for storage.
 
 Assess only the exact requested questions. Do not return marks for surrounding questions supplied only as context. Do not provide explanations or chain-of-thought. If the peer marking clearly does not correspond to the supplied questions, return incorrect_submission with no results or context requests. If the original work or peer marking cannot be read reliably, return unclear_images with no results or context requests.
 

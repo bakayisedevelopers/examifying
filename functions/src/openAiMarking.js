@@ -10,6 +10,7 @@ const getSystemInstructions = (submissionType) => submissionType === 'peer_marki
 
 export const callOpenAiMarkingOnce = async ({
   submissionType,
+  sourceType = 'student_submission',
   questions,
   contextPages,
   originalAnswerImages = [],
@@ -43,6 +44,7 @@ export const callOpenAiMarkingOnce = async ({
     type: 'input_text',
     text: JSON.stringify({
       operation: submissionType,
+      sourceType,
       contextPass,
       suppliedMaterialsByQuestion,
       requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({

@@ -28,12 +28,13 @@ export const PeerReviewForm = ({ submission, canReview, onSubmit }) => {
   return (
     <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
       <div className="panel space-y-3 overflow-hidden p-3">
-        {sourceImages.map((image, index) => <img key={image.url || index} src={image.url} alt={`Classmate submission page ${index + 1}`} className="max-h-[700px] w-full rounded-2xl object-contain" />)}
+        {sourceImages.map((image, index) => <img key={image.url || index} src={image.url} alt={`${submission.sourceType === 'system_generated' ? 'System-generated practice answer' : 'Classmate submission'} page ${index + 1}`} className="max-h-[700px] w-full rounded-2xl object-contain" />)}
       </div>
       <form onSubmit={handleSubmit} className="panel space-y-4 p-5">
         <div>
-          <h3 className="text-xl font-semibold text-slate-950">Peer mark this submission</h3>
+          <h3 className="text-xl font-semibold text-slate-950">{submission.sourceType === 'system_generated' ? 'Mark this practice solution' : 'Peer mark this submission'}</h3>
           <p className="mt-2 text-sm text-slate-500">Exercise: {submission.exerciseTitle}</p>
+          {submission.sourceType === 'system_generated' ? <p className="text-xs font-semibold text-emerald-700">System-generated practice work · review the solution and mark its accuracy.</p> : null}
         </div>
         <label className="block">
           <span className="label">Upload your marked image pages</span>

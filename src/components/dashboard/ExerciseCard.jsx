@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 5247)
+Total output lines: 343
+
 import { useEffect, useState } from 'react';
 import { CalendarDays, FileText, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -16,16 +19,16 @@ const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) 
   ? images
   : fallbackUrl ? [{ url: fallbackUrl, fileName: fallbackName || '' }] : [];
 
-const AiMarkingNotice = ({ record, label = 'AI-assisted marking', viewerRole = 'student' }) => {
+const AiMarkingNotice = ({ record, viewerRole = 'student' }) => {
   const status = String(record?.aiMarking?.status ?? '');
   if (!status || status === 'skipped') return null;
   const content = {
-    pending: ['bg-sky-50 text-sky-900', `${label} is queued.`],
-    processing: ['bg-sky-50 text-sky-900', `${label} is processing in the background.`],
-    completed: ['bg-lime-50 text-lime-900', `${label} is complete. Tutors can still review and change these marks.`],
+    pending: ['bg-sky-50 text-sky-900', 'Your work is queued for marking.'],
+    processing: ['bg-sky-50 text-sky-900', 'Your work is being marked.'],
+    completed: ['bg-lime-50 text-lime-900', 'Marking completed.'],
     failed: ['bg-amber-50 text-amber-900', viewerRole === 'tutor'
-      ? 'AI marking did not complete. The original submission is available for manual marking.'
-      : 'AI marking did not complete. Your submitted work is saved for tutor review.'],
+      ? 'Marking could not be completed. The original submission is available for manual marking.'
+      : 'Marking could not be completed. Your submitted work is saved for tutor review.'],
     incorrect_submission: ['bg-amber-50 text-amber-900', record.aiMarking.message || 'The submitted images did not match this exercise. Please upload the correct work.'],
     unclear_images: ['bg-amber-50 text-amber-900', record.aiMarking.message || 'We could not read your uploaded work clearly. Please upload clear images and submit again.'],
   }[status];
@@ -182,27 +185,12 @@ export const ExerciseCard = ({
   const peerAiAssignments = completedMarkingAssignments.filter((item) =>
     item.reviewerExerciseId === exercise.id
     && item.reviewerSubjectInstanceId === exercise.subjectInstanceId
-    && item.aiMarking?.status);
-
-  return (
-    <div className="w-full space-y-5">
-      <section className="space-y-4">
-        <div className="rounded-2xl bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400 p-5 text-slate-950 shadow-soft sm:p-6">
-          <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-950/70">Exercise</p>
-          <h2 className="mt-1 text-2xl font-extrabold tracking-tight">Work to Complete</h2>
-          <p className="mt-2 max-w-2xl text-sm text-emerald-950/80">Review the exercise details and question pages. Students can submit their work here.</p>
-        </div>
-        <div className="panel space-y-5 p-5 sm:p-6">
-
-        <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
-          <span className="inline-flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1 font-semibold text-brand-700"><CalendarDays className="h-4 w-4" />{exercise.assignmentDate}</span>
-          <ExerciseStatusBadges exercise={exercise} />
+    && item.aiMa…247 tokens truncated…se} />
         </div>
         <AiMarkingNotice record={exercise} viewerRole={viewerRole} />
         {peerAiAssignments.map((assignment) => <AiMarkingNotice
           key={assignment.assignmentPath || assignment.id}
           record={assignment}
-          label="AI peer-marking review"
           viewerRole={viewerRole}
         />)}
         <div className="flex flex-wrap items-center gap-3">

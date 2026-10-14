@@ -66,7 +66,7 @@ export const callGeminiMarkingOnce = async ({
     requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({
       questionId, paperId, questionNumber, topic, maximumMark,
     })),
-    instruction: 'Use the supplied source images and assess only the requested questions. If pages are blank, incorrect, or insufficient, request full_paper_search for the affected question IDs. Request memo_search only when an official memo is genuinely required. Do not request material already listed in suppliedMaterialsByQuestion.',
+    instruction: 'Use the supplied source images and assess only the requested questions. If analysis pages are blank, incorrect, or insufficient, request full_paper_search for the affected question IDs first. Request memo_search only if the full question paper has already been supplied for that question and an official memo is still genuinely required. Do not request material already listed in suppliedMaterialsByQuestion.',
   }) }];
   if (submissionType === 'peer_marking') {
     addImages(dynamicParts, originalAnswerImages, 'Original learner answer image');

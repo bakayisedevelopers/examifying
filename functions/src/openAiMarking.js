@@ -48,7 +48,7 @@ export const callOpenAiMarkingOnce = async ({
       requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({
         questionId, paperId, questionNumber, topic, maximumMark,
       })),
-      instruction: 'Use the shared source images as context only. Mark only the requested questions. If the source pages are blank, wrong, or insufficient for a requested question, use contextRequests to request its full paper or a memo only if needed. Do not repeat source material already listed in suppliedMaterialsByQuestion.',
+      instruction: 'Use the shared source images as context only. Mark only the requested questions. If analysis pages are blank, wrong, or insufficient, request the full paper first. Request a memo only if the full question paper has already been supplied for that question and an official memo is still needed. Do not repeat source material already listed in suppliedMaterialsByQuestion.',
     }),
   }];
 

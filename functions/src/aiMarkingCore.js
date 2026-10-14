@@ -188,6 +188,9 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [], s
     const questionId = String(request?.questionId ?? '').trim();
     if (!allowed.has(questionId)) throw new Error('The AI marking response requested context for an unknown exercise question.');
     if (!['full_paper', 'memo'].includes(request?.material)) throw new Error('The AI marking response requested unsupported source material.');
+    if (request.material === 'memo' && !(suppliedMaterialsByQuestion[questionId] ?? []).includes('full_paper')) {
+      throw new Error('The AI marking response requested a memo before the full question paper was supplied.');
+    }
     if (seen.has(questionId)) throw new Error('The AI marking response both marked and requested context for the same question.');
     if (requestedQuestionIds.has(questionId)) throw new Error('The AI marking response requested multiple source types for the same question.');
     if ((suppliedMaterialsByQuestion[questionId] ?? []).includes(request.material)) {

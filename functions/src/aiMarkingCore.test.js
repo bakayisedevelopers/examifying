@@ -127,9 +127,12 @@ test('allows a memo request only for an unresolved question and blocks repeated 
   const response = { status: 'memo_search', results: [], contextRequests: [{
     questionId: questions[0].questionId, material: 'memo',
   }] };
-  assert.equal(validateAiMarkingResponse({ response, requestedQuestions: questions }).contextRequests[0].material, 'memo');
+  assert.throws(() => validateAiMarkingResponse({ response, requestedQuestions: questions }), /before the full question paper was supplied/);
+  assert.equal(validateAiMarkingResponse({ response, requestedQuestions: questions, suppliedMaterialsByQuestion: {
+    [questions[0].questionId]: ['full_paper'],
+  } }).contextRequests[0].material, 'memo');
   assert.throws(() => validateAiMarkingResponse({ response, requestedQuestions: questions, suppliedMaterialsByQuestion: {
-    [questions[0].questionId]: ['memo'],
+    [questions[0].questionId]: ['full_paper', 'memo'],
   } }), /already supplied/);
 });
 

@@ -7,6 +7,7 @@ const rootDirectory = process.cwd();
 const buildDirectory = resolve(rootDirectory, 'dist');
 const hostingDirectory = resolve(rootDirectory, 'dist-sites');
 const portals = ['student', 'tutor', 'teacher', 'parent', 'admin'];
+const googleSiteVerification = '<meta name="google-site-verification" content="3tze_yj1w1JxsI3INjvBjITm0Aicss1GhGZGMrrph9M" />';
 
 const escapeHtml = (value) => String(value)
   .replaceAll('&', '&amp;')
@@ -40,6 +41,10 @@ for (const portal of portals) {
     .replaceAll('__SEO_ORIGIN__', escapeHtml(origin))
     .replaceAll('__SEO_ROBOTS__', escapeHtml(landingSeo.robots))
     .replace('__SEO_STRUCTURED_DATA__', JSON.stringify(buildStructuredData(portal, '/')).replaceAll('<', '\\u003c'));
+
+  if (portal !== 'admin') {
+    html = html.replace('</head>', `    ${googleSiteVerification}\n  </head>`);
+  }
 
   await writeFile(resolve(siteDirectory, 'index.html'), html);
   await writeFile(resolve(siteDirectory, 'sitemap.xml'), makeSitemap(portal));

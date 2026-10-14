@@ -628,8 +628,8 @@ export const ParentDashboardPage = () => {
       />
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-lime-400/20 bg-lime-400/5 p-4">
-        <div><p className="font-semibold text-white">Set up subscriptions for your family</p><p className="mt-1 text-sm text-slate-400">Choose a different plan and subject count for each child, then pay once.</p></div>
-        <Link to={`/parent/family-setup${location.search}`} className="btn-primary">Add students &amp; subscriptions</Link>
+        <div><p className="font-semibold text-white">Set up subscriptions for your family</p><p className="mt-1 text-sm text-slate-400">Choose a different plan and subject count for each child, then review the family total.</p></div>
+        <Link to="/parent/family-subscription" className="btn-primary">Family subscription</Link>
       </div>
       
       <div className="panel p-6 mb-8 flex flex-col md:flex-row gap-4 items-end">

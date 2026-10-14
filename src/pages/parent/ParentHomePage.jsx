@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronRight, Clock3, CreditCard, Users } from 'lucide-react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { ExerciseActivityCalendar } from '../../components/dashboard/ExerciseActivityCalendar';
 import { LoadingState } from '../../components/common/LoadingState';
@@ -16,7 +16,6 @@ import {
 } from '../../services/firestoreService';
 import { getLocalDateKey, shiftDateKey } from '../../utils/dateKey';
 import { getParentCalendarDateStatus, getStudentDailyCompletion } from '../../utils/parentCompletion';
-import { ParentFamilyPlanBuilder } from '../../components/parent/ParentFamilyPlanBuilder';
 
 const weekEnd = (weekStart) => shiftDateKey(weekStart, 6);
 const mergeByPath = (...groups) => [...new Map(groups.flat().map((item) => [item.assignmentPath || item.id, item])).values()];
@@ -53,7 +52,6 @@ const ParentStudentCard = ({ student }) => {
 
 export const ParentHomePage = () => {
   const { profile, logout } = useAuth();
-  const location = useLocation();
   const [weekStart, setWeekStart] = useState(() => shiftDateKey(getLocalDateKey(), -6));
   const [students, setStudents] = useState([]);
   const [calendarStudents, setCalendarStudents] = useState([]);
@@ -157,7 +155,7 @@ export const ParentHomePage = () => {
             <h2 className="text-xl font-bold text-white">Your kids</h2>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link to={`/parent/family-setup${location.search}`} className="btn-primary inline-flex items-center gap-2"><CreditCard className="h-4 w-4" aria-hidden="true" />Add students &amp; subscriptions</Link>
+            <Link to="/parent/family-subscription" className="btn-primary inline-flex items-center gap-2"><CreditCard className="h-4 w-4" aria-hidden="true" />Family subscription</Link>
             <Link to="/parent/kids" className="btn-secondary inline-flex items-center gap-2"><Users className="h-4 w-4" aria-hidden="true" />Manage kids</Link>
           </div>
         </div>
@@ -175,7 +173,6 @@ export const ParentHomePage = () => {
           </div>
         )}
       </section>
-      <ParentFamilyPlanBuilder />
     </AppShell>
   );
 };

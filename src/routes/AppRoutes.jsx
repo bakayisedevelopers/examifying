@@ -44,6 +44,7 @@ const GuidePage = lazyNamed(() => import('../pages/GuidePage'), 'GuidePage');
 const PoliciesPage = lazyNamed(() => import('../pages/PoliciesPage'), 'PoliciesPage');
 const ParentDashboardPage = lazyNamed(() => import('../pages/parent/ParentDashboardPage'), 'ParentDashboardPage');
 const ParentFamilySetupPage = lazyNamed(() => import('../pages/parent/ParentFamilySetupPage'), 'ParentFamilySetupPage');
+const ParentFamilySubscriptionPage = lazyNamed(() => import('../pages/parent/ParentFamilySubscriptionPage'), 'ParentFamilySubscriptionPage');
 const ParentHomePage = lazyNamed(() => import('../pages/parent/ParentHomePage'), 'ParentHomePage');
 const ProfileHubPage = lazyNamed(() => import('../pages/profile/ProfileHubPage'), 'ProfileHubPage');
 const ProfilePersonalDetailsPage = lazyNamed(() => import('../pages/profile/ProfilePersonalDetailsPage'), 'ProfilePersonalDetailsPage');
@@ -103,6 +104,7 @@ export const AppRoutes = () => {
     <Route element={<ProtectedRoute allowedRoles={[ROLES.PARENT]} />}>
       <Route path="/parent" element={<ParentHomePage />} />
       <Route path="/parent/kids" element={<ParentDashboardPage />} />
+      <Route path="/parent/family-subscription" element={<ParentFamilySubscriptionPage />} />
       <Route path="/parent/family-setup" element={<ParentFamilySetupPage />} />
       <Route path="/parent/papers" element={<PastExamPapersPage />} />
       <Route path="/parent/papers/:paperId" element={<PaperReaderPage />} />

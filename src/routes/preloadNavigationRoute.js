@@ -1,4 +1,5 @@
 const routeImports = {
+  '/parent/family-subscription': () => import('../pages/parent/ParentFamilySubscriptionPage'),
   '/tutor': () => import('../pages/tutor/TutorExercisesPage'),
   '/tutor/students': () => import('../pages/tutor/TutorDashboardPage'),
   '/tutor/exercises': () => import('../pages/tutor/TutorExercisesPage'),

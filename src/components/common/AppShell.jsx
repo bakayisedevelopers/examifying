@@ -30,6 +30,7 @@ const navigationByRole = {
   [ROLES.PARENT]: [
     { to: '/parent', label: 'Home', icon: LayoutDashboard },
     { to: '/parent/kids', label: 'Kids', icon: Users },
+    { to: '/parent/family-subscription', label: 'Family Subscription', icon: CreditCard },
     { to: '/parent/papers', label: 'Past papers', icon: BookOpen },
   ],
 };
@@ -67,6 +68,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
   const roleNavigation = isParentWorkspace ? [
     { to: '/parent', label: 'Family Home', icon: LayoutDashboard },
     { to: '/parent/kids', label: 'Kids', icon: Users },
+    { to: '/parent/family-subscription', label: 'Family Subscription', icon: CreditCard },
     { to: `${childBasePath}/home`, label: 'Student Home', icon: LayoutDashboard },
     { to: `${childBasePath}/lessons`, label: 'Lessons', icon: GraduationCap },
     { to: `${childBasePath}/papers`, label: 'Past papers', icon: BookOpen },
@@ -220,9 +222,9 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
           <nav className="space-y-2">
             {isParentWorkspace ? (
               <>
-                <div className="space-y-2">{navigation.slice(0, 2).map(renderNavigationLink)}</div>
+                <div className="space-y-2">{navigation.slice(0, 3).map(renderNavigationLink)}</div>
                 <div className="my-3 border-t border-slate-800" aria-hidden="true" />
-                <div className="space-y-2">{navigation.slice(2).map(renderNavigationLink)}</div>
+                <div className="space-y-2">{navigation.slice(3).map(renderNavigationLink)}</div>
               </>
             ) : navigation.map(renderNavigationLink)}
           </nav>

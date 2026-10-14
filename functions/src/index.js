@@ -1,5 +1,8 @@
 export {
   initializePaystackTransaction,
+  initializeFamilySubscriptionCheckout,
+  verifyFamilySubscriptionCheckout,
+  getParentSavedPaymentMethods,
   verifyPaystackTransaction,
   cancelPaystackCheckout,
   paystackWebhook,
@@ -18,6 +21,18 @@ export {
   chargeStoredAuthorization,
   manageStudentSubscription,
 } from './paystack.js';
+
+export {
+  saveParentFamilyCheckoutDraft,
+  getParentFamilyCheckoutDraft,
+  attachStudentsToParentFamilyCheckoutDraft,
+  previewParentFamilyDiscount,
+} from './parentFamilyFlow.js';
+
+export {
+  createManagedStudentInvite,
+  redeemManagedStudentInvite,
+} from './managedStudentAccounts.js';
 
 export { processSubscriptionRenewals } from './subscriptionRenewals.js';
 export { auditSubscriptionChanges, auditAuthorizationChanges } from './subscriptionAudit.js';

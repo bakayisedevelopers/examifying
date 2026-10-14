@@ -4,6 +4,7 @@ import { auth, isFirebaseConfigured } from '../firebase/config';
 import {
   getUserProfile,
   completeAccountSetup as saveAccountSetup,
+  completeManagedStudentInvite as redeemStudentInvite,
   loginWithEmail,
   logout,
   registerWithGoogle as createGoogleAccount,
@@ -103,6 +104,13 @@ export const AuthProvider = ({ children }) => {
     },
     registerWithGoogle: async (payload) => {
       const result = await createGoogleAccount(payload);
+      queryClient.clear();
+      const resolvedProfile = await resolveOnboardingProfile(result.profile);
+      setState({ user: result.user, profile: resolvedProfile, loading: false, error: null });
+      return { ...result, profile: resolvedProfile };
+    },
+    completeManagedStudentInvite: async (payload) => {
+      const result = await redeemStudentInvite(payload);
       queryClient.clear();
       const resolvedProfile = await resolveOnboardingProfile(result.profile);
       setState({ user: result.user, profile: resolvedProfile, loading: false, error: null });

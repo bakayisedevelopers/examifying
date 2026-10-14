@@ -31,6 +31,7 @@ const PlanCard = ({
   submitLabel,
   selectionOnly,
   onSelectionChange,
+  idPrefix = '',
   onSelect,
   onContinue,
 }) => {
@@ -171,9 +172,9 @@ const PlanCard = ({
 
       <ul className="mt-4 min-h-[7rem] space-y-2 text-sm text-slate-300">
         <li className="flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
-          <label className="sr-only" htmlFor={`${plan.id}-subject-count`}>Number of subjects for {plan.name}</label>
+          <label className="sr-only" htmlFor={`${idPrefix ? `${idPrefix}-` : ''}${plan.id}-subject-count`}>Number of subjects for {plan.name}</label>
           <input
-            id={`${plan.id}-subject-count`}
+            id={`${idPrefix ? `${idPrefix}-` : ''}${plan.id}-subject-count`}
             type="number"
             inputMode="numeric"
             min="1"
@@ -235,6 +236,8 @@ export const SubscriptionPlanSelector = ({
   submitLabel = 'Continue to checkout',
   selectionOnly = false,
   onSelectionChange,
+  idPrefix = '',
+  enableYearly = false,
 }) => {
   const [planId, setPlanId] = useState(['circle', 'personalized'].includes(initialSelection.planId)
     ? initialSelection.planId
@@ -250,11 +253,11 @@ export const SubscriptionPlanSelector = ({
   const continueWithFree = () => onContinue?.({ planId: 'free', billingPeriod, subjectCount: 0 });
 
   return (
-    <section className="space-y-5" aria-labelledby="subscription-plans-heading">
+    <section className="space-y-5" aria-labelledby={idPrefix ? `${idPrefix}-subscription-plans-heading` : 'subscription-plans-heading'}>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Subscriptions</p>
-          <h2 id="subscription-plans-heading" className="mt-1 text-2xl font-bold tracking-tight text-white">Choose your plan</h2>
+          <h2 id={idPrefix ? `${idPrefix}-subscription-plans-heading` : 'subscription-plans-heading'} className="mt-1 text-2xl font-bold tracking-tight text-white">Choose your plan</h2>
           {mobileSwipe ? <p className="mt-2 text-xs text-slate-400 lg:hidden">Swipe left or right to compare plans.</p> : null}
         </div>
         <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:items-end">
@@ -264,7 +267,7 @@ export const SubscriptionPlanSelector = ({
             </button> : null}
             <div className="flex items-center gap-2" role="group" aria-label="Billing period">
               <button type="button" onClick={() => setBillingPeriod('monthly')} aria-pressed={billingPeriod === 'monthly'} className={billingPeriod === 'monthly' ? 'btn-primary' : 'btn-secondary'}>Monthly</button>
-              <button type="button" onClick={() => setBillingPeriod('yearly')} aria-pressed={billingPeriod === 'yearly'} className={`hidden ${billingPeriod === 'yearly' ? 'btn-primary' : 'btn-secondary'}`}>Yearly · 2 months free</button>
+              <button type="button" onClick={() => setBillingPeriod('yearly')} aria-pressed={billingPeriod === 'yearly'} className={`${enableYearly ? '' : 'hidden'} ${billingPeriod === 'yearly' ? 'btn-primary' : 'btn-secondary'}`}>Yearly · 2 months free</button>
             </div>
           </div>
           {showDiscountInput ? (
@@ -309,6 +312,7 @@ export const SubscriptionPlanSelector = ({
             submitLabel={submitLabel}
             selectionOnly={selectionOnly}
             onSelectionChange={onSelectionChange}
+            idPrefix={idPrefix}
             onSelect={setPlanId}
             onContinue={onContinue}
           />

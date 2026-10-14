@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 45893)
+Total output lines: 3681
+
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated, onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -13,10 +16,13 @@ import { getPaystackCustomerDetails } from './paystackCustomerDetails.js';
 import { getActiveSubjectLessonQuotaUpdates } from './lessonEntitlements.js';
 import { applyRecurringDiscount, applyScheduledDiscount, calculateDiscount, calculateDiscountEndAt, normalizeDiscountCode } from './discountCodesCore.js';
 import { getDiscountQuoteForCheckout, reserveDiscountRedemption, transitionDiscountRedemptionForPayment } from './discountCodes.js';
+import { buildFamilyCheckoutReference, quoteFamilySelections, resolveFamilyGatewayPlan } from './familyCheckoutCore.js';
 
 const studentSubscriptionRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptions').doc('current');
 const studentPaymentRef = (db, studentId, reference) => db.collection('users').doc(studentId).collection('payments').doc(reference);
 const studentAuthorizationRef = (db, studentId) => db.collection('users').doc(studentId).collection('subscriptionAuthorizations').doc('current');
+const familyPaymentRef = (db, parentId, reference) => db.collection('users').doc(parentId).collection('payments').doc(reference);
+const familyDraftRef = (db, parentId, draftId) => db.collection('users').doc(parentId).collection('familyCheckoutDrafts').doc(draftId);
 
 const paystackRequest = async ({ path, method = 'POST', payload }) => {
   const { paystackSecretKey, paystackBaseUrl } = getPaystackConfig();
@@ -646,6 +652,43 @@ const assertCanManageStudentSubscription = async ({ db, payerId, studentId }) =>
   return { isParent, payer };
 };
 
+const getParentAuthorizationOptions = async ({ db, parentId }) => {
+  const students = await db.collection('users').where('parentId', '==', parentId).where('role', '==', 'student').get();
+  const authorizations = await Promise.all(students.docs.map(async (studentSnapshot) => {
+    const snapshot = await studentAuthorizationRef(db, studentSnapshot.id).get();
+    if (!snapshot.exists) return null;
+    const authorization = snapshot.data();
+    if (authorization.payerId !== parentId || !isReusableAuthorization(authorization)) return null;
+    const stableKey = authorization.signature || authorization.authorizationCode;
+    const id = createHash('sha256').update(`${parentId}|${stableKey}`).digest('hex').slice(0, 24);
+    return { id, studentId: studentSnapshot.id, authorization };
+  }));
+  const unique = new Map();
+  authorizations.filter(Boolean).forEach((entry) => {
+    if (!unique.has(entry.id)) unique.set(entry.id, entry);
+  });
+  return [...unique.values()];
+};
+
+export const getParentSavedPaymentMethods = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const parentId = request.auth?.uid;
+  if (!parentId) throw new HttpsError('unauthenticated', 'Sign in as a parent to view saved cards.');
+  const db = getDb();
+  const parent = await db.collection('users').doc(parentId).get();
+  if (!parent.exists || parent.data()?.role !== 'parent') throw new HttpsError('permission-denied', 'Only a parent can view saved cards.');
+  const methods = await getParentAuthorizationOptions({ db, parentId });
+  return {
+    paymentMethods: methods.map(({ id, authorization }) => ({
+      id,
+      last4: String(authorization.last4 || '').slice(-4),
+      cardType: authorization.cardType || 'Card',
+      bank: authorization.bank || null,
+      expMonth: Number(authorization.expMonth) || null,
+      expYear: Number(authorization.expYear) || null,
+    })),
+  };
+});
+
 export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   try {
     const { studentId, planId, billingPeriod, subjectCount, callbackUrl, discountCode } = request.data ?? {};
@@ -1172,534 +1215,13 @@ export const initializePaystackTransaction = onCall({ cpu: 'gcf_gen1' }, async (
   }
 });
 
-export const manageStudentSubscription = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  const payerId = request.auth?.uid;
-  const { studentId, action } = request.data ?? {};
-  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in to manage this subscription.');
-  if (!studentId || !['cancel', 'resume', 'cancel_pending_change'].includes(action)) {
-    throw new HttpsError('invalid-argument', 'A student account and valid subscription action are required.');
-  }
-
-  const db = getDb();
-  await assertCanManageStudentSubscription({ db, payerId, studentId });
-  const subscriptionRef = studentSubscriptionRef(db, studentId);
-  const userRef = db.collection('users').doc(studentId);
-  const authorizationSnapshot = await studentAuthorizationRef(db, studentId).get();
-  const reusableAuthorization = isReusableAuthorization(authorizationSnapshot.data());
-  const now = new Date();
-
-  const result = await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(subscriptionRef);
-    if (!snapshot.exists) throw new HttpsError('failed-precondition', 'No subscription is available to manage.');
-    const subscription = snapshot.data();
-    const renewalDate = subscription.renewalDate?.toDate?.() ?? null;
-    const graceEndsAt = subscription.graceEndsAt?.toDate?.() ?? null;
-    const lockStartedAt = subscription.renewalChargeLock?.startedAt?.toDate?.() ?? null;
-    if (lockStartedAt && now.getTime() - lockStartedAt.getTime() < 10 * 60 * 1000) {
-      throw new HttpsError('aborted', 'A renewal charge is being processed. Please try again shortly.');
-    }
-    const attemptDate = subscription.renewalAttempt?.renewalDate?.toDate?.() ?? null;
-    if (renewalDate && renewalDate <= now
-      && attemptDate?.getTime() === renewalDate.getTime()
-      && ['processing', 'unknown'].includes(subscription.renewalAttempt?.status)) {
-      throw new HttpsError('aborted', 'A renewal payment is still being verified. Please try again shortly.');
-    }
-
-    const pendingReference = subscription.pendingPlanReference ?? null;
-    const pendingPaymentRef = pendingReference ? studentPaymentRef(db, studentId, pendingReference) : null;
-    const pendingPaymentSnapshot = pendingPaymentRef ? await transaction.get(pendingPaymentRef) : null;
-    const cancelPendingPayment = () => {
-      if (pendingPaymentRef && pendingPaymentSnapshot?.exists) {
-        transaction.set(pendingPaymentRef, {
-          status: 'cancelled',
-          cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-          cancellationReason: action,
-        }, { merge: true });
-      }
-    };
-
-    if (action === 'cancel_pending_change') {
-      if (!subscription.pendingPlan) return { action, unchanged: true };
-      cancelPendingPayment();
-      transaction.set(subscriptionRef, {
-        pendingPlan: admin.firestore.FieldValue.delete(),
-        pendingPlanReference: admin.firestore.FieldValue.delete(),
-        pendingPlanSetAt: admin.firestore.FieldValue.delete(),
-        cancelAtPeriodEnd: false,
-        autoRenew: reusableAuthorization && ['circle', 'personalized'].includes(subscription.planId) && renewalDate > now,
-        manualPaymentRequired: !reusableAuthorization && ['circle', 'personalized'].includes(subscription.planId),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      transaction.set(userRef, {
-        pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      return {
-        action, cancelled: true, renewalDate: renewalDate?.toISOString?.() ?? null,
-        discountCode: subscription.pendingPlan?.discountCode ?? null,
-        discountRedemptionReference: subscription.pendingPlan?.discountRedemptionReference ?? null,
-      };
-    }
-
-    if (action === 'resume') {
-      if (!['circle', 'personalized'].includes(subscription.planId)
-        || subscription.status !== 'active'
-        || !renewalDate
-        || renewalDate <= now) {
-        throw new HttpsError('failed-precondition', 'Only a current paid subscription can be resumed.');
-      }
-      if (!reusableAuthorization) {
-        throw new HttpsError('failed-precondition', 'A reusable payment authorization is required to resume automatic renewal.');
-      }
-      if (subscription.autoRenew === true && subscription.cancelAtPeriodEnd !== true) {
-        return { action, unchanged: true, renewalDate: renewalDate.toISOString() };
-      }
-      transaction.set(subscriptionRef, {
-        status: 'active',
-        autoRenew: true,
-        cancelAtPeriodEnd: false,
-        cancellation: admin.firestore.FieldValue.delete(),
-        manualPaymentRequired: false,
-        graceEndsAt: admin.firestore.FieldValue.delete(),
-        nextRenewalAttemptAt: admin.firestore.FieldValue.delete(),
-        renewalAttempt: admin.firestore.FieldValue.delete(),
-        renewalAttemptCount: 0,
-        renewalChargeLock: admin.firestore.FieldValue.delete(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      transaction.set(userRef, {
-        subscriptionStatus: 'active',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      return { action, resumed: true, renewalDate: renewalDate.toISOString() };
-    }
-
-    if (subscription.cancelAtPeriodEnd === true) {
-      return { action, unchanged: true, renewalDate: renewalDate?.toISOString?.() ?? null };
-    }
-
-    const activePaidPeriod = ['circle', 'personalized'].includes(subscription.planId)
-      && subscription.status === 'active'
-      && renewalDate
-      && renewalDate > now;
-    const activeGracePeriod = ['circle', 'personalized'].includes(subscription.planId)
-      && subscription.status === 'past_due'
-      && graceEndsAt
-      && graceEndsAt > now;
-    if (!activePaidPeriod && !activeGracePeriod) {
-      return { action, alreadyFree: true };
-    }
-
-    cancelPendingPayment();
-    if (activeGracePeriod) {
-      return {
-        action, graceEnded: true, pendingReference,
-        discountCode: subscription.pendingPlan?.discountCode ?? null,
-        discountRedemptionReference: subscription.pendingPlan?.discountRedemptionReference ?? null,
-      };
-    }
-
-    transaction.set(subscriptionRef, {
-      status: 'active',
-      autoRenew: false,
-      cancelAtPeriodEnd: true,
-      cancellation: {
-        requestedAt: admin.firestore.FieldValue.serverTimestamp(),
-        requestedBy: payerId,
-        effectiveAt: admin.firestore.Timestamp.fromDate(renewalDate),
-      },
-      pendingPlan: admin.firestore.FieldValue.delete(),
-      pendingPlanReference: admin.firestore.FieldValue.delete(),
-      pendingPlanSetAt: admin.firestore.FieldValue.delete(),
-      graceEndsAt: admin.firestore.FieldValue.delete(),
-      renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
-      nextRenewalAttemptAt: admin.firestore.FieldValue.delete(),
-      renewalAttempt: admin.firestore.FieldValue.delete(),
-      manualPaymentRequired: false,
-      renewalChargeLock: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    transaction.set(userRef, {
-      subscriptionStatus: 'cancel_at_period_end',
-      pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    return {
-      action, cancelled: true, renewalDate: renewalDate.toISOString(),
-      discountCode: subscription.pendingPlan?.discountCode ?? null,
-      discountRedemptionReference: subscription.pendingPlan?.discountRedemptionReference ?? null,
-    };
-  });
-
-  if (result.discountRedemptionReference) {
-    await transitionDiscountRedemptionForPayment({
-      db, code: result.discountCode, reference: result.discountRedemptionReference, status: 'cancelled',
-    });
-  }
-  if (result.graceEnded) {
-    await applyFreeSubscription({
-      studentId,
-      pendingReference: result.pendingReference,
-      pendingStatus: 'cancelled',
-      reason: 'cancelled_during_renewal_grace',
-    });
-    return { action, cancelled: true, freeImmediately: true };
-  }
-  return result;
-});
-
-export const cancelPaystackCheckout = onCall({ cpu: 'gcf_gen1' }, async (request) => {
-  const payerId = request.auth?.uid;
-  const { studentId, reference } = request.data ?? {};
-  if (!payerId) throw new HttpsError('unauthenticated', 'Sign in before cancelling checkout.');
-  if (!studentId || !reference) throw new HttpsError('invalid-argument', 'studentId and reference are required.');
-  const db = getDb();
-  await assertCanManageStudentSubscription({ db, payerId, studentId });
-  const paymentRef = studentPaymentRef(db, studentId, reference);
-  const result = await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(paymentRef);
-    if (!snapshot.exists) throw new HttpsError('not-found', 'The pending checkout was not found.');
-    const payment = snapshot.data();
-    if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This checkout belongs to another account.');
-    if (payment.checkoutCancellationRequested === true) return { cancelled: true };
-    if (payment.status === 'success') return { cancelled: false, paymentSucceeded: true };
-    if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status)) {
-      throw new HttpsError('failed-precondition', 'This checkout can no longer be cancelled.');
-    }
-    transaction.set(paymentRef, {
-      checkoutCancellationRequested: true,
-      checkoutCancellationRequestedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    return {
-      cancelled: true,
-    };
-  });
-  return result;
-});
-
-const finalizePaystackPayment = async ({ reference, studentId, payerId }) => {
-  const db = getDb();
-  const paymentRef = studentPaymentRef(db, studentId, reference);
-  const paymentSnapshot = await paymentRef.get();
-  if (!paymentSnapshot.exists) throw new HttpsError('not-found', 'Payment record not found.');
-  const payment = paymentSnapshot.data();
-  if (payment.payerId !== payerId) throw new HttpsError('permission-denied', 'This payment belongs to another account.');
-  if (payment.status === 'success') {
-    await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
-    const existingAuthorization = await studentAuthorizationRef(db, studentId).get();
-    const authorizationStored = isReusableAuthorization(existingAuthorization.data());
-    if (payment.discountCode && payment.discountReservationStatus !== 'scheduled') {
-      await transitionDiscountRedemptionForPayment({
-        db,
-        code: payment.discountCode,
-        reference: payment.discountRedemptionReference || reference,
-        status: 'success',
-      }).catch((error) => {
-        logger.error('Could not repair a redeemed discount after an idempotent payment verification', {
-          studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
-        });
-      });
-    }
-    const refund = payment.authorizationOnly === true
-      ? await requestAuthorizationRefund({ db, studentId, reference })
-      : null;
-    return {
-      status: 'success', reference, authorizationStored,
-      ...(payment.authorizationOnly ? {
-        authorizationOnly: true,
-        refundStatus: refund?.refundStatus ?? payment.authorizationRefundStatus ?? 'pending',
-        manualPaymentRequired: !authorizationStored,
-      } : {}),
-    };
-  }
-  if (['failed', 'abandoned', 'reversed', 'amount_mismatch', 'cancelled'].includes(payment.status)) {
-    if (payment.status !== 'amount_mismatch') {
-      await releaseActiveCheckoutLock({ db, studentId, reference }).catch(() => {});
-    }
-    return { status: payment.status, reference, authorizationStored: false };
-  }
-  if (!['initializing', 'initialized', 'pending', 'processing', 'ongoing'].includes(payment.status) || !payment.planId || !payment.studentId) {
-    throw new HttpsError('failed-precondition', 'This payment cannot be verified. Please start a new subscription checkout.');
-  }
-
-  let quote;
-  try {
-    quote = calculateSubscriptionQuote({
-      planId: payment.planId,
-      billingPeriod: payment.billingPeriod,
-      subjectCount: payment.subjectCount,
-    });
-  } catch {
-    throw new HttpsError('failed-precondition', 'The saved subscription selection is invalid.');
-  }
-
-  const discount = payment.discountPercent
-    ? calculateDiscount(quote.amount, Number(payment.discountPercent))
-    : null;
-  const expectedSubscriptionAmount = Number.isFinite(Number(payment.subscriptionAmountDue))
-    ? Number(payment.subscriptionAmountDue)
-    : (discount?.finalAmount ?? quote.amount);
-  const expectedTransactionAmount = payment.authorizationOnly === true
-    ? Number(payment.authorizationChargeAmount)
-    : expectedSubscriptionAmount;
-  if (!Number.isFinite(expectedTransactionAmount) || expectedTransactionAmount < 0) {
-    throw new HttpsError('failed-precondition', 'The saved payment amount is invalid. Please start a new checkout.');
-  }
-
-  const transaction = await paystackRequest({
-    path: `/transaction/verify/${reference}`,
-    method: 'GET',
-  });
-
-  if (transaction.status === 'success' && (transaction.reference !== reference
-    || Number(transaction.amount) !== toMinorUnits(expectedTransactionAmount)
-    || transaction.currency !== quote.currency)) {
-    await paymentRef.set({ status: 'amount_mismatch', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-    throw new HttpsError('failed-precondition', 'The verified payment does not match this subscription price.');
-  }
-
-  const authorization = transaction.authorization ?? null;
-  const succeeded = transaction.status === 'success';
-  const reusableAuthorization = Boolean(authorization?.authorization_code && authorization.reusable);
-  const activationDate = succeeded && transaction.paid_at && !Number.isNaN(new Date(transaction.paid_at).getTime())
-    ? new Date(transaction.paid_at)
-    : new Date();
-  const activationTimestamp = succeeded ? admin.firestore.Timestamp.fromDate(activationDate) : null;
-  const discountEndsAt = payment.discountBillingDuration === 'fixed_months' && discount
-    ? (payment.discountEndsAt || (succeeded
-      ? admin.firestore.Timestamp.fromDate(calculateDiscountEndAt(activationDate, payment.discountDurationMonths, quote.billingCycleDays))
-      : null))
-    : null;
-  const nextRenewalDate = succeeded
-    ? admin.firestore.Timestamp.fromDate(new Date(activationDate.getTime() + quote.billingCycleDays * 24 * 60 * 60 * 1000))
-    : null;
-  const batch = db.batch();
-  batch.set(paymentRef, {
-    reference,
-    currency: transaction.currency ?? quote.currency,
-    status: transaction.status,
-    gatewayResponse: transaction.gateway_response,
-    gatewayTransactionId: transaction.id ?? null,
-    paidAt: transaction.paid_at ?? null,
-    channel: transaction.channel ?? null,
-    studentId: payment.studentId,
-    payerId,
-    email: transaction.customer?.email ?? payment.email,
-    ...quote,
-    amount: Number(transaction.amount ?? 0) / 100,
-    subscriptionAmountDue: expectedSubscriptionAmount,
-    ...(payment.authorizationOnly === true ? {
-      authorizationOnly: true,
-      authorizationChargeAmount: expectedTransactionAmount,
-      ...(succeeded ? { authorizationRefundStatus: payment.authorizationRefundStatus || 'pending_initiation' } : {}),
-    } : {}),
-    ...(discount ? {
-      originalAmount: discount.originalAmount,
-      discountAmount: discount.discountAmount,
-      discountPercent: Number(payment.discountPercent),
-      discountCode: payment.discountCode,
-      discountBillingDuration: payment.discountBillingDuration,
-      ...(payment.discountBillingDuration === 'fixed_months' ? {
-        discountDurationMonths: payment.discountDurationMonths,
-        discountEndsAt,
-        discountStartedAt: payment.discountStartedAt || activationTimestamp,
-      } : {}),
-    } : {}),
-    ...(succeeded ? { finalizedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
-
-  let displacedPendingDiscount = null;
-  let reusableAuthorizationAvailable = reusableAuthorization;
-  if (succeeded) {
-    const subscriptionRef = studentSubscriptionRef(db, payment.studentId);
-    const authorizationRef = studentAuthorizationRef(db, payment.studentId);
-    const [currentSubscriptionSnapshot, currentAuthorizationSnapshot] = await Promise.all([
-      subscriptionRef.get(), authorizationRef.get(),
-    ]);
-    const currentSubscription = currentSubscriptionSnapshot.exists ? currentSubscriptionSnapshot.data() : null;
-    const currentAuthorization = currentAuthorizationSnapshot.exists ? currentAuthorizationSnapshot.data() : null;
-    reusableAuthorizationAvailable = reusableAuthorization || isReusableAuthorization(currentAuthorization);
-    const subscriptionForQuota = {
-      ...quote, status: 'active', latestReference: reference,
-      renewalDate: nextRenewalDate, entitlementWindowStartAt: activationTimestamp,
-      activatedAt: activationTimestamp, renewedAt: activationTimestamp,
-    };
-    const activeSubjectQuotas = await getActiveSubjectLessonQuotaUpdates({
-      db, studentId: payment.studentId, subscription: subscriptionForQuota,
-      carryForward: false, windowStartAt: activationTimestamp,
-      renewalDate: nextRenewalDate, cycleId: reference, updatedAt: activationTimestamp,
-    });
-    const oldPendingReference = currentSubscription?.pendingPlanReference;
-    if (oldPendingReference && oldPendingReference !== reference) {
-      const oldPendingPlan = currentSubscription?.pendingPlan;
-      const pendingWasApplied = oldPendingPlan?.planId === quote.planId
-        && oldPendingPlan?.billingPeriod === quote.billingPeriod
-        && Number(oldPendingPlan?.subjectCount) === Number(quote.subjectCount)
-        && (!oldPendingPlan?.discountRedemptionReference
-          || oldPendingPlan.discountRedemptionReference === payment.discountRedemptionReference);
-      if (!pendingWasApplied && oldPendingPlan?.discountRedemptionReference) {
-        displacedPendingDiscount = oldPendingPlan;
-      }
-      batch.set(studentPaymentRef(db, payment.studentId, oldPendingReference), {
-        status: pendingWasApplied ? 'applied' : 'cancelled',
-        ...(pendingWasApplied ? { appliedAt: admin.firestore.FieldValue.serverTimestamp() } : { cancelledAt: admin.firestore.FieldValue.serverTimestamp() }),
-      }, { merge: true });
-    }
-    if (reusableAuthorization) {
-      batch.set(authorizationRef, {
-        studentId: payment.studentId,
-        payerId,
-        email: transaction.customer?.email ?? payment.email,
-        authorizationCode: authorization.authorization_code,
-        bin: authorization.bin ?? null,
-        last4: authorization.last4 ?? null,
-        expMonth: authorization.exp_month ?? null,
-        expYear: authorization.exp_year ?? null,
-        cardType: authorization.card_type ?? null,
-        bank: authorization.bank ?? null,
-        reusable: authorization.reusable,
-        signature: authorization.signature ?? null,
-        storedAt: admin.firestore.FieldValue.serverTimestamp(),
-        reference,
-      }, { merge: true });
-    }
-
-    batch.set(subscriptionRef, {
-      studentId: payment.studentId,
-      status: 'active',
-      ...quote,
-      amount: expectedSubscriptionAmount,
-      ...(discount ? {
-        originalAmount: discount.originalAmount,
-        discountAmount: discount.discountAmount,
-        discountPercent: Number(payment.discountPercent),
-        discountCode: payment.discountCode,
-        discountBillingDuration: payment.discountBillingDuration,
-        ...(payment.discountBillingDuration === 'fixed_months' ? {
-          discountDurationMonths: payment.discountDurationMonths,
-          discountEndsAt,
-        } : {}),
-        ...(['recurring', 'fixed_months'].includes(payment.discountBillingDuration) ? {
-          discountBenefit: {
-            code: payment.discountCode,
-            percentOff: Number(payment.discountPercent),
-            planId: quote.planId,
-            billingPeriod: quote.billingPeriod,
-            subjectCount: quote.subjectCount,
-            activatedAt: payment.discountStartedAt || activationTimestamp,
-            billingDuration: payment.discountBillingDuration,
-            ...(payment.discountBillingDuration === 'fixed_months' ? {
-              discountDurationMonths: payment.discountDurationMonths,
-              discountEndsAt,
-            } : {}),
-          },
-        } : { discountBenefit: admin.firestore.FieldValue.delete() }),
-      } : {
-        discountBenefit: admin.firestore.FieldValue.delete(),
-        originalAmount: admin.firestore.FieldValue.delete(),
-        discountAmount: admin.firestore.FieldValue.delete(),
-        discountPercent: admin.firestore.FieldValue.delete(),
-        discountCode: admin.firestore.FieldValue.delete(),
-        discountBillingDuration: admin.firestore.FieldValue.delete(),
-        discountDurationMonths: admin.firestore.FieldValue.delete(),
-        discountEndsAt: admin.firestore.FieldValue.delete(),
-        discountStartedAt: admin.firestore.FieldValue.delete(),
-      }),
-      latestReference: reference,
-      activatedAt: activationTimestamp,
-      entitlementWindowStartAt: activationTimestamp,
-      renewedAt: activationTimestamp,
-      renewalDate: nextRenewalDate,
-      autoRenew: reusableAuthorizationAvailable,
-      cancelAtPeriodEnd: false,
-      manualPaymentRequired: !reusableAuthorizationAvailable,
-      renewalAttemptCount: 0,
-      graceEndsAt: admin.firestore.FieldValue.delete(),
-      renewalVerificationHoldUntil: admin.firestore.FieldValue.delete(),
-      nextRenewalAttemptAt: admin.firestore.FieldValue.delete(),
-      renewalAttempt: admin.firestore.FieldValue.delete(),
-      renewalChargeLock: admin.firestore.FieldValue.delete(),
-      pendingPlan: admin.firestore.FieldValue.delete(),
-      pendingPlanReference: admin.firestore.FieldValue.delete(),
-      pendingPlanSetAt: admin.firestore.FieldValue.delete(),
-      cancellation: admin.firestore.FieldValue.delete(),
-    }, { merge: true });
-
-    batch.set(db.collection('users').doc(payment.studentId), {
-      paymentCompleted: true,
-      subscriptionStatus: 'active',
-      subscriptionPlanId: quote.planId,
-      subscriptionPlanName: quote.planName,
-      subscriptionBillingPeriod: quote.billingPeriod,
-      subscriptionSubjectCount: quote.subjectCount,
-      latestPaymentReference: reference,
-      subscriptionRenewalDate: nextRenewalDate,
-      pendingSubscriptionPlan: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    activeSubjectQuotas.forEach(({ ref, lessonQuota }) => batch.set(ref, { lessonQuota, updatedAt: activationTimestamp }, { merge: true }));
-  }
-
-  try {
-    await batch.commit();
-  } catch (error) {
-    if (succeeded) {
-      logger.error('Paystack succeeded but subscription finalization failed', {
-        studentId, payerId, reference, planId: quote.planId,
-        subjectCount: quote.subjectCount, amount: expectedSubscriptionAmount,
-        error: error?.message ?? String(error),
-      });
-      throw new HttpsError('internal', `Payment succeeded but subscription activation could not be finalized. Retry verification for reference ${reference}; do not make another payment.`);
-    }
-    throw error;
-  }
-
-  if (payment.discountReservationStatus !== 'scheduled' || succeeded) {
-    await transitionDiscountRedemptionForPayment({
-      db, code: payment.discountCode,
-      reference: payment.discountRedemptionReference || reference,
-      status: transaction.status,
-    }).catch((error) => {
-      logger.error('Could not finalize the discount redemption after subscription activation', {
-        studentId, reference, code: payment.discountCode, error: error?.message ?? String(error),
-      });
-    });
-  }
-
-  if (succeeded || ['failed', 'abandoned', 'reversed', 'cancelled'].includes(transaction.status)) {
-    await releaseActiveCheckoutLock({ db, studentId: payment.studentId, reference }).catch((error) => {
-      logger.warn('Could not release the finalized Paystack checkout lock', {
-        studentId: payment.studentId, reference, error: error?.message ?? String(error),
-      });
-    });
-  }
-
-  if (displacedPendingDiscount?.discountRedemptionReference) {
-    await transitionDiscountRedemptionForPayment({
-      db, code: displacedPendingDiscount.discountCode,
-      reference: displacedPendingDiscount.discountRedemptionReference, status: 'cancelled',
-    });
-  }
-
-  const authorizationRefund = succeeded && payment.authorizationOnly === true
-    ? await requestAuthorizationRefund({ db, studentId: payment.studentId, reference })
-    : null;
-  const nextActualCharge = succeeded && payment.authorizationOnly === true
-    ? getNextActualSubscriptionCharge({
-      baseAmount: quote.amount,
-      percentOff: Number(payment.discountPercent),
-      billingDuration: payment.discountBillingDuration,
-      discountDurationMonths: payment.discountDurationMonths,
-      billingCycleDays: quote.billingCycleDays,
-      activationDate,
-    })
-    : null;
-  return {
-    status: transaction.status,
-    reference,
-    authorizationStored: reusableAuthorizationAvailable,
+const releaseFamilyCheckoutLocks = async ({ db, parentId, reference, allocations }) => {
+  await Promise.all((allocations || []).map((allocation) => releaseActiveCheckoutLock({
+    db,
+    studentId: allocation.studentId,
+    reference: allocation.paymentDocumentId,
+  }).catch((error) => logger.warn('Could not release family checkout student lock', {
+    parentId, reference, studentId: allocation.studentId, error: error?.message ?? …15893 tokens truncated…ble,
     ...(payment.authorizationOnly === true ? {
       authorizationOnly: true,
       refundStatus: authorizationRefund?.refundStatus ?? 'pending',
@@ -1745,6 +1267,11 @@ const processPaystackWebhookEvent = async ({ db, event }) => {
     const paymentSnapshot = await findPaymentForWebhook({ db, transactionReference: reference });
     if (!paymentSnapshot) throw new Error(`Payment record for ${reference} has not been created yet.`);
     const payment = paymentSnapshot.data();
+  if (payment.familyCheckout === true && payment.familyAllocation !== true) {
+    const result = await finalizeFamilyPaystackPayment({ parentId: payment.payerId, reference });
+    if (result.status !== 'success') throw new Error(`Paystack family checkout ${reference} is still ${result.status}.`);
+    return { status: 'processed', result: 'family_payment_finalized' };
+  }
     const result = await finalizePaystackPayment({
       reference,
       studentId: payment.studentId || paymentSnapshot.ref.parent.parent?.id,
@@ -2071,7 +1598,9 @@ export const retryAuthorizationRefunds = onSchedule(
       }
       const retryAt = payment.authorizationRefundRetryAt?.toDate?.();
       if (retryAt && retryAt > new Date()) continue;
-      const studentId = payment.studentId || paymentSnapshot.ref.parent.parent?.id;
+      const studentId = payment.familyCheckout === true && payment.familyAllocation !== true
+        ? (payment.parentId || paymentSnapshot.ref.parent.parent?.id)
+        : (payment.studentId || paymentSnapshot.ref.parent.parent?.id);
       const reference = payment.reference || paymentSnapshot.id;
       if (!studentId || !reference) continue;
       await enqueueAuthorizationRefundTask(studentId, reference, `repair-${new Date().toISOString().slice(0, 10)}`);
@@ -2148,6 +1677,12 @@ export const queueUnfinalizedPaystackPayment = onDocumentWritten({
   const before = event.data?.before?.exists ? event.data.before.data() : null;
   if (!after || !PAYMENT_RECONCILIATION_STATUSES.includes(after.status)) return;
   if (PAYMENT_RECONCILIATION_STATUSES.includes(before?.status)) return;
+  const taskAccountId = after.familyCheckout === true
+    ? (after.familyParentId || event.params.studentId)
+    : event.params.studentId;
+  const taskReference = after.familyCheckout === true
+    ? (after.familyReference || after.reference)
+    : event.params.reference;
   const intervals = after.recurring === true ? [5, 20, 30] : [5, 20, 60];
   const eventAt = new Date(event.time || after.createdAt?.toDate?.() || Date.now()).getTime();
   const now = Date.now();
@@ -2164,8 +1699,8 @@ export const queueUnfinalizedPaystackPayment = onDocumentWritten({
     }];
   });
   await Promise.all(checks.map(({ generation, scheduleTime }) => enqueuePaymentReconciliationTask(
-    event.params.studentId,
-    event.params.reference,
+    taskAccountId,
+    taskReference,
     generation,
     scheduleTime,
   )));
@@ -2179,6 +1714,18 @@ export const reconcileUnfinalizedPaystackPaymentTask = onTaskDispatched({
 }, async (request) => {
   const { studentId, reference } = request.data ?? {};
   if (!studentId || !reference) throw new Error('studentId and reference are required to reconcile a Paystack payment.');
+  const familySnapshot = await familyPaymentRef(getDb(), studentId, reference).get();
+  if (familySnapshot.exists && familySnapshot.data()?.familyCheckout === true) {
+    const payment = familySnapshot.data();
+    if (!PAYMENT_RECONCILIATION_STATUSES.includes(payment.status)) return;
+    await familyPaymentRef(getDb(), studentId, reference).set({
+      reconciliationAttempts: admin.firestore.FieldValue.increment(1),
+      lastReconciliationAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    const result = await finalizeFamilyPaystackPayment({ parentId: studentId, reference });
+    logger.info('Reconciled a pending family Paystack checkout', { parentId: studentId, reference, status: result.status });
+    return;
+  }
   const paymentRef = studentPaymentRef(getDb(), studentId, reference);
   const snapshot = await paymentRef.get();
   if (!snapshot.exists) return;
@@ -2209,8 +1756,12 @@ export const reconcileUnfinalizedPaystackPayments = onSchedule(
       if (payment.recurring === true) continue;
       const createdAt = payment.createdAt?.toDate?.()?.getTime?.();
       if (createdAt && createdAt > cutoff) continue;
-      const studentId = payment.studentId || paymentSnapshot.ref.parent.parent?.id;
-      const reference = payment.reference || paymentSnapshot.id;
+      const studentId = payment.familyCheckout === true
+        ? (payment.familyParentId || paymentSnapshot.ref.parent.parent?.id)
+        : (payment.studentId || paymentSnapshot.ref.parent.parent?.id);
+      const reference = payment.familyCheckout === true
+        ? (payment.familyReference || payment.reference || paymentSnapshot.id)
+        : (payment.reference || paymentSnapshot.id);
       if (!studentId || !payment.payerId || !payment.planId || !payment.billingPeriod || !reference) continue;
       await enqueuePaymentReconciliationTask(studentId, reference, `repair-${repairKey}`);
     }
@@ -2319,8 +1870,11 @@ export const getAdminPaymentTransactions = onCall({ cpu: 'gcf_gen1' }, async (re
       attemptNumber: numberOrNull(payment.attemptNumber),
       discountCode: payment.discountCode || null,
       gatewayTransactionId: payment.gatewayTransactionId || null,
+      familyCheckout: payment.familyCheckout === true && payment.familyAllocation !== true,
+      familyStudentIds: Array.isArray(payment.familyStudentIds) ? payment.familyStudentIds : [],
+      familyAllocation: payment.familyAllocation === true,
     };
-  }).filter((record) => record.studentId);
+  }).filter((record) => record.studentId && !record.familyAllocation);
 
   const accountIds = [...new Set(records.flatMap((record) => [record.studentId, record.payerId]).filter(Boolean))];
   const accounts = new Map();

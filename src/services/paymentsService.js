@@ -62,6 +62,29 @@ export const getStudentSavedPaymentMethods = async (studentId) => {
   });
 };
 
+export const getParentSavedPaymentMethods = async () => {
+  if (!isFirebaseConfigured) return { paymentMethods: [] };
+  return trackDataRequest('Parent saved payment methods', async () => {
+    const callable = httpsCallable(functions, 'getParentSavedPaymentMethods');
+    const response = await callable();
+    return response.data;
+  });
+};
+
+export const initializeFamilySubscriptionCheckout = async (payload) => {
+  if (!isFirebaseConfigured) throw new Error('Family checkout requires a connected account.');
+  const callable = httpsCallable(functions, 'initializeFamilySubscriptionCheckout', { timeout: 180_000 });
+  const response = await callable(payload);
+  return response.data;
+};
+
+export const verifyFamilySubscriptionCheckout = async (reference) => {
+  if (!isFirebaseConfigured) return { status: 'success', reference, demo: true };
+  const callable = httpsCallable(functions, 'verifyFamilySubscriptionCheckout', { timeout: 240_000 });
+  const response = await callable({ reference });
+  return response.data;
+};
+
 export const getAdminAuthorizationRefundIssues = async () => {
   if (!isFirebaseConfigured) return { issues: [] };
   return trackDataRequest('Admin authorization refunds', async () => {

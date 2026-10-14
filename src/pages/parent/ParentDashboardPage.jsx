@@ -15,10 +15,12 @@ import {
   createManagedStudentProfileForParent,
   updateStudentProfileByParent 
 } from '../../services/firestoreService';
-import { cancelSubscriptionPaymentCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
-import { Users, Link as LinkIcon, AlertCircle, Edit, Check, X, Calendar, Activity, Plus } from 'lucide-react';
+import { cancelSubscriptionPaymentCheckout, getParentSavedPaymentMethods, initializeFamilySubscriptionCheckout, initializeSubscriptionPayment, verifySubscriptionPayment } from '../../services/paymentsService';
+import { Users, Link as LinkIcon, AlertCircle, Edit, Check, X, Calendar, Activity, Plus, CreditCard } from 'lucide-react';
 import { REGIONS, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { SubscriptionPlanSelector } from '../../components/billing/SubscriptionPlanSelector';
+import { attachStudentsToParentFamilyCheckoutDraft, createManagedStudentInvite, saveParentFamilyCheckoutDraft } from '../../services/parentFamilyService';
+import { getPortalSiteUrl } from '../../utils/portal';
 
 const PARENT_GROUP_CHECKOUT_STORAGE_KEY = 'examifying-parent-group-checkout';
 
@@ -91,6 +93,8 @@ export const ParentDashboardPage = () => {
   const [pendingAuthorizationCheckout, setPendingAuthorizationCheckout] = useState(null);
   const [pendingCheckout, setPendingCheckout] = useState(null);
   const [isCancellingAuthorizationCheckout, setIsCancellingAuthorizationCheckout] = useState(false);
+  const [inviteBusyStudentId, setInviteBusyStudentId] = useState('');
+  const [parentCardCheckout, setParentCardCheckout] = useState(null);
   
   const lastVerifiedReferenceRef = useRef(null);
   const handledDiscountLinkRef = useRef('');
@@ -334,6 +338,26 @@ export const ParentDashboardPage = () => {
     }
   };
 
+  const handleShareStudentInvite = async (student) => {
+    setInviteBusyStudentId(student.uid);
+    setStatus('');
+    try {
+      const invitation = await createManagedStudentInvite(student.uid);
+      const inviteUrl = `${getPortalSiteUrl('student')}/signup?managedStudentInvite=${encodeURIComponent(invitation.token)}`;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(inviteUrl);
+        setStatus(`Account setup link copied. It expires in ${invitation.expiresInDays} days.`);
+      } else {
+        window.prompt('Copy this student account setup link:', inviteUrl);
+        setStatus(`Student account setup link created. It expires in ${invitation.expiresInDays} days.`);
+      }
+    } catch (error) {
+      setStatus(error?.message || 'Could not create an account setup link for this student.');
+    } finally {
+      setInviteBusyStudentId('');
+    }
+  };
+
   const handleSaveDetails = async (studentId, form) => {
     try {
       setLoading(true);
@@ -350,9 +374,10 @@ export const ParentDashboardPage = () => {
     }
   };
 
-  const handlePayForStudent = async (student, selection) => {
+  const startNewCardStudentPayment = async (student, selection) => {
     try {
       setLoading(true);
+      setParentCardCheckout(null);
       const result = await runOperation({ operationName: 'Starting student subscription checkout', successMessage: 'The subscription request is ready.' }, () => initializeSubscriptionPayment({
         studentId: student.uid,
         ...selection,
@@ -402,6 +427,67 @@ export const ParentDashboardPage = () => {
         setPendingCheckout({ reference: pendingReference, studentId: error.details.studentId || student.uid });
       }
       setStatus(error?.message || 'Unable to start subscription checkout.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePayForStudent = async (student, selection) => {
+    if (student.paymentCompleted === true) {
+      await startNewCardStudentPayment(student, selection);
+      return;
+    }
+    setLoading(true);
+    try {
+      const saved = await getParentSavedPaymentMethods();
+      const methods = saved.paymentMethods || [];
+      if (methods.length) {
+        setParentCardCheckout({ student, selection, methods, paymentMethodId: methods[0].id });
+        return;
+      }
+    } catch (error) {
+      setStatus(`Saved cards could not be loaded. You can still continue with a new card. ${error?.message || ''}`.trim());
+    } finally {
+      setLoading(false);
+    }
+    await startNewCardStudentPayment(student, selection);
+  };
+
+  const startSavedCardStudentPayment = async () => {
+    if (!parentCardCheckout || !profile?.uid) return;
+    const { student, selection, paymentMethodId } = parentCardCheckout;
+    setLoading(true);
+    setStatus('Preparing the student subscription using your saved card…');
+    try {
+      const draftId = `family-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+      const checkoutId = `checkout-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+      await saveParentFamilyCheckoutDraft({
+        draftId,
+        discountCode: selection.discountCode || '',
+        slots: [{ planId: selection.planId, billingPeriod: selection.billingPeriod, subjectCount: selection.subjectCount }],
+      });
+      await attachStudentsToParentFamilyCheckoutDraft({ draftId, studentIds: [student.uid] });
+      const result = await initializeFamilySubscriptionCheckout({
+        draftId,
+        checkoutId,
+        paymentMode: 'existing',
+        paymentMethodId,
+        callbackUrl: `${window.location.origin}/parent/family-setup?draftId=${encodeURIComponent(draftId)}`,
+      });
+      if (result.status === 'success' || result.completed) {
+        setSubscriptionStudent(null);
+        setParentCardCheckout(null);
+        await loadStudents();
+        navigate(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}`);
+        return;
+      }
+      if (result.reference) {
+        window.location.assign(`/parent/family-setup?draftId=${encodeURIComponent(draftId)}&familyCheckout=1&reference=${encodeURIComponent(result.reference)}`);
+        return;
+      }
+      throw new Error(`The saved-card charge returned status ${result.status || 'unknown'}. Check the family setup before trying again.`);
+    } catch (error) {
+      setStatus(error?.message || 'Could not charge the saved card. No new card checkout was started.');
     } finally {
       setLoading(false);
     }
@@ -493,6 +579,11 @@ export const ParentDashboardPage = () => {
         title="Your Children" 
         description="Add students using their email or Examifying ID. You can manage multiple students from this panel."
       />
+
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-lime-400/20 bg-lime-400/5 p-4">
+        <div><p className="font-semibold text-white">Set up subscriptions for your family</p><p className="mt-1 text-sm text-slate-400">Choose a different plan and subject count for each child, then pay once.</p></div>
+        <Link to={`/parent/family-setup${location.search}`} className="btn-primary">Family checkout</Link>
+      </div>
       
       <div className="panel p-6 mb-8 flex flex-col md:flex-row gap-4 items-end">
         <div className="flex-1 w-full">
@@ -654,6 +745,9 @@ export const ParentDashboardPage = () => {
 
                 <div className="mt-auto pt-4 border-t border-slate-100">
                   <Link to={`/parent/kids/${student.uid}`} className="btn-secondary mb-4 inline-flex w-full items-center justify-center">Open student workspace</Link>
+                  {student.isManagedStudent === true && student.authUserExists !== true ? <button type="button" className="mb-4 inline-flex w-full items-center justify-center rounded-lg border border-lime-300/30 px-3 py-2 text-sm font-semibold text-lime-200 hover:bg-lime-300/10" onClick={() => void handleShareStudentInvite(student)} disabled={inviteBusyStudentId === student.uid}>
+                    {inviteBusyStudentId === student.uid ? 'Creating link…' : 'Share student account setup link'}
+                  </button> : null}
                   <div className="flex justify-between items-center mb-4 text-sm">
                     <span className="text-slate-500">Subscription Status</span>
                     <span className={`font-semibold px-2 py-1 rounded-md text-xs ${student.summaryUnavailable ? 'bg-slate-100 text-slate-600' : student.subscriptionStatus === 'past_due' ? 'bg-amber-50 text-amber-700' : student.paymentCompleted ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
@@ -716,6 +810,30 @@ export const ParentDashboardPage = () => {
               <button type="button" className="btn-primary" onClick={beginGroupCheckout} disabled={loading || selectedGroupStudents.length < 2 || missingGroupSelections.length > 0}>
                 {loading ? 'Preparing checkout…' : `Checkout ${selectedGroupStudents.length} kids`}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {parentCardCheckout ? (
+        <div className="fixed inset-0 z-[95] overflow-y-auto bg-slate-950/95 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Choose a payment card">
+          <div className="mx-auto my-10 max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div><p className="text-xs font-bold uppercase tracking-[0.18em] text-lime-300">Student checkout</p><h2 className="mt-2 text-xl font-bold text-white">Choose a payment method</h2><p className="mt-1 text-sm text-slate-400">{parentCardCheckout.student.displayName || 'Student'} · {parentCardCheckout.selection.quote ? `R${Number(parentCardCheckout.selection.quote.amount).toFixed(2)}` : 'subscription total'}</p></div>
+              <button type="button" className="btn-secondary h-10 w-10 p-0" onClick={() => setParentCardCheckout(null)} disabled={loading} aria-label="Close payment method chooser"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="mt-5 space-y-3">
+              <p className="text-sm text-slate-300">Use a saved parent card to charge this student directly, or continue to Paystack to authorize a new card.</p>
+              {parentCardCheckout.methods.map((method) => <label key={method.id} className={`flex cursor-pointer items-center gap-3 rounded-xl border p-4 ${parentCardCheckout.paymentMethodId === method.id ? 'border-lime-400/60 bg-lime-400/5' : 'border-white/10'}`}>
+                <input type="radio" name="single-family-card" checked={parentCardCheckout.paymentMethodId === method.id} onChange={() => setParentCardCheckout((current) => ({ ...current, paymentMethodId: method.id }))} />
+                <CreditCard className="h-4 w-4 text-lime-300" />
+                <span className="text-sm font-semibold text-white">{method.cardType || 'Card'} ending in •••• {method.last4}</span>
+                <span className="ml-auto text-xs text-slate-400">{method.expMonth && method.expYear ? `${String(method.expMonth).padStart(2, '0')}/${method.expYear}` : ''}</span>
+              </label>)}
+              <div className="rounded-xl border border-white/10 bg-slate-950/45 p-3 text-xs leading-5 text-slate-400">If the student’s due amount is R0, a saved card will not be charged. The subscription will be activated and the reusable authorization saved for future renewal.</div>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button type="button" className="btn-secondary" onClick={() => startNewCardStudentPayment(parentCardCheckout.student, parentCardCheckout.selection)} disabled={loading}>{loading ? 'Please wait…' : 'Use a new card'}</button>
+              <button type="button" className="btn-primary" onClick={() => void startSavedCardStudentPayment()} disabled={loading || !parentCardCheckout.paymentMethodId}>{loading ? 'Please wait…' : 'Use saved card'}</button>
             </div>
           </div>
         </div>

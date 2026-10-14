@@ -3,6 +3,7 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithCustomToken,
   signOut,
   updateProfile,
   updatePassword,
@@ -16,6 +17,7 @@ import { mockUsers } from '../data/mockData';
 import { normalizeWhatsAppNumber } from '../utils/whatsapp';
 import { LEGAL_POLICY_VERSION } from '../lib/legalPolicyVersion';
 import { trackFirestoreRead } from './performanceTelemetry';
+import { redeemManagedStudentInvite as redeemManagedStudentInviteToken } from './parentFamilyService';
 
 const provider = isFirebaseConfigured ? new GoogleAuthProvider() : null;
 provider?.addScope('email');
@@ -181,6 +183,27 @@ export const signInWithGoogle = async () => {
   if (!profile) {
     await signOut(auth);
     throw new Error('This login has no Examify profile. Contact an administrator to restore the account link.');
+  }
+  return { user: credential.user, profile };
+};
+
+export const completeManagedStudentInvite = async ({ token, email, password, displayName, marketingEmailOptIn = false }) => {
+  if (!auth || !functions) throw new Error('Firebase is not configured. Please try again later.');
+  const invitation = await redeemManagedStudentInviteToken({
+    token,
+    email,
+    password,
+    displayName,
+    marketingEmailOptIn: marketingEmailOptIn === true,
+    termsAccepted: true,
+    privacyNoticeAcknowledged: true,
+    legalVersion: LEGAL_POLICY_VERSION,
+  });
+  const credential = await signInWithCustomToken(auth, invitation.customToken);
+  const profile = await getUserProfile(credential.user.uid);
+  if (!profile || profile.role !== 'student' || credential.user.uid !== invitation.studentId) {
+    await signOut(auth);
+    throw new Error('The student account was created, but its profile could not be loaded. Sign in with the chosen email to continue.');
   }
   return { user: credential.user, profile };
 };

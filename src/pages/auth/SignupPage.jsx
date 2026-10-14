@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { REGIONS, ROLES, SOUTH_AFRICAN_GRADES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
@@ -8,13 +8,14 @@ import { GoogleSignInButton } from '../../components/common/GoogleSignInButton';
 import { normalizeWhatsAppNumber } from '../../utils/whatsapp';
 import { LEGAL_POLICY_VERSION } from '../../lib/legalPolicyVersion';
 import { getPortal, getPortalConfig, getPortalForProfile, getPortalSiteUrl, isProfileAllowedOnPortal } from '../../utils/portal';
+import { saveParentFamilyCheckoutDraft } from '../../services/parentFamilyService';
 
 export const SignupPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const portal = getPortal();
   const portalConfig = getPortalConfig(portal);
-  const { register, registerWithGoogle, profile, loading, logout } = useAuth();
+  const { register, registerWithGoogle, completeManagedStudentInvite, profile, loading, logout } = useAuth();
   const { runOperation } = useOperationStatus();
   const [creating, setCreating] = useState(false);
 
@@ -35,6 +36,34 @@ export const SignupPage = () => {
   const [status, setStatus] = useState('');
   const [accountPortal, setAccountPortal] = useState(null);
   const pendingDiscountCode = new URLSearchParams(location.search).get('discountCode')?.toUpperCase() || '';
+  const selectionParams = new URLSearchParams(location.search);
+  const familyDraftId = selectionParams.get('familyDraftId') || '';
+  const managedStudentInvite = selectionParams.get('managedStudentInvite') || '';
+  const familyHandoffStarted = useRef(false);
+  const [familyHandoffStatus, setFamilyHandoffStatus] = useState('Preparing your saved family plan…');
+  const [inviteForm, setInviteForm] = useState({ displayName: '', email: '', password: '', marketingEmailOptIn: false });
+
+  useEffect(() => {
+    if (profile?.role !== ROLES.PARENT || !familyDraftId || familyHandoffStarted.current) return;
+    familyHandoffStarted.current = true;
+    try {
+      const rawDraft = window.localStorage.getItem('examifying-parent-family-draft');
+      const saved = rawDraft ? JSON.parse(rawDraft) : null;
+      if (!saved || saved.draftId !== familyDraftId || !Array.isArray(saved.slots)) {
+        throw new Error('Your family plan details were not found in this browser. Return to the parent pricing page and build the plan again.');
+      }
+      void saveParentFamilyCheckoutDraft(saved).then(() => {
+        window.localStorage.removeItem('examifying-parent-family-draft');
+        navigate(`/parent/family-setup?draftId=${encodeURIComponent(familyDraftId)}`, { replace: true });
+      }).catch((error) => {
+        familyHandoffStarted.current = false;
+        setFamilyHandoffStatus(error?.message || 'Could not save the family plan. Please try again.');
+      });
+    } catch (error) {
+      familyHandoffStarted.current = false;
+      setFamilyHandoffStatus(error?.message || 'Could not load the family plan.');
+    }
+  }, [familyDraftId, navigate, profile?.role]);
 
   if (portal === 'admin') return <Navigate to="/login" replace />;
 
@@ -42,7 +71,10 @@ export const SignupPage = () => {
     return <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12 text-sm text-slate-300">Loading your account…</main>;
   }
 
-  if (profile?.role) {
+  if (profile?.role && !managedStudentInvite) {
+    if (profile.role === ROLES.PARENT && familyDraftId) {
+      return <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12"><div className="panel w-full p-8 text-center"><Logo className="mx-auto" /><h1 className="mt-5 text-xl font-bold text-white">Finishing family setup</h1><p className="mt-2 text-sm text-slate-300">{familyHandoffStatus}</p><Link className="mt-5 inline-flex text-sm font-semibold text-lime-300 underline" to="/parent">Return to Family Home</Link></div></main>;
+    }
     if (profile.accountSetupStatus === 'required') {
       const setupPath = profile.role === ROLES.STUDENT ? '/student/account-setup'
         : getPortalForProfile(profile) === 'teacher' ? '/teacher/account-setup' : '/tutor/account-setup';
@@ -71,7 +103,7 @@ export const SignupPage = () => {
     return <Navigate to={profilePortal === 'teacher' ? '/teacher' : `/${profile.role}`} replace />;
   }
 
-  if (pendingDiscountCode && new URLSearchParams(location.search).get('checkout') !== '1') {
+  if (pendingDiscountCode && !familyDraftId && !managedStudentInvite && new URLSearchParams(location.search).get('checkout') !== '1') {
     return <Navigate to={`/${location.search}`} replace />;
   }
 
@@ -169,6 +201,8 @@ export const SignupPage = () => {
         const billingParams = new URLSearchParams({ planId: selectedPlanId, billingPeriod, subjectCount });
         if (discountCode) billingParams.set('discountCode', discountCode.toUpperCase());
         navigate(`/student/billing?${billingParams.toString()}`);
+      } else if (form.role === ROLES.PARENT && familyDraftId) {
+        setFamilyHandoffStatus('Account created. Saving the family plan…');
       } else if (form.role === ROLES.PARENT && selection.get('discountCode')) {
         navigate(`/parent?discountCode=${encodeURIComponent(selection.get('discountCode').toUpperCase())}`);
       } else {
@@ -210,6 +244,8 @@ export const SignupPage = () => {
         navigate(`/student/billing?${selection.toString()}`);
       } else if (['tutor', 'teacher'].includes(createdProfile.role)) {
         navigate(getPortalForProfile(createdProfile) === 'teacher' ? '/teacher/onboarding' : '/tutor/onboarding');
+      } else if (familyDraftId && createdProfile.role === ROLES.PARENT) {
+        setFamilyHandoffStatus('Account created. Saving the family plan…');
       } else {
         navigate('/parent');
       }
@@ -219,6 +255,50 @@ export const SignupPage = () => {
       setCreating(false);
     }
   };
+
+  const handleManagedStudentInvite = async (event) => {
+    event.preventDefault();
+    setCreating(true);
+    setStatus('');
+    try {
+      const result = await completeManagedStudentInvite({ token: managedStudentInvite, ...inviteForm });
+      if (result.profile.accountSetupStatus === 'required') {
+        navigate('/student/account-setup', { replace: true });
+      } else if (result.profile.profileCompletionStatus === 'paid_incomplete') {
+        navigate('/student/onboarding', { replace: true });
+      } else if (result.profile.profileCompletionStatus === 'paid_completed') {
+        navigate('/student', { replace: true });
+      } else {
+        const studentSelection = new URLSearchParams({
+          planId: ['circle', 'personalized'].includes(result.profile.subscriptionPlanId) ? result.profile.subscriptionPlanId : 'circle',
+          billingPeriod: result.profile.subscriptionBillingPeriod || 'monthly',
+          subjectCount: String(result.profile.subscriptionSubjectCount || 1),
+        });
+        navigate(`/student/billing?${studentSelection.toString()}`, { replace: true });
+      }
+    } catch (error) {
+      setStatus(error?.message || 'Could not finish setting up the student account.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  if (managedStudentInvite) {
+    return (
+      <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12 lg:px-6">
+        <form onSubmit={handleManagedStudentInvite} className="panel w-full space-y-5 border border-slate-800 bg-slate-900/90 p-8 shadow-2xl">
+          <div><p className="text-xs font-semibold uppercase tracking-[0.25em] text-lime-400">Student account setup</p><h1 className="mt-2 text-2xl font-bold text-white">Create your sign-in</h1><p className="mt-2 text-sm leading-6 text-slate-300">Your parent has already created and linked your Examifying student profile. Use your own email or the placeholder address they provided; this setup connects the sign-in to that same profile.</p><Logo className="mt-4" /></div>
+          <label className="block"><span className="label">Student’s full name</span><input className="input w-full" value={inviteForm.displayName} onChange={(event) => setInviteForm((current) => ({ ...current, displayName: event.target.value }))} required maxLength={100} /></label>
+          <label className="block"><span className="label">Email address</span><input type="email" className="input w-full" value={inviteForm.email} onChange={(event) => setInviteForm((current) => ({ ...current, email: event.target.value }))} required autoComplete="email" /></label>
+          <label className="block"><span className="label">Password</span><input type="password" className="input w-full" value={inviteForm.password} onChange={(event) => setInviteForm((current) => ({ ...current, password: event.target.value }))} required minLength={8} autoComplete="new-password" /></label>
+          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-300"><input type="checkbox" checked={inviteForm.marketingEmailOptIn} onChange={(event) => setInviteForm((current) => ({ ...current, marketingEmailOptIn: event.target.checked }))} className="mt-1 accent-lime-400" /><span>Email me occasional discount offers and product updates. This is optional and off by default.</span></label>
+          <p className="text-xs leading-5 text-slate-400">Creating an account means you accept the <Link to="/policies#terms" className="font-semibold text-lime-300 underline">Terms of Use</Link> and acknowledge the <Link to="/policies#privacy" className="font-semibold text-lime-300 underline">Privacy Policy</Link>. If you are under 18, your parent or guardian must have provided the required consent.</p>
+          {status ? <p role="alert" className="text-sm text-rose-300">{status}</p> : null}
+          <button type="submit" className="btn-primary w-full" disabled={creating || !inviteForm.displayName.trim() || !inviteForm.email.trim() || inviteForm.password.length < 8}>{creating ? 'Creating your sign-in…' : 'Create student account'}</button>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto flex min-h-[calc(100vh-88px)] max-w-2xl items-center justify-center px-4 py-12 lg:px-6">

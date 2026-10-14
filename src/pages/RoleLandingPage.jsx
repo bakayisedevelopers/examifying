@@ -1,10 +1,9 @@
-import { useState } from 'react';
 import { ArrowRight, BookOpen, CheckCircle2, FileCheck2, GraduationCap, LockKeyhole, ShieldCheck, Users } from 'lucide-react';
 import { Link, Navigate, useLocation } from 'react-router-dom';
 import { Logo } from '../components/common/Logo';
 import { useAuth } from '../hooks/useAuth';
 import { getPortalConfig, getPortalForProfile, getSignupPathForPortal } from '../utils/portal';
-import { calculateSubscriptionQuote } from '../utils/subscriptionPlans';
+import { ParentFamilyPlanBuilder } from '../components/parent/ParentFamilyPlanBuilder';
 
 const portalContent = {
   teacher: {
@@ -47,61 +46,6 @@ const portalContent = {
       { icon: LockKeyhole, title: 'Protected access', body: 'Administrator access is granted by the Examifying platform owner.' },
     ],
   },
-};
-
-const formatRand = (amount) => new Intl.NumberFormat('en-ZA', {
-  style: 'currency',
-  currency: 'ZAR',
-  maximumFractionDigits: 0,
-}).format(amount);
-
-const ParentIndicativePricing = () => {
-  const [studentCount, setStudentCount] = useState(1);
-  const [subjectCount, setSubjectCount] = useState(1);
-  const studentOptions = Array.from({ length: 20 }, (_, index) => index + 1);
-  const subjectOptions = Array.from({ length: 20 }, (_, index) => index + 1);
-  const plans = [
-    { id: 'circle', name: 'Circle', extra: 'R49 for each additional subject' },
-    { id: 'personalized', name: 'Personalized', extra: 'R599 for each additional subject' },
-  ];
-
-  return (
-    <section id="parent-pricing" aria-labelledby="parent-pricing-title" className="mt-12 rounded-3xl border border-lime-300/20 bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/60 p-5 shadow-[0_20px_70px_rgba(16,185,129,0.08)] sm:p-8">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-lime-300">Indicative pricing</p>
-          <h2 id="parent-pricing-title" className="mt-2 text-2xl font-black text-white sm:text-3xl">Estimate your family&apos;s monthly cost</h2>
-        </div>
-        <p className="max-w-xl text-sm leading-6 text-slate-300">Subscriptions stay separate for each child. Choose the number of students and subjects per student to compare estimated plan costs.</p>
-      </div>
-      <div className="mt-6 grid gap-4 rounded-2xl border border-white/10 bg-slate-950/35 p-4 sm:grid-cols-2">
-        <label className="block">
-          <span className="label text-slate-200">Number of students</span>
-          <select className="input" value={studentCount} onChange={(event) => setStudentCount(Number(event.target.value))}>
-            {studentOptions.map((count) => <option key={count} value={count}>{count} {count === 1 ? 'student' : 'students'}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="label text-slate-200">Subjects per student</span>
-          <select className="input" value={subjectCount} onChange={(event) => setSubjectCount(Number(event.target.value))}>
-            {subjectOptions.map((count) => <option key={count} value={count}>{count} {count === 1 ? 'subject' : 'subjects'}</option>)}
-          </select>
-        </label>
-      </div>
-      <div className="mt-5 grid gap-4 sm:grid-cols-2">
-        {plans.map((plan) => {
-          const monthlyPerStudent = calculateSubscriptionQuote({ planId: plan.id, billingPeriod: 'monthly', subjectCount }).monthlyAmount;
-          return <article key={plan.id} className="rounded-2xl border border-lime-300/20 bg-slate-950/50 p-5">
-            <p className="text-sm font-bold text-lime-200">{plan.name}</p>
-            <p className="mt-2 text-3xl font-black text-white">{formatRand(monthlyPerStudent * studentCount)}<span className="ml-1 text-sm font-medium text-slate-400">/ month total</span></p>
-            <p className="mt-2 text-sm text-slate-300">{formatRand(monthlyPerStudent)} per student × {studentCount} {studentCount === 1 ? 'student' : 'students'}</p>
-            <p className="mt-3 text-xs text-slate-400">{plan.extra} per student each month.</p>
-          </article>;
-        })}
-      </div>
-      <p className="mt-4 text-xs leading-5 text-slate-500">Indicative only. Each child&apos;s actual plan and subject count are selected separately in that child&apos;s subscription settings.</p>
-    </section>
-  );
 };
 
 const ParentMethodSection = () => (
@@ -228,7 +172,7 @@ export const RoleLandingPage = ({ portal }) => {
         </div>
         {portal === 'parent' ? <>
           <ParentMethodSection />
-          <ParentIndicativePricing />
+          <ParentFamilyPlanBuilder />
         </> : null}
       </div>
     </main>

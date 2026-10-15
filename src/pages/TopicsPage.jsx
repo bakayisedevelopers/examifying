@@ -16,6 +16,7 @@ import {
 } from '../services/firestoreService';
 
 const formatPercent = (value) => Number.isFinite(value) ? `${Math.round(value * 100)}%` : '—';
+const formatAverageMarks = (value) => Number.isFinite(value) ? `${value.toFixed(1)} marks` : '—';
 const newOperationId = () => globalThis.crypto?.randomUUID?.() ?? `topic-delete-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const difficultyStyles = {
   easy: 'bg-lime-400/15 text-lime-200',
@@ -191,12 +192,13 @@ export const TopicsPage = () => {
           {loadError ? <div className="rounded-xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-200" role="alert">{loadError}</div> : null}
           {!isLoading && !loadError ? (
             <div className="overflow-x-auto rounded-2xl border border-slate-700/70">
-              <table className="min-w-[760px] w-full border-collapse text-left text-sm">
+              <table className="min-w-[880px] w-full border-collapse text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
                   <tr>
                     {canDeleteTopics ? <th scope="col" className="w-12 px-4 py-3"><input aria-label="Select all topics" type="checkbox" checked={topics.length > 0 && selectedIds.length === topics.length} onChange={toggleAll} /></th> : null}
                     <th scope="col" className="px-4 py-3 font-semibold">Topic</th>
                     <th scope="col" className="px-4 py-3 font-semibold">Difficulty</th>
+                    <th scope="col" className="px-4 py-3 text-center font-semibold">Average mark</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Attended</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Manual</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Marked</th>
@@ -211,13 +213,14 @@ export const TopicsPage = () => {
                       <td className="px-4 py-4 text-center">{topic.difficulty
                         ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${difficultyStyles[topic.difficulty] || 'bg-slate-700 text-slate-200'}`}>{topic.difficulty[0].toUpperCase()}{topic.difficulty.slice(1)}</span>
                         : <span className="text-slate-400">Not set</span>}</td>
+                      <td className="px-4 py-4 text-center font-semibold text-slate-800">{formatAverageMarks(topic.averageMarks)}</td>
                       <td className="px-4 py-4 text-center"><StatusValue value={topic.attended} /></td>
                       <td className="px-4 py-4 text-center"><StatusValue value={topic.manual} /></td>
                       <td className="px-4 py-4 text-center"><StatusValue value={topic.marked} /></td>
                       <td className="px-4 py-4 text-center font-semibold text-lime-300">{formatPercent(topic.understandingLevel)}</td>
                     </tr>
                   ))}
-                  {!topics.length ? <tr><td colSpan={canDeleteTopics ? 7 : 6} className="px-4 py-10 text-center text-slate-400">No completed or marked topics are recorded for this subject yet.</td></tr> : null}
+                  {!topics.length ? <tr><td colSpan={canDeleteTopics ? 8 : 7} className="px-4 py-10 text-center text-slate-400">No completed or marked topics are recorded for this subject yet.</td></tr> : null}
                 </tbody>
               </table>
             </div>

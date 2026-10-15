@@ -50,6 +50,7 @@ import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../ut
 import { isVerifiedSubscriptionPaymentRecord } from '../../functions/src/subscriptionPaymentCore.js';
 import { normalizeWhatsAppLessonLink, normalizeWhatsAppNumber } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
+import { calculateTopicAverageMarks } from './topicAverageMarks.js';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
 import { queryClient } from '../lib/queryClient';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
@@ -2680,11 +2681,7 @@ export const getAdminSubjectAssignmentData = async (subject = DEFAULT_SUBJECT) =
   return getAdminWorkspaceData('assignments', { subject });
 };
 
-export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJECT } = {}) => {
-  if (!isFirebaseConfigured) {
-    return filterQuestionPapers(mockQuestionPapers, { grade, region, subject });
-  }
-
+const getQuestionPaperRowsForSubject = async (subject) => {
   ensureDb();
   const subjectValues = getExerciseGenerationSubjectQueryValues(subject);
   if (!subjectValues.length) return [];
@@ -2704,6 +2701,28 @@ export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJE
     },
     staleTime: 10_000,
   });
+  return paperRows;
+};
+
+const getAnalyzedQuestionPapersForTopicAverages = async ({ grade, subject = DEFAULT_SUBJECT } = {}) => {
+  if (!isFirebaseConfigured) {
+    return filterQuestionPapers(mockQuestionPapers, { grade, subject }).filter((paper) => (
+      paper.analysisStatus === 'Analyzed' && Array.isArray(paper.questions) && paper.questions.length > 0
+    ));
+  }
+
+  const paperRows = await getQuestionPaperRowsForSubject(subject);
+  return paperRows.filter((paper) => paper.analysisStatus === 'Analyzed'
+    && Array.isArray(paper.questions) && paper.questions.length > 0
+    && matchesExerciseGenerationPaper(paper, { subject, grade }));
+};
+
+export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJECT } = {}) => {
+  if (!isFirebaseConfigured) {
+    return filterQuestionPapers(mockQuestionPapers, { grade, region, subject });
+  }
+
+  const paperRows = await getQuestionPaperRowsForSubject(subject);
   return filterQuestionPapers(
     paperRows.filter(isAnalyzedExerciseSourcePaper),
     { grade, region, subject },
@@ -4013,9 +4032,12 @@ export const getTopicOverviewForEpisode = async ({ studentId, subjectInstanceId 
   const episode = episodeSnapshot.data();
   const subject = String(episode.subjectKey ?? episode.subjectName ?? '').trim();
   const grade = String(episode.grade ?? episode.gradeLevel ?? '').trim();
-  const topicCatalogSnapshot = subject && grade
-    ? await getDoc(doc(db, paths.globalGrade(subject, grade)))
-    : null;
+  const [topicCatalogSnapshot, analyzedPapers] = subject && grade
+    ? await Promise.all([
+      getDoc(doc(db, paths.globalGrade(subject, grade))),
+      getAnalyzedQuestionPapersForTopicAverages({ subject, grade }),
+    ])
+    : [null, []];
   const difficultyByTopic = new Map((topicCatalogSnapshot?.data()?.topicMetadata ?? [])
     .map((item) => [
       normalizeCatalogTopicKey(item?.topic ?? item?.label),
@@ -4038,6 +4060,7 @@ export const getTopicOverviewForEpisode = async ({ studentId, subjectInstanceId 
       id: String(raw.id ?? raw.canonicalTopicKey ?? normalizeCatalogTopicKey(summary.topic)),
       topic: summary.topic,
       difficulty,
+      averageMarks: calculateTopicAverageMarks(summary.topic, analyzedPapers),
       attended: summary.attendanceStatus === 'attended',
       manual: manualTopicKeys.has(normalizeCatalogTopicKey(summary.topic)),
       marked: summary.topicStatus === 'marked',

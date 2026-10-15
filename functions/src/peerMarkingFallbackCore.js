@@ -9,7 +9,7 @@ import { normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { questionIdentity } from './aiMarkingCore.js';
 import { exerciseGenerationTopicLabelsMatch } from './exerciseGenerationTopicMatching.js';
 
-export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v2';
+export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v3';
 
 const hash = (value) => createHash('sha256').update(String(value ?? '')).digest('hex').slice(0, 40);
 const uniqueTopics = (topics = []) => [...new Map(topics.map((topic) => String(topic ?? '').trim())
@@ -196,21 +196,54 @@ export const selectSystemPeerWorkQuestionsWithFallback = (options = {}) => {
   };
 };
 
-export const validateSystemPeerWorkSolutions = ({ response, questionLinks = [] }) => {
-  if (!response || response.status !== 'completed' || !Array.isArray(response.solutions)) {
+const isSourceRefusal = (text) => /(?:no visible (?:text|question|content)|no (?:question|text|content) (?:is )?(?:visible|shown)|page (?:is )?(?:blank|empty)|question (?:is )?(?:not shown|not visible|missing)|cannot (?:see|read|identify) the question|unable to (?:see|read|identify) the question|image (?:is )?(?:blank|unreadable)|not enough (?:visible )?information)/i.test(text);
+
+export const validateSystemPeerWorkSolutionResponse = ({ response, questionLinks = [] }) => {
+  if (!response || !['completed', 'needs_context'].includes(response.status)
+    || !Array.isArray(response.solutions) || !Array.isArray(response.questionIdsNeedingContext)) {
     throw new Error('The AI solution response was incomplete.');
   }
   const requested = new Map(questionLinks.map((question) => [question.questionId, question]));
-  if (!requested.size || response.solutions.length !== requested.size) {
-    throw new Error('The AI solution response did not include every selected question.');
-  }
+  if (!requested.size) throw new Error('The AI solution request did not contain any selected questions.');
   const seen = new Set();
-  return response.solutions.map((solution) => {
+  const sourceRefusals = new Set();
+  const solutions = [];
+  response.solutions.forEach((solution) => {
     const questionId = String(solution?.questionId ?? '').trim();
     if (!requested.has(questionId) || seen.has(questionId)) throw new Error('The AI solution response included an unknown or repeated question.');
     seen.add(questionId);
     const solutionText = String(solution?.solutionText ?? '').trim();
-    if (!solutionText || solutionText.length > 1800) throw new Error('The AI solution text was empty or too long to use safely.');
-    return { questionId, solutionText };
+    if (!solutionText || solutionText.length > 1800) {
+      throw new Error('The AI solution was empty, unreadable, or did not answer the selected question.');
+    }
+    if (isSourceRefusal(solutionText)) {
+      sourceRefusals.add(questionId);
+      return;
+    }
+    solutions.push({ questionId, solutionText });
   });
+  const questionIdsNeedingContext = response.questionIdsNeedingContext.map((value) => String(value ?? '').trim());
+  const unresolved = new Set();
+  questionIdsNeedingContext.forEach((questionId) => {
+    if (!requested.has(questionId) || (seen.has(questionId) && !sourceRefusals.has(questionId)) || unresolved.has(questionId)) {
+      throw new Error('The AI requested source context for an unknown or repeated question.');
+    }
+    unresolved.add(questionId);
+  });
+  sourceRefusals.forEach((questionId) => unresolved.add(questionId));
+  const status = unresolved.size ? 'needs_context' : response.status;
+  if (status === 'completed') {
+    if (solutions.length !== requested.size || unresolved.size) {
+      throw new Error('The AI solution response did not include every selected question.');
+    }
+  } else if (!unresolved.size || solutions.length + unresolved.size !== requested.size) {
+    throw new Error('The AI context request did not identify every unanswered question.');
+  }
+  return { status, solutions, questionIdsNeedingContext: [...unresolved] };
+};
+
+export const validateSystemPeerWorkSolutions = ({ response, questionLinks = [] }) => {
+  const validated = validateSystemPeerWorkSolutionResponse({ response, questionLinks });
+  if (validated.status !== 'completed') throw new Error('The AI needs more source context before the answer can be used.');
+  return validated.solutions;
 };

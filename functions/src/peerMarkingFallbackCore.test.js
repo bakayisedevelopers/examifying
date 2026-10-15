@@ -8,9 +8,10 @@ import {
   systemPeerWorkPackId,
   systemPeerWorkCohortKey,
   systemPeerWorkTopicSignature,
+  validateSystemPeerWorkSolutionResponse,
   validateSystemPeerWorkSolutions,
 } from './peerMarkingFallbackCore.js';
-import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
+import { solveSystemPeerWork, solveSystemPeerWorkWithContextFallback } from './peerMarkingFallbackAi.js';
 import { questionIdentity } from './aiMarkingCore.js';
 
 const topics = ['Linear functions | Functions', 'Quadratic functions | Functions'];
@@ -204,16 +205,16 @@ test('reusable work can use a same-day paper but not a question assigned in toda
 test('solution validation requires exactly one bounded answer per selected question', () => {
   const questionLinks = [{ questionId: 'q1' }, { questionId: 'q2' }];
   const valid = validateSystemPeerWorkSolutions({
-    response: { status: 'completed', solutions: [{ questionId: 'q2', solutionText: 'Answer two' }, { questionId: 'q1', solutionText: 'Answer one' }] },
+    response: { status: 'completed', solutions: [{ questionId: 'q2', solutionText: 'Answer two' }, { questionId: 'q1', solutionText: 'Answer one' }], questionIdsNeedingContext: [] },
     questionLinks,
   });
   assert.equal(valid.length, 2);
   assert.throws(() => validateSystemPeerWorkSolutions({
-    response: { status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'Answer' }, { questionId: 'q1', solutionText: 'Duplicate' }] },
+    response: { status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'Answer' }, { questionId: 'q1', solutionText: 'Duplicate' }], questionIdsNeedingContext: [] },
     questionLinks,
   }));
   assert.throws(() => validateSystemPeerWorkSolutions({
-    response: { status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'Answer' }] }, questionLinks,
+    response: { status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'Answer' }], questionIdsNeedingContext: [] }, questionLinks,
   }));
 });
 
@@ -226,7 +227,7 @@ test('solution generation makes one primary request for the whole pack', async (
       primaryCalls += 1;
       assert.equal(questions.length, 2);
       assert.equal(contextPages.length, 1);
-      return { status: 'completed', solutions: questions.map(({ questionId }) => ({ questionId, solutionText: 'Worked answer' })) };
+      return { status: 'completed', solutions: questions.map(({ questionId }) => ({ questionId, solutionText: 'Worked answer' })), questionIdsNeedingContext: [] };
     },
     callFallback: async () => { fallbackCalls += 1; throw new Error('Should not be called'); },
   });
@@ -243,10 +244,79 @@ test('Gemini is called once for the same complete pack when the primary provider
     callPrimary: async () => { throw new Error('Primary unavailable'); },
     callFallback: async ({ questions }) => {
       fallbackQuestions = questions.length;
-      return { status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'Worked answer' }] };
+      return { status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'Worked answer' }], questionIdsNeedingContext: [] };
     },
   });
   assert.equal(fallbackQuestions, 1);
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.provider, 'gemini');
+});
+
+test('source-page refusal becomes a request for broader context instead of publishable work', () => {
+  const response = validateSystemPeerWorkSolutionResponse({
+    questionLinks: [{ questionId: 'q1' }, { questionId: 'q2' }],
+    response: {
+      status: 'completed',
+      solutions: [
+        { questionId: 'q1', solutionText: 'No visible question or text on page 5.' },
+        { questionId: 'q2', solutionText: 'x = 4' },
+      ],
+      questionIdsNeedingContext: [],
+    },
+  });
+  assert.equal(response.status, 'needs_context');
+  assert.deepEqual(response.questionIdsNeedingContext, ['q1']);
+  assert.deepEqual(response.solutions, [{ questionId: 'q2', solutionText: 'x = 4' }]);
+});
+
+test('context fallback retries only unresolved questions and merges completed answers', async () => {
+  const questions = [{ questionId: 'q1' }, { questionId: 'q2' }];
+  const calls = [];
+  let fullPaperLoads = 0;
+  const result = await solveSystemPeerWorkWithContextFallback({
+    questions,
+    contextPages: [{ pageNumber: 2 }],
+    loadFullPaperPages: async (unresolved) => {
+      fullPaperLoads += 1;
+      assert.deepEqual(unresolved.map(({ questionId }) => questionId), ['q1']);
+      return [{ pageNumber: 1 }, { pageNumber: 2 }, { pageNumber: 3 }];
+    },
+    solve: async ({ questions: requested, contextPages }) => {
+      calls.push({ ids: requested.map(({ questionId }) => questionId), pages: contextPages.map(({ pageNumber }) => pageNumber) });
+      if (calls.length === 1) return {
+        status: 'needs_context', solutions: [{ questionId: 'q2', solutionText: 'y = 7' }], questionIdsNeedingContext: ['q1'],
+        usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 }, requestDurationMs: 100,
+      };
+      return {
+        status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'x = 4' }], questionIdsNeedingContext: [],
+        usage: { inputTokens: 20, outputTokens: 3, totalTokens: 23 }, requestDurationMs: 200,
+      };
+    },
+  });
+  assert.equal(fullPaperLoads, 1);
+  assert.deepEqual(calls, [{ ids: ['q1', 'q2'], pages: [2] }, { ids: ['q1'], pages: [1, 2, 3] }]);
+  assert.deepEqual(result.solutions.map(({ questionId }) => questionId), ['q1', 'q2']);
+  assert.equal(result.contextFallbackUsed, true);
+  assert.equal(result.contextFallbackQuestionCount, 1);
+  assert.equal(result.contextFallbackPageCount, 3);
+  assert.equal(result.usage.totalTokens, 35);
+});
+
+test('completed first response skips the full-paper context fallback', async () => {
+  let fullPaperLoads = 0;
+  const result = await solveSystemPeerWorkWithContextFallback({
+    questions: [{ questionId: 'q1' }], contextPages: [{ pageNumber: 2 }],
+    loadFullPaperPages: async () => { fullPaperLoads += 1; return []; },
+    solve: async () => ({ status: 'completed', solutions: [{ questionId: 'q1', solutionText: 'x = 1' }], questionIdsNeedingContext: [] }),
+  });
+  assert.equal(fullPaperLoads, 0);
+  assert.equal(result.contextFallbackUsed, false);
+});
+
+test('context fallback fails safely rather than publishing unresolved answers', async () => {
+  await assert.rejects(() => solveSystemPeerWorkWithContextFallback({
+    questions: [{ questionId: 'q1' }], contextPages: [],
+    loadFullPaperPages: async () => [{ pageNumber: 1 }],
+    solve: async () => ({ status: 'needs_context', solutions: [], questionIdsNeedingContext: ['q1'] }),
+  }), /could not be located or solved/);
 });

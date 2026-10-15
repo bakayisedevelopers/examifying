@@ -26,7 +26,8 @@ import {
   systemPeerWorkTopicSignature,
 } from './peerMarkingFallbackCore.js';
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
-import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
+import { solveSystemPeerWorkWithContextFallback } from './peerMarkingFallbackAi.js';
+import { wrapPeerWorkText } from './peerWorkImageFormatting.js';
 import { publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
 
 const GENERATION_TASK = 'generateSystemPeerWorkTask';
@@ -218,7 +219,8 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
   const cohortKey = systemPeerWorkCohortKey(cohort);
   const packsRef = workCollection(db, cohortKey);
   const packSnapshot = await packsRef.where('status', 'in', ['ready', 'generating']).get();
-  const packs = packSnapshot.docs.map((document) => ({ id: document.id, ref: document.ref, ...document.data() }));
+  const packs = packSnapshot.docs.map((document) => ({ id: document.id, ref: document.ref, ...document.data() }))
+    .filter((pack) => pack.promptVersion === SYSTEM_PEER_WORK_PROMPT_VERSION);
   const topicGroups = new Map();
   reviewers.forEach((reviewer) => {
     const topics = getExerciseTopicNames(reviewer);
@@ -380,30 +382,12 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
   }
 };
 
-const wrapText = (context, text, maxWidth) => {
-  const lines = [];
-  String(text ?? '').split(/\r?\n/).forEach((paragraph) => {
-    const words = paragraph.split(/\s+/).filter(Boolean);
-    if (!words.length) { lines.push(''); return; }
-    let line = '';
-    words.forEach((word) => {
-      const candidate = line ? `${line} ${word}` : word;
-      if (line && context.measureText(candidate).width > maxWidth) {
-        lines.push(line);
-        line = word;
-      } else line = candidate;
-    });
-    if (line) lines.push(line);
-  });
-  return lines;
-};
-
 const renderSolutionPng = ({ subject, grade, question, solutionText }) => {
   const width = 1200;
   const canvas = createCanvas(width, 800);
   const context = canvas.getContext('2d');
   context.font = '28px Arial';
-  const lines = wrapText(context, solutionText, width - 112);
+  const lines = wrapPeerWorkText(context, solutionText, width - 112);
   const height = Math.min(SAFE_IMAGE_DIMENSION, Math.max(820, 420 + lines.length * 42));
   const output = createCanvas(width, height);
   const ctx = output.getContext('2d');
@@ -426,9 +410,12 @@ const renderSolutionPng = ({ subject, grade, question, solutionText }) => {
   ctx.strokeStyle = '#dbe3ed';
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(56, 320); ctx.lineTo(width - 56, 320); ctx.stroke();
+  ctx.font = 'bold 24px Arial';
+  ctx.fillStyle = '#64748b';
+  ctx.fillText('WORKED ANSWER', 56, 356);
   ctx.font = '28px Arial';
   ctx.fillStyle = '#111827';
-  lines.forEach((line, index) => ctx.fillText(line, 56, 372 + index * 42));
+  lines.forEach((line, index) => ctx.fillText(line, 56, 398 + index * 42));
   ctx.fillStyle = '#64748b';
   ctx.font = '20px Arial';
   ctx.fillText('Generated practice answer · Review the working and award marks for the assigned question.', 56, height - 44);
@@ -503,7 +490,17 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
     if (loaded.invalidPageNumbers.length || loaded.pages.length !== pageNumbers.size) {
       throw new Error('The selected question page references could not be loaded.');
     }
-    const generated = await solveSystemPeerWork({ questions: requestedQuestions, contextPages: loaded.pages });
+    const generated = await solveSystemPeerWorkWithContextFallback({
+      questions: requestedQuestions,
+      contextPages: loaded.pages,
+      loadFullPaperPages: async () => {
+        const fullPaper = await loadPageImages({ paper, bucket, allPages: true, maxPageCount: 24 });
+        if (fullPaper.exceedsPageLimit) {
+          throw new Error('The selected question page did not contain the question, and this source paper exceeds the 24-page context fallback limit.');
+        }
+        return fullPaper.pages;
+      },
+    });
     const imageRows = [];
     for (const question of requestedQuestions) {
       const solution = generated.solutions.find((item) => item.questionId === question.questionId);
@@ -519,7 +516,10 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
     await packRef.set({
       status: 'ready',
       images: imageRows,
-      sourcePageCount: loaded.pages.length,
+      sourcePageCount: loaded.pages.length + (Number(generated.contextFallbackPageCount) || 0),
+      contextFallbackUsed: generated.contextFallbackUsed === true,
+      contextFallbackQuestionCount: Number(generated.contextFallbackQuestionCount) || 0,
+      contextFallbackPageCount: Number(generated.contextFallbackPageCount) || 0,
       model: String(generated.model || ''),
       provider: String(generated.provider || ''),
       fallbackUsed: generated.fallbackUsed === true,
@@ -534,7 +534,10 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
       subject: pack.subject,
       grade: pack.grade,
       questionCount: requestedQuestions.length,
-      sourcePageCount: loaded.pages.length,
+      sourcePageCount: loaded.pages.length + (Number(generated.contextFallbackPageCount) || 0),
+      contextFallbackUsed: generated.contextFallbackUsed === true,
+      contextFallbackQuestionCount: Number(generated.contextFallbackQuestionCount) || 0,
+      contextFallbackPageCount: Number(generated.contextFallbackPageCount) || 0,
       model: String(generated.model || ''),
       provider: String(generated.provider || ''),
       fallbackUsed: generated.fallbackUsed === true,

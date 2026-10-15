@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { LoaderCircle, RotateCw, Trash2 } from 'lucide-react';
+import { Eye, LoaderCircle, RotateCw, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
+import { ImagePageViewer } from '../../components/common/ImagePageViewer';
 import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
@@ -34,6 +35,8 @@ export const TutorExerciseDetailsPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isRetryingPeerWork, setIsRetryingPeerWork] = useState(false);
+  const [peerWorkAssignment, setPeerWorkAssignment] = useState(null);
+  const [showPeerWork, setShowPeerWork] = useState(false);
   const [topicScores, setTopicScores] = useState({});
   const [accessRole, setAccessRole] = useState('viewer');
   const [isHistorical, setIsHistorical] = useState(false);
@@ -61,6 +64,8 @@ export const TutorExerciseDetailsPage = () => {
           });
           setTopicScores(Object.fromEntries((archivedExercise.topicUnderstandingScores ?? []).map((entry) => [entry.topic, entry.understandingLevel])));
           setCompletedMarkingAssignments([]);
+          setPeerWorkAssignment(null);
+          setShowPeerWork(false);
           const archivedTopics = getExerciseTopicNames(archivedExercise);
           setScoreEntries(await getTopicUnderstandingQuestionScores({
             studentId: archivedExercise.studentId || result.studentId,
@@ -90,6 +95,8 @@ export const TutorExerciseDetailsPage = () => {
           const reviewerAssignment = reviewerAssignments.find((item) => item.reviewerExerciseId === result.id
             && item.reviewerSubjectInstanceId === result.subjectInstanceId
             && item.assignmentDate === result.assignmentDate);
+          setPeerWorkAssignment(reviewerAssignment || null);
+          setShowPeerWork(false);
           const exerciseWithStudent = {
             ...result,
             studentName: selectedContext?.displayName || selectedContext?.name || selectedContext?.email || 'Student',
@@ -135,6 +142,14 @@ export const TutorExerciseDetailsPage = () => {
     }, (error) => setStatus(error.message || 'Could not refresh exercise status.'));
   }, [exercise?.documentPath, isHistorical]);
 
+  const peerWorkAssignmentPath = exercise?.peerMarkingWorkAssignmentPath || peerWorkAssignment?.assignmentPath;
+  useEffect(() => {
+    if (!peerWorkAssignmentPath || isHistorical) return undefined;
+    return subscribeToPeerMarkingAssignmentsAtPaths([peerWorkAssignmentPath], (records) => {
+      setPeerWorkAssignment(records[0] || null);
+    }, (error) => setStatus(error.message || 'Could not refresh assigned practice work.'));
+  }, [peerWorkAssignmentPath, isHistorical]);
+
   const peerAssignmentPathsKey = JSON.stringify(completedMarkingAssignments.map((item) => item.assignmentPath).filter(Boolean));
   useEffect(() => {
     const paths = JSON.parse(peerAssignmentPathsKey || '[]');
@@ -167,6 +182,12 @@ export const TutorExerciseDetailsPage = () => {
 
   const availability = exercise ? getExerciseAvailability(exercise.assignmentDate, Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes')) : null;
   const exerciseStatus = exercise ? getExerciseStatusLabels(exercise) : null;
+  const assignedPeerWorkImages = peerWorkAssignment?.submittedImages?.length
+    ? peerWorkAssignment.submittedImages
+    : [peerWorkAssignment?.submittedImageUrl].filter(Boolean);
+  const hasSubmittedExercise = Boolean(exercise && (exercise.submissionStatus === 'submitted' || exercise.submitted === 'Yes'
+    || exercise.submittedImageUrl || exercise.submittedImages?.length));
+  const peerWorkIsCompleted = peerWorkAssignment?.status === 'completed' || exercise?.peerMarkingWorkStatus === 'completed';
 
   const removeExercise = async () => {
     if (!exercise || !window.confirm(`Delete “${exercise.title || 'this exercise'}”? This cannot be undone.`)) return;
@@ -237,10 +258,26 @@ export const TutorExerciseDetailsPage = () => {
                 {isRetryingPeerWork ? 'Retrying…' : 'Retry work generation'}
               </button>
             ) : null}
+            {['tutor', 'teacher'].includes(role)
+              && ['co-owner', 'marker'].includes(accessRole)
+              && !isHistorical
+              && hasSubmittedExercise
+              && !peerWorkIsCompleted ? (
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => setShowPeerWork((current) => !current)} disabled={!assignedPeerWorkImages.length}>
+                <Eye className="h-4 w-4" aria-hidden="true" />
+                {assignedPeerWorkImages.length ? (showPeerWork ? 'Hide assigned work' : 'View assigned work') : 'Assigned work pending'}
+              </button>
+            ) : null}
             {accessRole === 'co-owner' && !isHistorical && !exerciseStatus?.isToday ? <button type="button" className="hidden btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
             </button> : null}
           </div>
+          {showPeerWork && assignedPeerWorkImages.length ? (
+            <section className="panel space-y-3 p-5" aria-label="System-generated work assigned for peer marking">
+              <h2 className="text-lg font-bold text-slate-900">Work assigned for peer marking</h2>
+              <ImagePageViewer images={assignedPeerWorkImages} title="System-generated practice work" alt="Work assigned to the student for peer marking" />
+            </section>
+          ) : null}
           <ExerciseCard
             exercise={exercise}
             availability={availability}

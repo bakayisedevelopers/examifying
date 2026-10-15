@@ -2,15 +2,15 @@ import OpenAI from 'openai';
 import { GEMINI_MARKING_MODEL } from './geminiMarking.js';
 import { OPENAI_MARKING_MODEL } from './openAiMarking.js';
 import { callMarkingWithFallback } from './aiMarkingProviders.js';
-import { validateSystemPeerWorkSolutions } from './peerMarkingFallbackCore.js';
+import { validateSystemPeerWorkSolutionResponse } from './peerMarkingFallbackCore.js';
 
-export const SYSTEM_PEER_WORK_INSTRUCTIONS = `You are preparing a concise answer sheet for a South African school peer-marking exercise. Solve only the exact examination questions requested, using the supplied original question-paper page images. Show enough concise working for a student to assess the answer and award the stated maximum marks. Do not invent missing question details. Do not provide chain-of-thought, commentary, marking advice, or answers to surrounding questions. Return only the required structured JSON.`;
+export const SYSTEM_PEER_WORK_INSTRUCTIONS = `You are preparing a concise worked answer sheet for a South African school peer-marking exercise. Solve only the exact examination questions requested, using the supplied original question-paper page images. First confirm that the exact question number and all information needed to solve it are visible in the supplied pages. If a requested question is not visible, the page is blank, or the reference is wrong, do not guess and do not write a refusal as an answer: return status "needs_context", put each unresolved questionId in questionIdsNeedingContext, and provide valid solutions only for questions you can solve. Otherwise return status "completed" and one correct concise solution for every requested question. Show enough working for a student to assess the answer and award the stated maximum marks. Format equations with standard LaTeX delimiters and commands, such as \\(x^2\\), \\[\\frac{a}{b}\\], subscripts, roots, vectors, Greek letters, chemical formulas, and units; the answer sheet renderer will typeset common mathematical and scientific notation. Do not invent missing question details. Do not provide chain-of-thought, commentary, marking advice, or answers to surrounding questions. Return only the required structured JSON.`;
 
 export const SYSTEM_PEER_WORK_SOLUTION_SCHEMA = Object.freeze({
   type: 'object',
   additionalProperties: false,
   properties: {
-    status: { type: 'string', enum: ['completed'] },
+    status: { type: 'string', enum: ['completed', 'needs_context'] },
     solutions: {
       type: 'array',
       items: {
@@ -23,8 +23,9 @@ export const SYSTEM_PEER_WORK_SOLUTION_SCHEMA = Object.freeze({
         required: ['questionId', 'solutionText'],
       },
     },
+    questionIdsNeedingContext: { type: 'array', items: { type: 'string' } },
   },
-  required: ['status', 'solutions'],
+  required: ['status', 'solutions', 'questionIdsNeedingContext'],
 });
 
 const requestPayload = ({ questions = [] }) => JSON.stringify({
@@ -131,10 +132,63 @@ export const solveSystemPeerWork = async ({ questions, contextPages, callPrimary
     request: { questions, contextPages },
     callPrimary,
     callFallback,
-    validateResponse: (response) => validateSystemPeerWorkSolutions({ response, questionLinks: questions }),
+    validateResponse: (response) => validateSystemPeerWorkSolutionResponse({ response, questionLinks: questions }),
   });
+  const validated = validateSystemPeerWorkSolutionResponse({ response: result, questionLinks: questions });
   return {
     ...result,
-    solutions: validateSystemPeerWorkSolutions({ response: result, questionLinks: questions }),
+    ...validated,
+  };
+};
+
+const tokenUsage = (results) => results.reduce((total, result) => ({
+  inputTokens: total.inputTokens + (Number(result.usage?.inputTokens) || 0),
+  outputTokens: total.outputTokens + (Number(result.usage?.outputTokens) || 0),
+  totalTokens: total.totalTokens + (Number(result.usage?.totalTokens) || 0),
+  cachedInputTokens: total.cachedInputTokens + (Number(result.usage?.cachedInputTokens) || 0),
+}), { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0 });
+
+export const solveSystemPeerWorkWithContextFallback = async ({
+  questions,
+  contextPages,
+  loadFullPaperPages,
+  solve = solveSystemPeerWork,
+}) => {
+  const initial = await solve({ questions, contextPages });
+  if (initial.status === 'completed') {
+    return { ...initial, contextFallbackUsed: false, contextFallbackQuestionCount: 0, contextFallbackPageCount: 0 };
+  }
+  if (initial.status !== 'needs_context' || typeof loadFullPaperPages !== 'function') {
+    throw new Error('More source context is required to prepare this practice work.');
+  }
+
+  const unresolvedIds = new Set(initial.questionIdsNeedingContext);
+  const unresolvedQuestions = questions.filter((question) => unresolvedIds.has(question.questionId));
+  if (!unresolvedQuestions.length) throw new Error('The additional source-context request did not match a selected question.');
+  const fullPaperPages = await loadFullPaperPages(unresolvedQuestions);
+  if (!Array.isArray(fullPaperPages) || !fullPaperPages.length) {
+    throw new Error('The full source paper could not be loaded to resolve the selected question.');
+  }
+  const resolved = await solve({ questions: unresolvedQuestions, contextPages: fullPaperPages });
+  if (resolved.status !== 'completed') {
+    throw new Error('The selected question could not be located or solved in the full source paper.');
+  }
+
+  const answers = new Map([...initial.solutions, ...resolved.solutions].map((solution) => [solution.questionId, solution]));
+  if (answers.size !== questions.length || questions.some((question) => !answers.has(question.questionId))) {
+    throw new Error('The source-context retry did not produce every selected answer.');
+  }
+  const requests = [initial, resolved];
+  return {
+    ...resolved,
+    status: 'completed',
+    solutions: questions.map((question) => answers.get(question.questionId)),
+    fallbackUsed: initial.fallbackUsed === true || resolved.fallbackUsed === true,
+    fallbackReasonCode: [initial.fallbackReasonCode, resolved.fallbackReasonCode].filter(Boolean).join(',').slice(0, 120),
+    usage: tokenUsage(requests),
+    requestDurationMs: requests.reduce((total, result) => total + (Number(result.requestDurationMs) || 0), 0),
+    contextFallbackUsed: true,
+    contextFallbackQuestionCount: unresolvedQuestions.length,
+    contextFallbackPageCount: fullPaperPages.length,
   };
 };

@@ -10,6 +10,9 @@ import { useEffectiveRole } from '../utils/effectiveRole';
 import {
   deleteStudentTopics,
   getActiveSubjectEpisodesForStudent,
+  getGlobalSubjects,
+  getGlobalTopicGrades,
+  getGlobalTopicPlanningData,
   getTopicOverviewForEpisode,
   getTopicStudentProfile,
   getTutorAssignedStudentContexts,
@@ -17,6 +20,7 @@ import {
 
 const formatPercent = (value) => Number.isFinite(value) ? `${Math.round(value * 100)}%` : '—';
 const formatAverageMarks = (value) => Number.isFinite(value) ? `${value.toFixed(1)} marks` : '—';
+const formatPlanningPercent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : '—';
 const newOperationId = () => globalThis.crypto?.randomUUID?.() ?? `topic-delete-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const difficultyStyles = {
   easy: 'bg-lime-400/15 text-lime-200',
@@ -46,6 +50,16 @@ export const TopicsPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
+  const [planningSubjects, setPlanningSubjects] = useState([]);
+  const [planningSubject, setPlanningSubject] = useState('');
+  const [planningGrades, setPlanningGrades] = useState([]);
+  const [planningGrade, setPlanningGrade] = useState('');
+  const [planningTopics, setPlanningTopics] = useState([]);
+  const [planningSamplePaperCount, setPlanningSamplePaperCount] = useState(0);
+  const [planningAveragePaperMarks, setPlanningAveragePaperMarks] = useState(null);
+  const [selectedPlanningTopics, setSelectedPlanningTopics] = useState([]);
+  const [isPlanningLoading, setIsPlanningLoading] = useState(false);
+  const [planningError, setPlanningError] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -86,6 +100,76 @@ export const TopicsPage = () => {
     : studentEpisodes.find((row) => row.id === subjectFilter);
   const canDeleteTopics = isTutorView && selectedContext?.accessRole === 'co-owner';
   const activeSubject = selectedContext?.subject || selectedContext?.subjectKey || selectedContext?.subjectName || '';
+  const activeGrade = selectedContext?.grade || selectedContext?.gradeLevel || '';
+
+  useEffect(() => {
+    let active = true;
+    if (!isTutorView) {
+      setPlanningSubjects([]);
+      setPlanningSubject('');
+      return undefined;
+    }
+    setPlanningError('');
+    getGlobalSubjects().then((subjects) => {
+      if (active) setPlanningSubjects(subjects);
+    }).catch((error) => {
+      if (active) setPlanningError(error.message || 'Could not load global subjects.');
+    });
+    return () => { active = false; };
+  }, [isTutorView]);
+
+  useEffect(() => {
+    if (!planningSubjects.length) {
+      setPlanningSubject('');
+      return;
+    }
+    setPlanningSubject((current) => planningSubjects.includes(current)
+      ? current
+      : planningSubjects.includes(activeSubject) ? activeSubject : planningSubjects[0]);
+  }, [planningSubjects, activeSubject]);
+
+  useEffect(() => {
+    let active = true;
+    setPlanningGrades([]);
+    setPlanningGrade('');
+    setPlanningTopics([]);
+    setSelectedPlanningTopics([]);
+    setPlanningSamplePaperCount(0);
+    setPlanningAveragePaperMarks(null);
+    if (!isTutorView || !planningSubject) return undefined;
+    setIsPlanningLoading(true);
+    setPlanningError('');
+    getGlobalTopicGrades(planningSubject).then((grades) => {
+      if (!active) return;
+      setPlanningGrades(grades);
+      setPlanningGrade(grades.includes(activeGrade) && planningSubject === activeSubject
+        ? activeGrade
+        : (grades[0] ?? ''));
+    }).catch((error) => {
+      if (active) setPlanningError(error.message || 'Could not load global topic grades.');
+    }).finally(() => { if (active) setIsPlanningLoading(false); });
+    return () => { active = false; };
+  }, [isTutorView, planningSubject, activeSubject, activeGrade]);
+
+  useEffect(() => {
+    let active = true;
+    setPlanningTopics([]);
+    setSelectedPlanningTopics([]);
+    setPlanningSamplePaperCount(0);
+    setPlanningAveragePaperMarks(null);
+    if (!isTutorView || !planningSubject || !planningGrade) return undefined;
+    setIsPlanningLoading(true);
+    setPlanningError('');
+    getGlobalTopicPlanningData({ subject: planningSubject, grade: planningGrade }).then((result) => {
+      if (!active) return;
+      setPlanningTopics(result.topics);
+      setPlanningSamplePaperCount(result.samplePaperCount);
+      setPlanningAveragePaperMarks(result.averagePaperMarks);
+    }).catch((error) => {
+      if (active) setPlanningError(error.message || 'Could not load global topic planning data.');
+    }).finally(() => { if (active) setIsPlanningLoading(false); });
+    return () => { active = false; };
+  }, [isTutorView, planningSubject, planningGrade]);
 
   useEffect(() => {
     const options = isTutorView ? subjectOptions : studentEpisodes.map((row) => row.id).filter(Boolean);
@@ -117,8 +201,23 @@ export const TopicsPage = () => {
     return scored.length ? scored.reduce((sum, item) => sum + item.understandingLevel, 0) / scored.length : null;
   }, [topics]);
 
+  const selectedPlanningSummary = useMemo(() => {
+    const selected = planningTopics.filter((item) => selectedPlanningTopics.includes(item.topic));
+    const hasAllAverages = selected.length > 0 && selected.every((item) => Number.isFinite(item.averageMarks));
+    const averageMarks = hasAllAverages ? selected.reduce((sum, item) => sum + item.averageMarks, 0) : null;
+    return {
+      count: selected.length,
+      averageMarks,
+      percentage: Number.isFinite(averageMarks) && Number.isFinite(planningAveragePaperMarks) && planningAveragePaperMarks > 0
+        ? (averageMarks / planningAveragePaperMarks) * 100
+        : null,
+    };
+  }, [planningAveragePaperMarks, planningTopics, selectedPlanningTopics]);
+
   const toggleTopic = (topicId) => setSelectedIds((current) => current.includes(topicId)
     ? current.filter((item) => item !== topicId) : [...current, topicId]);
+  const togglePlanningTopic = (topic) => setSelectedPlanningTopics((current) => current.includes(topic)
+    ? current.filter((item) => item !== topic) : [...current, topic]);
   const toggleAll = () => setSelectedIds((current) => current.length === topics.length ? [] : topics.map((item) => item.id));
 
   const handleDelete = async () => {
@@ -150,7 +249,7 @@ export const TopicsPage = () => {
 
   const title = 'Topics';
   const description = isTutorView
-    ? 'Review topic progress across your assigned students and remove topics that should no longer drive exercises.'
+    ? 'Review topic progress across assigned students and use the global topic catalog to plan upcoming teaching.'
     : 'Review the topics recorded for each of your subjects and the understanding scores saved for them.';
   const studentFilterOptions = isTutorView
     ? studentOptions
@@ -226,6 +325,95 @@ export const TopicsPage = () => {
             </div>
           ) : null}
         </section>
+        {isTutorView ? (
+          <section className="panel space-y-5 p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-lime-300">Planning reference</p>
+                <h2 className="mt-1 text-xl font-semibold text-white">Global topics</h2>
+                <p className="mt-1 max-w-3xl text-sm text-slate-300">
+                  Compare topic marks using one random sample of up to 20 analyzed papers. Questions tagged to multiple topics are shared evenly to prevent double-counting.
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-2 text-sm text-slate-300">
+                Sample: <strong className="text-white">{planningSamplePaperCount}/20</strong> papers
+                <span className="mx-2 text-slate-600">·</span>
+                Average paper total: <strong className="text-white">{formatAverageMarks(planningAveragePaperMarks)}</strong>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-4">
+              <label className="grid min-w-52 gap-2 text-sm font-medium text-slate-300">
+                Global subject
+                <select className="input" value={planningSubject} onChange={(event) => {
+                  setPlanningSubject(event.target.value);
+                  setPlanningGrade('');
+                  setSelectedPlanningTopics([]);
+                }} disabled={!planningSubjects.length}>
+                  {planningSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+                </select>
+              </label>
+              <label className="grid min-w-40 gap-2 text-sm font-medium text-slate-300">
+                Grade
+                <select className="input" value={planningGrade} onChange={(event) => {
+                  setPlanningGrade(event.target.value);
+                  setSelectedPlanningTopics([]);
+                }} disabled={!planningGrades.length}>
+                  {planningGrades.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+                </select>
+              </label>
+              <div className="ml-auto flex flex-wrap gap-3">
+                <div className="min-w-40 rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-2.5">
+                  <span className="block text-xs text-slate-400">Selected topics ({selectedPlanningSummary.count})</span>
+                  <strong className="text-lg text-white">{formatAverageMarks(selectedPlanningSummary.averageMarks)}</strong>
+                </div>
+                <div className="min-w-36 rounded-xl border border-lime-400/25 bg-lime-400/10 px-4 py-2.5">
+                  <span className="block text-xs text-slate-300">Share of paper average</span>
+                  <strong className="text-lg text-lime-200">{formatPlanningPercent(selectedPlanningSummary.percentage)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {planningError ? <div className="rounded-xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-200" role="alert">{planningError}</div> : null}
+            {isPlanningLoading ? <LoadingState label="Loading global topic planning data…" /> : null}
+            {!isPlanningLoading && !planningError ? (
+              <div className="overflow-x-auto rounded-2xl border border-slate-700/70">
+                <table className="min-w-[680px] w-full border-collapse text-left text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
+                    <tr>
+                      <th scope="col" className="w-12 px-4 py-3"><span className="sr-only">Select topic</span></th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Topic</th>
+                      <th scope="col" className="px-4 py-3 text-center font-semibold">Difficulty</th>
+                      <th scope="col" className="px-4 py-3 text-center font-semibold">Average mark</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {planningTopics.map((topic) => (
+                      <tr key={topic.topic} className={`align-middle transition ${selectedPlanningTopics.includes(topic.topic) ? 'bg-lime-400/10' : 'hover:bg-slate-800/50'}`}>
+                        <td className="px-4 py-4"><input
+                          type="checkbox"
+                          className="accent-lime-400"
+                          aria-label={`Select ${topic.topic} for planning`}
+                          checked={selectedPlanningTopics.includes(topic.topic)}
+                          onChange={() => togglePlanningTopic(topic.topic)}
+                        /></td>
+                        <th scope="row" className="px-4 py-4 text-left font-semibold text-slate-900">{topic.topic}</th>
+                        <td className="px-4 py-4 text-center">{topic.difficulty
+                          ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${difficultyStyles[topic.difficulty] || 'bg-slate-700 text-slate-200'}`}>{topic.difficulty[0].toUpperCase()}{topic.difficulty.slice(1)}</span>
+                          : <span className="text-slate-400">Not set</span>}</td>
+                        <td className="px-4 py-4 text-center font-semibold text-slate-800">{formatAverageMarks(topic.averageMarks)}</td>
+                      </tr>
+                    ))}
+                    {!planningTopics.length ? <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">No global topics are configured for this subject and grade.</td></tr> : null}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {!isPlanningLoading && !planningError && planningTopics.length > 0 && planningSamplePaperCount === 0
+              ? <p className="text-sm text-amber-200">No analyzed papers with allocated marks were found for this subject and grade.</p>
+              : null}
+          </section>
+        ) : null}
       </div>
       <OperationStatusOverlay
         state={operationStatus?.state}

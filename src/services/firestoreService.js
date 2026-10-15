@@ -23,7 +23,7 @@ import { db, functions, isFirebaseConfigured } from '../firebase/config';
 import { collections, paths, subcollections } from '../firebase/schema';
 
 export { paths, subcollections };
-import { getGlobalTopicCatalogSeed, getHardcodedTopics, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
+import { getGlobalTopicCatalogSeed, getHardcodedTopics, getTopicGradeOptions, normalizeTopicKey as normalizeCatalogTopicKey } from '../data/topicCatalog';
 import {
   getCurrentGenerationNumber,
   getEligibleExerciseTopics,
@@ -50,7 +50,7 @@ import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../ut
 import { isVerifiedSubscriptionPaymentRecord } from '../../functions/src/subscriptionPaymentCore.js';
 import { normalizeWhatsAppLessonLink, normalizeWhatsAppNumber } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
-import { calculateTopicAverageMarks } from './topicAverageMarks.js';
+import { calculateGlobalTopicPlanningSummary, calculateTopicAverageMarks } from './topicAverageMarks.js';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
 import { queryClient } from '../lib/queryClient';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
@@ -2209,6 +2209,18 @@ export const getGlobalSubjects = async () => {
     .sort((left, right) => left.localeCompare(right));
 };
 
+export const getGlobalTopicGrades = async (subject) => {
+  if (!subject) return [];
+  if (!isFirebaseConfigured) return getTopicGradeOptions({ subject });
+  ensureDb();
+  const snapshot = await getDocs(collection(db, paths.globalSubjectGrades(subject)));
+  return snapshot.docs
+    .filter((gradeDocument) => Array.isArray(gradeDocument.data()?.topics) && gradeDocument.data().topics.length > 0)
+    .map((gradeDocument) => gradeDocument.id)
+    .sort((left, right) => SOUTH_AFRICAN_GRADES.indexOf(left) - SOUTH_AFRICAN_GRADES.indexOf(right)
+      || left.localeCompare(right));
+};
+
 export const getGlobalTopicList = async ({ subject, grade } = {}) => {
   if (!subject || !grade) throw new Error('Choose a subject and grade before loading global topics.');
   if (!isFirebaseConfigured) return getHardcodedTopics({ subject, grade });
@@ -2715,6 +2727,36 @@ const getAnalyzedQuestionPapersForTopicAverages = async ({ grade, subject = DEFA
   return paperRows.filter((paper) => paper.analysisStatus === 'Analyzed'
     && Array.isArray(paper.questions) && paper.questions.length > 0
     && matchesExerciseGenerationPaper(paper, { subject, grade }));
+};
+
+export const getGlobalTopicPlanningData = async ({ subject, grade } = {}) => {
+  if (!subject || !grade) throw new Error('Choose a global subject and grade before loading planning topics.');
+  const [topicSnapshot, analyzedPapers] = await Promise.all([
+    isFirebaseConfigured ? getDoc(doc(db, paths.globalGrade(subject, grade))) : Promise.resolve(null),
+    getAnalyzedQuestionPapersForTopicAverages({ subject, grade }),
+  ]);
+  const topics = topicSnapshot?.exists() && Array.isArray(topicSnapshot.data()?.topics)
+    ? [...new Set(topicSnapshot.data().topics.map((topic) => String(topic ?? '').trim()).filter(Boolean))]
+    : await getGlobalTopicList({ subject, grade });
+  const summary = calculateGlobalTopicPlanningSummary(topics, analyzedPapers);
+  const topicMetadata = topicSnapshot?.exists() && Array.isArray(topicSnapshot.data()?.topicMetadata)
+    ? topicSnapshot.data().topicMetadata
+    : [];
+  const difficultyByTopic = new Map(topicMetadata.map((item) => [
+    normalizeCatalogTopicKey(item?.topic ?? item?.label),
+    normalizeQuestionDifficulty(item?.difficulty),
+  ]).filter(([key, difficulty]) => key && difficulty));
+  const averageByTopic = new Map(summary.topics.map((item) => [normalizeCatalogTopicKey(item.topic), item.averageMarks]));
+
+  return {
+    samplePaperCount: summary.samplePaperCount,
+    averagePaperMarks: summary.averagePaperMarks,
+    topics: topics.map((topic) => ({
+      topic,
+      difficulty: difficultyByTopic.get(normalizeCatalogTopicKey(topic)) || '',
+      averageMarks: averageByTopic.get(normalizeCatalogTopicKey(topic)) ?? null,
+    })),
+  };
 };
 
 export const getQuestionPapers = async ({ grade, region, subject = DEFAULT_SUBJECT } = {}) => {

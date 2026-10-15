@@ -21,6 +21,7 @@ import {
 const formatPercent = (value) => Number.isFinite(value) ? `${Math.round(value * 100)}%` : '—';
 const formatAverageMarks = (value) => Number.isFinite(value) ? `${value.toFixed(1)} marks` : '—';
 const formatPlanningPercent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : '—';
+const formatPaperNumbers = (values) => Array.isArray(values) && values.length ? values.join(', ') : '—';
 const newOperationId = () => globalThis.crypto?.randomUUID?.() ?? `topic-delete-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const difficultyStyles = {
   easy: 'bg-lime-400/15 text-lime-200',
@@ -291,11 +292,12 @@ export const TopicsPage = () => {
           {loadError ? <div className="rounded-xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-200" role="alert">{loadError}</div> : null}
           {!isLoading && !loadError ? (
             <div className="overflow-x-auto rounded-2xl border border-slate-700/70">
-              <table className="min-w-[880px] w-full border-collapse text-left text-sm">
+              <table className="min-w-[980px] w-full border-collapse text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
                   <tr>
                     {canDeleteTopics ? <th scope="col" className="w-12 px-4 py-3"><input aria-label="Select all topics" type="checkbox" checked={topics.length > 0 && selectedIds.length === topics.length} onChange={toggleAll} /></th> : null}
                     <th scope="col" className="px-4 py-3 font-semibold">Topic</th>
+                    <th scope="col" className="px-4 py-3 font-semibold">Paper number</th>
                     <th scope="col" className="px-4 py-3 font-semibold">Difficulty</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Average mark</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Attended</th>
@@ -309,6 +311,7 @@ export const TopicsPage = () => {
                     <tr key={topic.id} className={`align-middle transition ${selectedIds.includes(topic.id) ? 'bg-lime-400/10' : 'hover:bg-slate-800/50'}`}>
                       {canDeleteTopics ? <td className="px-4 py-4"><input aria-label={`Select ${topic.topic}`} type="checkbox" checked={selectedIds.includes(topic.id)} onChange={() => toggleTopic(topic.id)} /></td> : null}
                       <th scope="row" className="px-4 py-4 text-left font-semibold text-slate-900">{topic.topic}</th>
+                      <td className="px-4 py-4 text-slate-700">{formatPaperNumbers(topic.paperNumbers)}</td>
                       <td className="px-4 py-4 text-center">{topic.difficulty
                         ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${difficultyStyles[topic.difficulty] || 'bg-slate-700 text-slate-200'}`}>{topic.difficulty[0].toUpperCase()}{topic.difficulty.slice(1)}</span>
                         : <span className="text-slate-400">Not set</span>}</td>
@@ -319,7 +322,7 @@ export const TopicsPage = () => {
                       <td className="px-4 py-4 text-center font-semibold text-lime-300">{formatPercent(topic.understandingLevel)}</td>
                     </tr>
                   ))}
-                  {!topics.length ? <tr><td colSpan={canDeleteTopics ? 8 : 7} className="px-4 py-10 text-center text-slate-400">No completed or marked topics are recorded for this subject yet.</td></tr> : null}
+                  {!topics.length ? <tr><td colSpan={canDeleteTopics ? 9 : 8} className="px-4 py-10 text-center text-slate-400">No completed or marked topics are recorded for this subject yet.</td></tr> : null}
                 </tbody>
               </table>
             </div>
@@ -378,11 +381,12 @@ export const TopicsPage = () => {
             {isPlanningLoading ? <LoadingState label="Loading global topic planning data…" /> : null}
             {!isPlanningLoading && !planningError ? (
               <div className="overflow-x-auto rounded-2xl border border-slate-700/70">
-                <table className="min-w-[680px] w-full border-collapse text-left text-sm">
+                <table className="min-w-[820px] w-full border-collapse text-left text-sm">
                   <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
                     <tr>
                       <th scope="col" className="w-12 px-4 py-3"><span className="sr-only">Select topic</span></th>
                       <th scope="col" className="px-4 py-3 font-semibold">Topic</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Paper number</th>
                       <th scope="col" className="px-4 py-3 text-center font-semibold">Difficulty</th>
                       <th scope="col" className="px-4 py-3 text-center font-semibold">Average mark</th>
                     </tr>
@@ -398,13 +402,14 @@ export const TopicsPage = () => {
                           onChange={() => togglePlanningTopic(topic.topic)}
                         /></td>
                         <th scope="row" className="px-4 py-4 text-left font-semibold text-slate-900">{topic.topic}</th>
+                        <td className="px-4 py-4 text-slate-700">{formatPaperNumbers(topic.paperNumbers)}</td>
                         <td className="px-4 py-4 text-center">{topic.difficulty
                           ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${difficultyStyles[topic.difficulty] || 'bg-slate-700 text-slate-200'}`}>{topic.difficulty[0].toUpperCase()}{topic.difficulty.slice(1)}</span>
                           : <span className="text-slate-400">Not set</span>}</td>
                         <td className="px-4 py-4 text-center font-semibold text-slate-800">{formatAverageMarks(topic.averageMarks)}</td>
                       </tr>
                     ))}
-                    {!planningTopics.length ? <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">No global topics are configured for this subject and grade.</td></tr> : null}
+                    {!planningTopics.length ? <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">No global topics are configured for this subject and grade.</td></tr> : null}
                   </tbody>
                 </table>
               </div>

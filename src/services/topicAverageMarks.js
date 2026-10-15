@@ -7,6 +7,21 @@ const getQuestionMarks = (question = {}) => {
   return Number.isFinite(value) && value >= 0 ? value : null;
 };
 
+const normalizePaperNumber = (paper = {}) => {
+  const value = String(paper?.paperNumber ?? paper?.paperMetadata?.paperNumber ?? '').trim();
+  if (!value) return '';
+  if (/^paper\b/i.test(value) || /examplar|exemplar/i.test(value)) return value;
+  return /^\d+$/.test(value) ? `Paper ${value}` : value;
+};
+
+const sortPaperNumbers = (values) => [...values].sort((left, right) => {
+  const leftNumber = Number(left.match(/\d+/)?.[0]);
+  const rightNumber = Number(right.match(/\d+/)?.[0]);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber !== rightNumber) return leftNumber - rightNumber;
+  if (Number.isFinite(leftNumber) !== Number.isFinite(rightNumber)) return Number.isFinite(leftNumber) ? -1 : 1;
+  return left.localeCompare(right);
+});
+
 const samplePapers = (papers, random) => {
   const eligible = papers.filter((paper) => paper?.analysisStatus === 'Analyzed'
     && Array.isArray(paper.questions) && paper.questions.length > 0
@@ -22,10 +37,11 @@ const samplePapers = (papers, random) => {
   return eligible.slice(0, MAX_TOPIC_AVERAGE_PAPERS);
 };
 
-export const calculateTopicAverageMarks = (topic, papers = []) => {
-  if (!String(topic ?? '').trim() || !Array.isArray(papers)) return null;
+export const calculateTopicAverageDetails = (topic, papers = []) => {
+  if (!String(topic ?? '').trim() || !Array.isArray(papers)) return { averageMarks: null, paperNumbers: [] };
 
   const paperTotals = [];
+  const paperNumbers = new Set();
   for (const paper of papers) {
     if (paper?.analysisStatus !== 'Analyzed' || !Array.isArray(paper.questions)) continue;
     const matchingQuestions = paper.questions.filter((question) => questionMatchesTopics(question, [topic]));
@@ -37,12 +53,20 @@ export const calculateTopicAverageMarks = (topic, papers = []) => {
     if (!marks.length) continue;
 
     paperTotals.push(marks.reduce((total, value) => total + value, 0));
+    const paperNumber = normalizePaperNumber(paper);
+    if (paperNumber) paperNumbers.add(paperNumber);
     if (paperTotals.length === MAX_TOPIC_AVERAGE_PAPERS) break;
   }
 
-  if (!paperTotals.length) return null;
-  return paperTotals.reduce((total, value) => total + value, 0) / paperTotals.length;
+  return {
+    averageMarks: paperTotals.length
+      ? paperTotals.reduce((total, value) => total + value, 0) / paperTotals.length
+      : null,
+    paperNumbers: sortPaperNumbers(paperNumbers),
+  };
 };
+
+export const calculateTopicAverageMarks = (topic, papers = []) => calculateTopicAverageDetails(topic, papers).averageMarks;
 
 /**
  * Calculates global topic averages and the average total paper marks from the
@@ -60,11 +84,12 @@ export const calculateGlobalTopicPlanningSummary = (topics = [], papers = [], { 
     return {
       samplePaperCount: 0,
       averagePaperMarks: null,
-      topics: topicNames.map((topic) => ({ topic, averageMarks: null })),
+      topics: topicNames.map((topic) => ({ topic, averageMarks: null, paperNumbers: [] })),
     };
   }
 
   const topicTotals = new Map(topicNames.map((topic) => [topic, 0]));
+  const topicPaperNumbers = new Map(topicNames.map((topic) => [topic, new Set()]));
   let totalPaperMarks = 0;
 
   sampled.forEach((paper) => {
@@ -76,7 +101,11 @@ export const calculateGlobalTopicPlanningSummary = (topics = [], papers = [], { 
       const matchedTopics = topicNames.filter((topic) => questionMatchesTopics(question, [topic]));
       if (!matchedTopics.length) return;
       const allocatedMarks = marks / matchedTopics.length;
-      matchedTopics.forEach((topic) => topicTotals.set(topic, topicTotals.get(topic) + allocatedMarks));
+      matchedTopics.forEach((topic) => {
+        topicTotals.set(topic, topicTotals.get(topic) + allocatedMarks);
+        const paperNumber = normalizePaperNumber(paper);
+        if (paperNumber) topicPaperNumbers.get(topic).add(paperNumber);
+      });
     });
     totalPaperMarks += paperTotal;
   });
@@ -84,6 +113,10 @@ export const calculateGlobalTopicPlanningSummary = (topics = [], papers = [], { 
   return {
     samplePaperCount: sampled.length,
     averagePaperMarks: totalPaperMarks / sampled.length,
-    topics: topicNames.map((topic) => ({ topic, averageMarks: topicTotals.get(topic) / sampled.length })),
+    topics: topicNames.map((topic) => ({
+      topic,
+      averageMarks: topicTotals.get(topic) / sampled.length,
+      paperNumbers: sortPaperNumbers(topicPaperNumbers.get(topic)),
+    })),
   };
 };

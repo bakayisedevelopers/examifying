@@ -50,7 +50,7 @@ import { calculateSubscriptionQuote, getEffectiveSubscriptionState } from '../ut
 import { isVerifiedSubscriptionPaymentRecord } from '../../functions/src/subscriptionPaymentCore.js';
 import { normalizeWhatsAppLessonLink, normalizeWhatsAppNumber } from '../utils/whatsapp';
 import { buildLessonTopicScores } from './lessonPersistence';
-import { calculateGlobalTopicPlanningSummary, calculateTopicAverageMarks } from './topicAverageMarks.js';
+import { calculateGlobalTopicPlanningSummary, calculateTopicAverageDetails } from './topicAverageMarks.js';
 import { trackDataRequest, trackFirestoreListener, trackFirestoreRead } from './performanceTelemetry';
 import { queryClient } from '../lib/queryClient';
 import { getExerciseTopicNames, getPeerMarkingTopicNames, getQuestionTopicIds } from '../utils/exerciseTopicRows';
@@ -2746,7 +2746,7 @@ export const getGlobalTopicPlanningData = async ({ subject, grade } = {}) => {
     normalizeCatalogTopicKey(item?.topic ?? item?.label),
     normalizeQuestionDifficulty(item?.difficulty),
   ]).filter(([key, difficulty]) => key && difficulty));
-  const averageByTopic = new Map(summary.topics.map((item) => [normalizeCatalogTopicKey(item.topic), item.averageMarks]));
+  const averageByTopic = new Map(summary.topics.map((item) => [normalizeCatalogTopicKey(item.topic), item]));
 
   return {
     samplePaperCount: summary.samplePaperCount,
@@ -2754,7 +2754,8 @@ export const getGlobalTopicPlanningData = async ({ subject, grade } = {}) => {
     topics: topics.map((topic) => ({
       topic,
       difficulty: difficultyByTopic.get(normalizeCatalogTopicKey(topic)) || '',
-      averageMarks: averageByTopic.get(normalizeCatalogTopicKey(topic)) ?? null,
+      averageMarks: averageByTopic.get(normalizeCatalogTopicKey(topic))?.averageMarks ?? null,
+      paperNumbers: averageByTopic.get(normalizeCatalogTopicKey(topic))?.paperNumbers ?? [],
     })),
   };
 };
@@ -4098,11 +4099,13 @@ export const getTopicOverviewForEpisode = async ({ studentId, subjectInstanceId 
     const difficulty = normalizeQuestionDifficulty(raw.difficulty ?? raw.difficultyLevel)
       || difficultyByTopic.get(normalizeCatalogTopicKey(summary.topic))
       || '';
+    const averageDetails = calculateTopicAverageDetails(summary.topic, analyzedPapers);
     return {
       id: String(raw.id ?? raw.canonicalTopicKey ?? normalizeCatalogTopicKey(summary.topic)),
       topic: summary.topic,
       difficulty,
-      averageMarks: calculateTopicAverageMarks(summary.topic, analyzedPapers),
+      averageMarks: averageDetails.averageMarks,
+      paperNumbers: averageDetails.paperNumbers,
       attended: summary.attendanceStatus === 'attended',
       manual: manualTopicKeys.has(normalizeCatalogTopicKey(summary.topic)),
       marked: summary.topicStatus === 'marked',

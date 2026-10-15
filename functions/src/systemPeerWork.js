@@ -29,6 +29,7 @@ import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js'
 import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
 import { wrapPeerWorkText } from './peerWorkImageFormatting.js';
 import { publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
+import { safePeerWorkErrorMessage } from './peerWorkErrorDetails.js';
 
 const GENERATION_TASK = 'generateSystemPeerWorkTask';
 const GENERATION_OPTIONS = {
@@ -41,10 +42,7 @@ const GENERATION_OPTIONS = {
 const SAFE_IMAGE_DIMENSION = 3000;
 const safeErrorCode = (error) => String(error?.code || error?.name || 'peer_work_generation_failed')
   .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
-const safeErrorMessage = (error) => String(error?.message || 'Unknown publish error')
-  .replace(/https?:\/\/\S+/gi, '[url]')
-  .replace(/(token|key|secret)=\S+/gi, '$1=[redacted]')
-  .slice(0, 240);
+const safeErrorMessage = safePeerWorkErrorMessage;
 
 const workCollection = (db, cohortKey) => db.collection('systemGeneratedPeerWork').doc(cohortKey).collection('packs');
 const packPath = (cohortKey, packId) => `systemGeneratedPeerWork/${cohortKey}/packs/${packId}`;
@@ -467,17 +465,22 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
   }
   if (pack.status !== 'generating') return;
 
+  let failureStage = 'load_source_paper_record';
   try {
     const paperSnapshot = await db.doc(`questionPapers/${pack.paperId}`).get();
     if (!paperSnapshot.exists) throw new Error('The selected source paper is unavailable.');
     const paper = { id: paperSnapshot.id, ...paperSnapshot.data() };
+    failureStage = 'validate_requested_questions';
     const requestedQuestions = requestedQuestionsForPack(pack.questionLinks ?? []);
     if (!requestedQuestions.length || requestedQuestions.length > 12) throw new Error('The generated practice task contains an invalid question count.');
+    failureStage = 'download_source_pdf';
     const sourcePdf = await loadSystemPeerWorkSourcePdf({ paper, bucket });
+    failureStage = 'ai_solution_request';
     const generated = await solveSystemPeerWork({
       questions: requestedQuestions,
       sourcePdf,
     });
+    failureStage = 'render_and_upload_solution_images';
     const imageRows = [];
     for (const question of requestedQuestions) {
       const solution = generated.solutions.find((item) => item.questionId === question.questionId);
@@ -490,6 +493,7 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
         questionId: question.questionId, questionReference: question.questionNumber,
         topic: question.topic, sizeBytes: imageBuffer.length });
     }
+    failureStage = 'save_generated_work_record';
     await packRef.set({
       status: 'ready',
       images: imageRows,
@@ -519,7 +523,9 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
       outputTokens: Number(generated.usage?.outputTokens) || 0,
       requestDurationMs: Number(generated.requestDurationMs) || 0,
     });
+    failureStage = 'load_assignments_for_publication';
     const waiting = await db.collectionGroup('peerMarkingAssignments').where('systemGeneratedWorkId', '==', pack.id).get();
+    failureStage = 'publish_generated_work';
     for (const document of waiting.docs.filter((item) => item.data().status === 'preparing')) {
       try { await publishAssignmentWithRetry({ db, bucket, assignmentRef: document.ref, assignment: document.data(), pack }); }
       catch (error) {
@@ -533,14 +539,16 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
       }
     }
   } catch (error) {
-    await packRef.set({ status: 'failed', errorCode: safeErrorCode(error), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-    await markPendingAssignmentsFailed({ db, packId: pack.id, reasonCode: safeErrorCode(error) });
     logger.error('System-generated peer-work task failed', {
       workId: pack.id,
       subject: pack.subject,
       grade: pack.grade,
+      failureStage,
       code: safeErrorCode(error),
+      errorMessage: safeErrorMessage(error),
     });
+    await packRef.set({ status: 'failed', errorCode: safeErrorCode(error), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await markPendingAssignmentsFailed({ db, packId: pack.id, reasonCode: safeErrorCode(error) });
   }
 });
 

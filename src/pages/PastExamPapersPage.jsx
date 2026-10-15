@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 36403)
-Total output lines: 2314
-
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Folder, HardDriveDownload, ListChecks, LoaderCircle, Pause, Play, RotateCcw, Save, Search, Sparkles, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
@@ -474,7 +471,1614 @@ export const PastExamPapersPage = () => {
       setAnalysisQueuePaused(result.paused === true);
       setAnalysisQueueActivePaperId(String(result.activePaperId ?? ''));
       setAnalysisQueueMessage(paused
-        ? 'The queue …24403 tokens truncated…vent) => addBulkMemoFile(row.id, event)} />
+        ? 'The queue is paused. Any paper already in progress will finish; queued papers are being kept.'
+        : 'The queue has resumed. Queued papers will continue in order.');
+    } catch (error) {
+      setAnalysisQueueMessage(error.message || `Could not ${paused ? 'pause' : 'resume'} question-paper analysis.`);
+    } finally {
+      setAnalysisQueueControlSaving(false);
+    }
+  };
+
+  const handleStartDriveTopicAllSync = async () => {
+    if (driveTopicAllSyncStarting || driveTopicAllSyncJob?.status === 'running') return;
+    setDriveTopicAllSyncStarting(true);
+    setDriveTopicAllSyncError('');
+    try {
+      const job = await startDriveTopicCatalogAllSync();
+      setDriveTopicAllSyncJob(job);
+    } catch (error) {
+      setDriveTopicAllSyncError(error.message || 'Could not start the all-topic Drive sync.');
+    } finally {
+      setDriveTopicAllSyncStarting(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    setIsLoadingPapers(true);
+    setStatus('');
+    if (isPublicCatalog) {
+      getPublicQuestionPapers().then((rows) => {
+        if (!active) return;
+        setPapers(rows);
+        setIsLoadingPapers(false);
+      }).catch((error) => {
+        if (!active) return;
+        setStatus(error.message || 'Could not load past papers.');
+        setIsLoadingPapers(false);
+      });
+      return () => { active = false; };
+    }
+    const unsubscribe = subscribeQuestionPapers((rows) => {
+      if (!active) return;
+      setPapers(rows);
+      setIsLoadingPapers(false);
+    }, (error) => {
+      if (!active) return;
+      setStatus(error.message || 'Could not load past papers.');
+      setIsLoadingPapers(false);
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [isPublicCatalog]);
+  const paperSubjects = useMemo(() => {
+    const subjectsByKey = new Map();
+    papers.forEach((paper) => {
+      const subject = getPaperSubject(paper);
+      const key = normalizePaperSubject(subject);
+      if (key && !subjectsByKey.has(key)) subjectsByKey.set(key, subject);
+    });
+    return [...subjectsByKey.values()].sort((left, right) => left.localeCompare(right));
+  }, [papers]);
+
+  const visiblePapers = useMemo(() => {
+    const orderedPapers = [...papers].sort((left, right) =>
+      Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
+      getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
+
+    if (usesStudentCatalog) {
+      const matchingPapers = orderedPapers
+        .filter((paper) => {
+          const selectedSubject = studentFilterOverrides.subject ?? 'all';
+          const matchesSubject = selectedSubject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(selectedSubject);
+          const matchesGrade = (studentFilterOverrides.grade ?? 'all') === 'all' || getPaperField(paper, 'grade') === studentFilterOverrides.grade;
+          const matchesYear = (studentFilterOverrides.year ?? 'all') === 'all' || String(getPaperField(paper, 'year')) === String(studentFilterOverrides.year);
+          const matchesRegion = (studentFilterOverrides.region ?? 'all') === 'all' || getPaperField(paper, 'region') === studentFilterOverrides.region;
+          const matchesMonth = (studentFilterOverrides.month ?? 'all') === 'all' || getPaperField(paper, 'month') === studentFilterOverrides.month;
+          const matchesPaperNumber = (studentFilterOverrides.paperNumber ?? 'all') === 'all' || getPaperField(paper, 'paperNumber') === studentFilterOverrides.paperNumber;
+          const tokens = searchTerm.trim().toLowerCase().split(/\s+/).filter(Boolean);
+          const searchText = getPaperSearchText(paper);
+          const matchesSearch = tokens.every((token) => searchText.includes(token));
+          return matchesSubject && matchesGrade && matchesYear && matchesRegion && matchesMonth && matchesPaperNumber && matchesSearch;
+        });
+
+      return matchingPapers;
+    }
+
+    return orderedPapers
+      .filter((paper) => role !== ROLES.PARENT || !visibleSubjects.length || visibleSubjects.includes(getPaperSubject(paper)))
+      .filter((paper) => filters.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(filters.subject))
+      .filter((paper) => filters.year === 'all' || String(paper.year) === String(filters.year));
+  }, [papers, role, visibleSubjects, filters, studentFilterOverrides, searchTerm, usesStudentCatalog]);
+  const paperCatalogSections = useMemo(() => {
+    if (!usesStudentCatalog) return [];
+    const subjects = new Map();
+    visiblePapers.forEach((paper) => {
+      const subject = getPaperSubject(paper) || 'Other subjects';
+      const subjectKey = normalizePaperSubject(subject);
+      const section = subjects.get(subjectKey) ?? { subject, groups: new Map() };
+      const grade = getPaperField(paper, 'grade') || 'Grade not listed';
+      const year = String(getPaperField(paper, 'year') || 'Year not listed');
+      const groupKey = `${grade}::${year}`;
+      const group = section.groups.get(groupKey) ?? { grade, year, papers: [] };
+      group.papers.push(paper);
+      section.groups.set(groupKey, group);
+      subjects.set(subjectKey, section);
+    });
+
+    return [...subjects.values()]
+      .map((section) => ({
+        ...section,
+        groups: [...section.groups.values()]
+          .map((group) => ({
+            ...group,
+            papers: [...group.papers].sort((left, right) => getPaperNumberSortValue(left) - getPaperNumberSortValue(right)
+              || String(getPaperField(left, 'paperNumber')).localeCompare(String(getPaperField(right, 'paperNumber')), undefined, { numeric: true })
+              || String(left.id).localeCompare(String(right.id))),
+          }))
+          .sort((left, right) => Number(right.year) - Number(left.year)
+            || right.year.localeCompare(left.year)
+            || left.grade.localeCompare(right.grade)),
+      }))
+      .sort((left, right) => left.subject.localeCompare(right.subject));
+  }, [usesStudentCatalog, visiblePapers]);
+  const adminPaperGroups = useMemo(() => {
+    const groups = { analyzing: [], analyzed: [], failed: [], waiting: [], review: [] };
+    const orderedPapers = [...papers].sort((left, right) =>
+      Number(getPaperField(right, 'year') || 0) - Number(getPaperField(left, 'year') || 0) ||
+      getPaperDateValue(right.createdAt) - getPaperDateValue(left.createdAt));
+
+    orderedPapers.forEach((paper) => {
+      const status = paper.analysisStatus;
+      const group = paper.driveAnalysisJsonStatus === 'review_required' && !['Analyzed', 'Analyzing'].includes(status)
+        ? 'review'
+        : status === 'Waiting for Drive JSON'
+        ? 'waiting'
+        : status === 'Failed' || status === 'Cancelled'
+        ? 'failed'
+        : status === 'Analyzed' || (!status && paper.availableForGeneration)
+          ? 'analyzed'
+          : 'analyzing';
+      groups[group].push(paper);
+    });
+
+    return groups;
+  }, [papers]);
+  const years = useMemo(() => [...new Set(papers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))].sort((a, b) => Number(b) - Number(a)), [papers]);
+  const grades = useMemo(() => [...new Set([
+    ...SOUTH_AFRICAN_GRADES.filter((grade) => grade !== 'Select Grade'),
+    ...papers.map((paper) => getPaperField(paper, 'grade')).filter(Boolean),
+  ])].sort((left, right) => {
+    const leftOrder = SOUTH_AFRICAN_GRADES.indexOf(left);
+    const rightOrder = SOUTH_AFRICAN_GRADES.indexOf(right);
+    return (leftOrder < 0 ? Number.MAX_SAFE_INTEGER : leftOrder) - (rightOrder < 0 ? Number.MAX_SAFE_INTEGER : rightOrder) || left.localeCompare(right);
+  }), [papers]);
+  const regions = useMemo(() => [...new Set([...REGIONS, ...papers.map((paper) => getPaperField(paper, 'region')).filter(Boolean)])], [papers]);
+  const months = useMemo(() => [...new Set([...PAPER_MONTHS, ...papers.map((paper) => getPaperField(paper, 'month')).filter(Boolean)])], [papers]);
+  const paperNumbers = useMemo(() => [...new Set([...PAPER_NUMBERS, ...papers.map((paper) => getPaperField(paper, 'paperNumber')).filter(Boolean)])], [papers]);
+
+  const updateStudentFilter = (field, value) => setStudentFilterOverrides((current) => ({ ...current, [field]: value }));
+  const resetStudentFilters = () => {
+    setSearchTerm('');
+    setStudentFilterOverrides({});
+  };
+  const updateAdminPaperFilter = (group, field, value) => setAdminPaperFilters((current) => ({
+    ...current,
+    [group]: { ...current[group], [field]: value },
+  }));
+
+  const searchTopicResolver = async () => {
+    if (!topicResolverSubject || !topicResolverGrade) {
+      setTopicResolverStatus('Choose both a subject and grade before searching Firestore.');
+      return;
+    }
+    setTopicResolverLoading(true);
+    setTopicResolverStatus('Preparing the global topic catalog and searching Firestore…');
+    setTopicResolverRows([]);
+    setTopicResolverCatalog([]);
+    setTopicResolverCorrections({});
+    setTopicResolverMethods({});
+    setTopicResolverReviewed(false);
+    try {
+      const migration = await runOperation({ operationName: 'Preparing topic catalog', successMessage: 'The topic catalog is ready.' }, () => initializeGlobalTopicCatalog());
+      const [records, savedMappings, catalogTopics] = await Promise.all([
+        getTopicResolverSourceRecords({ subject: topicResolverSubject, grade: topicResolverGrade }),
+        getTopicResolverMappings({ subject: topicResolverSubject, grade: topicResolverGrade }),
+        getGlobalTopicList({ subject: topicResolverSubject, grade: topicResolverGrade }),
+      ]);
+      const rows = buildTopicResolverRows(records, savedMappings, catalogTopics);
+      setTopicResolverRows(rows);
+      setTopicResolverCatalog(catalogTopics);
+      setTopicResolverReviewed(false);
+      const migrationSummary = migration?.alreadyInitialized
+        ? 'Global catalog is already initialized.'
+        : `Initialized ${migration?.topicCount ?? 0} global topics and backfilled ${migration?.analyzedPaperCount ?? 0} analyzed papers.`;
+      setTopicResolverStatus(rows.length
+        ? `${migrationSummary} ${rows.length} distinct source topic name${rows.length === 1 ? '' : 's'} found from ${records.length} matching records.`
+        : `${migrationSummary} No extracted or covered-lesson topics were found for this subject and grade.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not search Firestore.');
+    } finally {
+      setTopicResolverLoading(false);
+    }
+  };
+
+  const checkGlobalTopicCatalog = async () => {
+    if (!topicResolverSubject || !topicResolverGrade || topicResolverCleanupLoading) return;
+    setTopicResolverCleanupLoading(true);
+    setDriveTopicSyncPreview(null);
+    setTopicResolverStatus('Previewing topics backed by analyzed question-paper questions and checking the matching Drive grade folder…');
+    try {
+      const result = await previewDriveTopicCatalogSync({
+        subject: topicResolverSubject,
+        grade: topicResolverGrade,
+      });
+      setDriveTopicSyncPreview(result);
+      setTopicResolverStatus(`Preview ready for ${topicResolverSubject}, ${topicResolverGrade}: ${result.analyzedTopicCount} topics from ${result.analyzedPaperCount} analyzed papers. ${result.removedTopics?.length ?? 0} current topics would be removed. Firestore will not change until you apply this preview.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not preview the Firestore and Drive topic sync.');
+    } finally {
+      setTopicResolverCleanupLoading(false);
+    }
+  };
+
+  const applyDriveTopicCatalogSync = async () => {
+    if (!driveTopicSyncPreview?.previewToken || driveTopicSyncApplying) return;
+    setDriveTopicSyncApplying(true);
+    setTopicResolverStatus('Writing topics.json to the selected Drive grade folder and updating the Firestore global topic catalog…');
+    try {
+      const result = await runOperation({
+        operationName: `Syncing ${topicResolverSubject} topics for ${topicResolverGrade}`,
+        message: 'Updating this grade’s topics.json and global Firestore topic list from analyzed question data.',
+        successMessage: 'The Drive and Firestore topic catalogs were synchronized.',
+      }, () => syncDriveTopicCatalog({
+        subject: topicResolverSubject,
+        grade: topicResolverGrade,
+        previewToken: driveTopicSyncPreview.previewToken,
+      }));
+      setTopicResolverCatalog(result.topics ?? driveTopicSyncPreview.topics ?? []);
+      setDriveTopicSyncPreview(null);
+      setTopicResolverStatus(`Synced ${result.topicCount} topics for ${topicResolverSubject}, ${topicResolverGrade} from ${result.analyzedPaperCount} analyzed papers. ${result.removedTopics?.length ?? 0} unbacked topics were removed from Firestore; topics.json is in the Drive grade folder.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not sync the Drive and Firestore topic catalogs.');
+    } finally {
+      setDriveTopicSyncApplying(false);
+    }
+  };
+
+  const queueLegacyDriveAnalyses = async () => {
+    if (!topicResolverSubject || !topicResolverGrade || legacyDriveAnalysisQueueLoading) return;
+    setLegacyDriveAnalysisQueueLoading(true);
+    setTopicResolverStatus(`Checking legacy ${topicResolverSubject}, ${topicResolverGrade} papers for matching Drive analysis JSON…`);
+    try {
+      const result = await runOperation({
+        operationName: 'Checking legacy paper analysis JSON',
+        message: 'Only papers with a valid, matching Drive JSON file will be placed into the existing analysis queue.',
+        successMessage: 'The legacy Drive JSON check completed.',
+      }, () => queueLegacyDriveJsonAnalyses({ subject: topicResolverSubject, grade: topicResolverGrade, maxPapers: 50 }));
+      setTopicResolverStatus(`Checked ${result.checkedCount} matching JSON file${result.checkedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}; queued ${result.queuedCount}, flagged ${result.reviewCount} for review, skipped ${result.skippedCount} without a matching JSON${result.errorCount ? `, and had ${result.errorCount} Drive read error${result.errorCount === 1 ? '' : 's'}` : ''}.${result.analysisPaused ? ' The analysis queue is paused, so queued papers will wait until resumed.' : ''}${result.moreCandidates ? ' Run the check again to continue through remaining legacy papers.' : ''}`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not check legacy Drive analysis JSON files.');
+    } finally {
+      setLegacyDriveAnalysisQueueLoading(false);
+    }
+  };
+
+  const currentResolverValue = (row) => topicResolverCorrections[row.id] ?? row.suggestedTopic;
+  const unresolvedTopicRows = topicResolverRows.filter((row) => !currentResolverValue(row));
+  const resolvedTopicRows = topicResolverRows.filter((row) => Boolean(currentResolverValue(row)));
+  const suggestedTopicRows = topicResolverRows.filter((row) => {
+    const method = topicResolverMethods[row.id] ?? row.matchType;
+    return method === 'gemini-suggested' || method === 'saved-suggestion';
+  });
+
+  const resolveUnmappedTopicsWithGemini = async () => {
+    const unresolved = topicResolverRows.filter((row) => !currentResolverValue(row));
+    if (!unresolved.length) {
+      setTopicResolverStatus('All topics already have a mapping to review.');
+      return;
+    }
+    setTopicResolverGeminiLoading(true);
+    setTopicResolverStatus(`Matching ${unresolved.length} unresolved topic${unresolved.length === 1 ? '' : 's'} to the Firestore topic list and preparing Google Gemini suggestions where needed...`);
+    let resolvedCount = 0;
+    let suggestedCount = 0;
+    try {
+      for (let index = 0; index < unresolved.length; index += 25) {
+        const rows = unresolved.slice(index, index + 25);
+        const result = await runOperation({ operationName: 'Matching topic names', successMessage: 'Topic matching finished.' }, () => resolveTopicsWithGemini({
+          subject: topicResolverSubject,
+          grade: topicResolverGrade,
+          topics: rows.map((row) => row.sourceTopic),
+        }));
+        const resolved = Array.isArray(result?.topics) ? result.topics : [];
+        const resolutionTypes = Array.isArray(result?.resolutionTypes) ? result.resolutionTypes : [];
+        setTopicResolverCorrections((current) => {
+          const next = { ...current };
+          rows.forEach((row, rowIndex) => {
+            if (resolved[rowIndex]) next[row.id] = resolved[rowIndex];
+          });
+          return next;
+        });
+        setTopicResolverMethods((current) => {
+          const next = { ...current };
+          rows.forEach((row, rowIndex) => {
+            if (resolved[rowIndex]) next[row.id] = resolutionTypes[rowIndex] === 'suggested' ? 'gemini-suggested' : 'gemini';
+          });
+          return next;
+        });
+        setTopicResolverReviewed(false);
+        resolvedCount += resolved.filter((topic, rowIndex) => Boolean(topic) && resolutionTypes[rowIndex] !== 'suggested').length;
+        suggestedCount += resolved.filter((topic, rowIndex) => Boolean(topic) && resolutionTypes[rowIndex] === 'suggested').length;
+      }
+      setTopicResolverStatus(`Gemini matched ${resolvedCount} topics and suggested ${suggestedCount} new labels. Review every mapping before saving.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Gemini could not resolve the topics. Any completed suggestions are still available to review.');
+    } finally {
+      setTopicResolverGeminiLoading(false);
+    }
+  };
+
+  const saveReviewedTopicMappings = async () => {
+    if (unresolvedTopicRows.length || !topicResolverRows.length || !topicResolverReviewed) return;
+    setTopicResolverSaveLoading(true);
+    setTopicResolverStatus('Saving reviewed topic mappings...');
+    try {
+      const mappings = topicResolverRows.map((row) => ({
+        sourceTopic: row.sourceTopic,
+        canonicalTopic: currentResolverValue(row),
+        resolutionType: ['gemini-suggested', 'saved-suggestion'].includes(topicResolverMethods[row.id] ?? row.matchType) ? 'suggested' : 'canonical',
+      }));
+      const result = await runOperation({ operationName: 'Saving reviewed topic mappings', successMessage: 'The reviewed topic mappings were saved.' }, () => saveTopicResolverMappings({
+        subject: topicResolverSubject,
+        grade: topicResolverGrade,
+        rows: mappings,
+        adminId: user?.uid,
+      }));
+      const savedBySource = new Map(mappings.map((mapping) => [mapping.sourceTopic, mapping]));
+      setTopicResolverRows((current) => current.map((row) => {
+        const saved = savedBySource.get(row.sourceTopic);
+        return {
+          ...row,
+          suggestedTopic: saved?.canonicalTopic ?? currentResolverValue(row),
+          isSaved: true,
+          matchType: saved?.resolutionType === 'suggested' ? 'saved-suggestion' : 'saved',
+        };
+      }));
+      setTopicResolverCorrections({});
+      setTopicResolverMethods({});
+      setTopicResolverReviewed(true);
+      setTopicResolverCatalog((current) => [...new Set([
+        ...current,
+        ...mappings.map((mapping) => String(mapping.canonicalTopic ?? '').trim().replace(/\s*\|\s*/g, ' | ')),
+      ].filter(Boolean))].sort((left, right) => left.localeCompare(right)));
+      const savedSuggestionCount = mappings.filter((mapping) => mapping.resolutionType === 'suggested').length;
+      const savedMessage = savedSuggestionCount
+        ? `Saved ${result.savedCount} reviewed mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}, including ${savedSuggestionCount} accepted Google Gemini suggestion${savedSuggestionCount === 1 ? '' : 's'}.`
+        : `Saved ${result.savedCount} reviewed topic mapping${result.savedCount === 1 ? '' : 's'} for ${topicResolverSubject}, ${topicResolverGrade}.`;
+      const catalogMessage = result.globalCatalogSynced
+        ? ` Synced ${result.syncedTopicCount} distinct resolved topic${result.syncedTopicCount === 1 ? '' : 's'} to the global grade list; ${result.addedGlobalTopicCount} were newly added and duplicates were skipped.`
+        : '';
+      setTopicResolverStatus(`${savedMessage}${catalogMessage} Analyzed paper records were left unchanged.`);
+    } catch (error) {
+      setTopicResolverStatus(error.message || 'Could not save the topic mappings.');
+    } finally {
+      setTopicResolverSaveLoading(false);
+    }
+  };
+
+  const visibleTopicResolverRows = topicResolverRows.filter((row) => {
+    const searched = topicResolverSearch.trim().toLowerCase();
+    if (!searched) return true;
+    const selected = topicResolverCorrections[row.id] ?? row.suggestedTopic;
+    return `${row.sourceTopic} ${selected} ${row.sources.join(' ')}`.toLowerCase().includes(searched);
+  });
+
+
+  const startEditPaper = (paper) => {
+    setEditingPaper(paper);
+    setEditForm({
+      grade: paper.grade || SOUTH_AFRICAN_GRADES[0],
+      region: paper.region || REGIONS[0],
+      subject: paper.subject || DEFAULT_SUBJECT,
+      year: paper.year || new Date().getFullYear(),
+      month: paper.month || PAPER_MONTHS[0],
+      paperNumber: paper.paperNumber || PAPER_NUMBERS[0],
+      notes: paper.notes || '',
+      paperFile: null,
+      memoFile: null,
+      removeMemo: false,
+    });
+  };
+
+  const closeEditPaper = () => {
+    setEditingPaper(null);
+    setEditForm(null);
+  };
+
+
+  const queuePaperReanalysis = async (paper) => {
+    if (!paper?.id) return;
+    const succeeded = paper.analysisStatus === 'Analyzed' || paper.availableForGeneration;
+    if (succeeded && !window.confirm(`This paper has already been analyzed. Run the analysis again for ${paper.displayName || paper.paperFileName || 'this paper'}?`)) return;
+    const patch = makeAnalysisRetryPatch();
+    setStatus(`Adding ${paper.displayName || paper.paperFileName || 'paper'} to the analysis queue...`);
+    try {
+      await runOperation({ operationName: 'Queuing paper analysis', successMessage: 'The paper was added to the analysis queue.' }, () => updateQuestionPaper(paper.id, patch));
+      setPapers((current) => current.map((item) => item.id === paper.id ? { ...item, ...patch } : item));
+      setStatus('Analysis retry queued. It will start immediately if the queue is idle; otherwise it will wait for earlier papers to finish.');
+    } catch (error) {
+      setStatus(error.message || 'Could not queue paper analysis.');
+    }
+  };
+
+  const retryAllFailedPapers = async (failedPapers) => {
+    if (failedRetryAllLoading || !failedPapers.length) return;
+    setFailedRetryAllLoading(true);
+    setStatus('Adding failed papers to the analysis queue one at a time...');
+    const queuedPatches = new Map();
+    try {
+      await runOperation({
+        operationName: 'Retrying failed paper analyses',
+        successMessage: 'All failed papers were added to the normal analysis queue.',
+        failureMessage: 'Some failed papers could not be added to the analysis queue.',
+      }, async () => {
+        for (const paper of failedPapers) {
+          const patch = makeAnalysisRetryPatch();
+          await updateQuestionPaper(paper.id, patch);
+          queuedPatches.set(paper.id, patch);
+        }
+      });
+      setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
+        ? { ...paper, ...queuedPatches.get(paper.id) }
+        : paper));
+      setStatus(`${queuedPatches.size} failed paper${queuedPatches.size === 1 ? '' : 's'} added to the analysis queue in order.${analysisQueuePaused ? ' The queue is paused, so they will wait until resumed.' : ''}`);
+    } catch (error) {
+      if (queuedPatches.size) {
+        setPapers((current) => current.map((paper) => queuedPatches.has(paper.id)
+          ? { ...paper, ...queuedPatches.get(paper.id) }
+          : paper));
+      }
+      setStatus(queuedPatches.size
+        ? `Queued ${queuedPatches.size} of ${failedPapers.length} failed papers before stopping: ${error.message || 'queue update failed'}`
+        : error.message || 'Could not queue failed paper analyses.');
+    } finally {
+      setFailedRetryAllLoading(false);
+    }
+  };
+
+  const resumeAllWaitingPapers = async (waitingPapers) => {
+    if (waitingRetryAllLoading || !waitingPapers.length) return;
+    setWaitingRetryAllLoading(true);
+    setStatus('Checking Google Drive for valid analysis JSON files before queueing selected papers...');
+    const summary = { queuedCount: 0, skippedCount: 0, reviewCount: 0, errorCount: 0, invalidMetadataCount: 0 };
+    const groupedPapers = new Map();
+    waitingPapers.forEach((paper) => {
+      const subject = String(paper.subject ?? '').trim();
+      const grade = String(paper.grade ?? '').trim();
+      if (!paper.id || !subject || !grade) {
+        summary.invalidMetadataCount += 1;
+        return;
+      }
+      const key = JSON.stringify([subject, grade]);
+      const group = groupedPapers.get(key) ?? { subject, grade, papers: [] };
+      group.papers.push(paper);
+      groupedPapers.set(key, group);
+    });
+    const errors = [];
+    try {
+      await runOperation({
+        operationName: 'Checking Drive JSON and resuming paper analysis',
+        successMessage: 'Drive JSON checks finished for the waiting papers.',
+        failureMessage: 'Drive JSON checks could not finish for some waiting papers.',
+      }, async () => {
+        for (const group of groupedPapers.values()) {
+          for (let index = 0; index < group.papers.length; index += 50) {
+            const batch = group.papers.slice(index, index + 50);
+            try {
+              const result = await queueLegacyDriveJsonAnalyses({
+                subject: group.subject,
+                grade: group.grade,
+                maxPapers: batch.length,
+                paperIds: batch.map((paper) => paper.id),
+                onlyWaiting: true,
+              });
+              summary.queuedCount += Number(result?.queuedCount) || 0;
+              summary.skippedCount += Number(result?.skippedCount) || 0;
+              summary.reviewCount += Number(result?.reviewCount) || 0;
+              summary.errorCount += Number(result?.errorCount) || 0;
+            } catch (error) {
+              summary.errorCount += batch.length;
+              errors.push(`${group.subject}, ${group.grade}: ${error.message || 'Drive JSON check failed'}`);
+            }
+          }
+        }
+      });
+    } catch (error) {
+      errors.push(error.message || 'Could not check waiting papers against Drive JSON files.');
+    } finally {
+      setWaitingRetryAllLoading(false);
+    }
+    const skippedCount = summary.skippedCount + summary.invalidMetadataCount;
+    const parts = [
+      `${summary.queuedCount} queued with valid Drive JSON`,
+      `${skippedCount} skipped without a matching valid JSON or required metadata`,
+      `${summary.reviewCount} flagged for review`,
+      ...(summary.errorCount ? [`${summary.errorCount} failed checks`] : []),
+    ];
+    const pauseNote = analysisQueuePaused ? ' The analysis queue is paused, so queued papers will wait until you resume it.' : '';
+    const failureNote = errors.length ? ` Errors: ${[...new Set(errors)].join('; ')}` : '';
+    setStatus(`${parts.join(' · ')}.${pauseNote}${failureNote}`);
+  };
+
+  const stopPaperAnalysis = async (paper) => {
+    if (!paper?.id) return;
+    if (!window.confirm(`Stop the analysis for ${paper.displayName || paper.paperFileName || 'this paper'}? Any queued work for this paper will be cancelled.`)) return;
+    setStatus(`Stopping analysis for ${paper.displayName || paper.paperFileName || 'paper'}...`);
+    try {
+      await runOperation({ operationName: 'Stopping paper analysis', successMessage: 'Paper analysis was stopped.' }, () => cancelQuestionPaperAnalysis(paper.id));
+    } catch (error) {
+      setStatus(error.message || 'Could not stop paper analysis.');
+      return;
+    }
+    const patch = {
+      analysisStatus: 'Cancelled',
+      analysisStage: 'Cancelled',
+      analysisProgressMessage: 'Analysis stopped by user.',
+      analysisError: '',
+      activeAnalysisRunId: null,
+      queuedAnalysisRunId: null,
+      availableForGeneration: false,
+    };
+    setPapers((current) => current.map((item) => item.id === paper.id ? { ...item, ...patch } : item));
+    setStatus('Analysis stopped.');
+  };
+
+  const handleEditSubmit = async (event) => {
+    event.preventDefault();
+    if (!editingPaper || !editForm) return;
+    if (!canUploadPapers(role) && (editForm.paperFile || editForm.memoFile)) {
+      setStatus('Only administrators can upload or replace paper files.');
+      return;
+    }
+    try {
+      await runOperation({ operationName: 'Updating paper and uploaded documents', successMessage: 'The paper was updated successfully.' }, async () => {
+      setStatus(`Updating ${editingPaper.displayName || editingPaper.paperFileName || 'paper'}...`);
+      const uploads = editForm.paperFile || editForm.memoFile
+        ? await uploadQuestionPaperDocuments({
+          paperFile: editForm.paperFile,
+          memoFile: editForm.memoFile,
+          uploaderId: profile?.uid ?? 'anonymous',
+          onProgress: (message) => setStatus(`Update: ${message}`),
+        })
+        : {};
+
+      const metadataChanged = ['grade', 'region', 'subject', 'year', 'month', 'paperNumber', 'notes']
+        .some((field) => String(editForm[field] ?? '') !== String(editingPaper[field] ?? ''));
+      const fileChanged = Boolean(editForm.paperFile);
+      const needsAnalysis = fileChanged;
+      const displayName = `${editForm.subject} • ${editForm.grade} • ${editForm.region} • ${editForm.month} ${editForm.year} • ${editForm.paperNumber}${editingPaper.copySuffix ? ` ${editingPaper.copySuffix}` : ''}`;
+      const patch = {
+        grade: editForm.grade,
+        region: editForm.region,
+        subject: editForm.subject,
+        year: Number(editForm.year),
+        month: editForm.month,
+        paperNumber: editForm.paperNumber,
+        notes: editForm.notes,
+        displayName,
+        ...(metadataChanged ? {
+          paperMetadata: {
+            ...(editingPaper.paperMetadata ?? {}),
+            year: Number(editForm.year) || null,
+            month: editForm.month,
+            subject: editForm.subject,
+            grade: editForm.grade,
+            region: editForm.region,
+            paperNumber: editForm.paperNumber,
+            copySuffix: editingPaper.copySuffix ?? '',
+            paperTitle: displayName,
+          },
+        } : {}),
+        ...(uploads.paperUrl ? { paperUrl: uploads.paperUrl, paperFileName: uploads.paperFileName, paperMimeType: uploads.paperMimeType } : {}),
+        ...(editForm.removeMemo ? { memoUrl: '', memoFileName: '', memoMimeType: '' } : {}),
+        ...(uploads.memoUrl ? { memoUrl: uploads.memoUrl, memoFileName: uploads.memoFileName, memoMimeType: uploads.memoMimeType } : {}),
+        ...(needsAnalysis ? {
+          analysisStatus: 'Analyzing',
+          availableForGeneration: false,
+          analysisProgressMessage: 'Queued for re-analysis',
+          analysisProgressCurrent: 0,
+          analysisProgressTotal: 1,
+          analysisError: '',
+          analysisRevision: Date.now(),
+          questions: [],
+          topics: [],
+          questionCount: 0,
+        } : {}),
+      };
+      await updateQuestionPaper(editingPaper.id, patch);
+      setPapers((current) => current.map((paper) => paper.id === editingPaper.id ? { ...paper, ...patch } : paper));
+      setStatus(needsAnalysis ? 'Paper file updated. Analysis is running again in the background.' : 'Paper metadata updated without re-analysis.');
+      closeEditPaper();
+      });
+    } catch (error) {
+      setStatus(error.message || 'Could not update paper.');
+    }
+  };
+
+  const saveReviewedPaper = async ({ row, index, total }) => {
+    if (!canUploadPapers(role)) throw new Error('Only administrators can upload past-paper files.');
+    setStatus(`Uploading paper ${index + 1}/${total}: ${row.paperFile.name}`);
+    const uploads = await uploadQuestionPaperDocuments({
+      paperFile: row.paperFile,
+      memoFile: row.memoFile,
+      uploaderId: profile?.uid ?? 'anonymous',
+      onProgress: (message) => setStatus(`Paper ${index + 1}/${total}: ${message}`),
+    });
+    return saveQuestionPaper({
+      grade: row.grade,
+      region: row.region,
+      subject: row.subject,
+      year: Number(row.year),
+      month: row.month,
+      paperNumber: row.paperNumber,
+      notes: row.notes,
+      paperUrl: uploads.paperUrl,
+      memoUrl: uploads.memoUrl,
+      paperFileName: uploads.paperFileName,
+      memoFileName: uploads.memoFileName,
+      paperMimeType: uploads.paperMimeType,
+      memoMimeType: uploads.memoMimeType,
+      analysisStatus: 'Analyzing',
+      availableForGeneration: false,
+      analysisProgressMessage: 'Queued for analysis',
+      analysisProgressCurrent: 0,
+      analysisProgressTotal: 1,
+      createdBy: profile?.uid ?? 'unknown',
+      bulkUploadIndex: index + 1,
+      bulkUploadTotal: total,
+    });
+  };
+
+  const handleSingleSubmit = async (event) => {
+    event.preventDefault();
+    if (!canUploadPapers(role)) {
+      setStatus('Only administrators can upload past-paper files.');
+      return;
+    }
+    if (!singleForm.paperFile) {
+      setStatus('Choose a question paper first.');
+      return;
+    }
+    try {
+      const saved = await runOperation({ operationName: 'Uploading and saving question paper', successMessage: 'The question paper was saved and queued for analysis.' }, () => saveReviewedPaper({ row: singleForm, index: 0, total: 1 }));
+      setPapers((current) => [saved, ...current.filter((paper) => paper.id !== saved.id)]);
+      setStatus('Past paper saved. Analysis is running in the background.');
+      setSingleForm(defaultPaperForm(profile));
+      event.target.reset();
+    } catch (error) {
+      setStatus(error.message || 'Could not save paper.');
+    }
+  };
+
+  const loadDriveFolderContents = async (folderId = '', nextTrail = null) => {
+    setDriveFolderLoading(true);
+    setDriveImportMessage('');
+    try {
+      const contents = await getGoogleDrivePastPaperFolderContents(folderId);
+      setDriveFolderContents(contents);
+      setDriveFolderTrail(nextTrail ?? [{ id: contents.folder.id, name: contents.folder.name }]);
+      return contents;
+    } catch (error) {
+      setDriveImportMessage(error.message || 'Could not load this Drive folder.');
+      return null;
+    } finally {
+      setDriveFolderLoading(false);
+    }
+  };
+
+  const handleToggleDriveExplorer = () => {
+    if (driveExplorerOpen) {
+      setDriveExplorerOpen(false);
+      return;
+    }
+    setDriveExplorerOpen(true);
+    if (!driveFolderContents) loadDriveFolderContents();
+  };
+
+  const handleDriveImport = async (paperGroup, { retryReviewFileIds = [] } = {}) => {
+    const fileIds = paperGroup?.importFileIds ?? [];
+    if (!driveFolderContents?.folder?.id || !fileIds.length) return;
+    const selectedFolderId = driveFolderContents.folder.id;
+    setDriveImportRunning(true);
+    setDriveImportMessage('');
+    let statusPollInFlight = false;
+    let statusPollingStopped = false;
+    const refreshImportStatuses = async () => {
+      if (statusPollingStopped || statusPollInFlight) return;
+      statusPollInFlight = true;
+      try {
+        const statuses = await getGoogleDrivePastPaperImportStatuses(fileIds);
+        if (!statusPollingStopped) setDriveFolderContents((current) => mergeDriveImportStatuses(current, statuses));
+      } catch {
+        // The import itself remains authoritative; a later folder refresh will show its final status.
+      } finally {
+        statusPollInFlight = false;
+      }
+    };
+    const statusPoll = window.setInterval(refreshImportStatuses, 2500);
+    const stopStatusPolling = () => {
+      statusPollingStopped = true;
+      window.clearInterval(statusPoll);
+    };
+    void refreshImportStatuses();
+    try {
+      const result = await runOperation({
+        operationName: 'Importing selected paper from Google Drive',
+        successMessage: 'The Google Drive import run completed. Check the per-file statuses for the result.',
+      }, () => startGoogleDrivePastPaperImport({ folderId: selectedFolderId, fileIds, retryReviewFileIds }));
+      stopStatusPolling();
+      if (result?.skipped && result.reason === 'already_running') {
+        setDriveImportMessage('A Google Drive import is already running.');
+      } else {
+        const refreshed = await loadDriveFolderContents(selectedFolderId, driveFolderTrail);
+        setDriveImportMessage(
+          `Selected-folder import finished: ${result?.importedFiles ?? 0} file(s) added, ${result?.duplicateFiles ?? 0} duplicate(s), ${result?.waitingFiles ?? 0} waiting for a matching paper, ${result?.skippedFiles ?? 0} skipped because an import was already active or complete (including ${result?.reviewSkippedFiles ?? 0} still held for review), ${result?.reviewFiles ?? 0} sent for review, ${result?.failedFiles ?? 0} failed.${refreshed ? '' : ' Folder status could not be refreshed.'}`,
+        );
+      }
+    } catch (error) {
+      setDriveImportMessage(error.message || 'Could not start the Google Drive import.');
+    } finally {
+      stopStatusPolling();
+      setDriveImportRunning(false);
+    }
+  };
+
+  const handleDriveImportAll = async () => {
+    if (driveFullImportRunning) return;
+    setDriveFullImportRunning(true);
+    setDriveImportMessage('Scanning the configured past-paper folder and queueing eligible folders…');
+    try {
+      const result = await runOperation({
+        operationName: 'Queueing all missing Google Drive papers',
+        successMessage: 'The configured Drive folders were queued for import.',
+      }, startGoogleDrivePastPaperImportAll);
+      setDriveImportMessage(
+        `Drive scan complete: ${result?.queuedFolders ?? 0} folder(s) queued, ${result?.alreadyQueuedFolders ?? 0} already queued, across ${result?.discoveredFolders ?? 0} folders with ${result?.discoveredPdfFiles ?? 0} PDF(s). Each folder imports files one at a time; papers already present are skipped.`,
+      );
+    } catch (error) {
+      setDriveImportMessage(error.message || 'Could not start the full Google Drive import.');
+    } finally {
+      setDriveFullImportRunning(false);
+    }
+  };
+
+  const handleBulkFiles = (event) => {
+    const files = Array.from(event.target.files ?? []);
+    const result = buildBulkRows({ files, profile });
+    setBulkRows(result.rows);
+    setBulkMemoFiles(result.memoFiles);
+    event.target.value = '';
+    setStatus(result.rows.length
+      ? `${result.rows.length} question paper${result.rows.length === 1 ? '' : 's'} prepared for review.${result.memoFiles.length ? ` ${result.memoFiles.length} memo file${result.memoFiles.length === 1 ? ' is' : 's are'} available to link.` : ''}`
+      : result.memoFiles.length
+        ? 'No question papers were detected. Memo files are ready to link after you add paper files.'
+        : 'No question paper files were detected. Include paper files and optional memo files.');
+  };
+
+  const updateBulkRow = (id, patch) => setBulkRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
+  const handleAddMoreBulkFiles = (event) => {
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) return;
+    const additions = buildBulkRows({ files, profile });
+    const combinedRows = [...bulkRows, ...additions.rows];
+    const candidates = [...bulkMemoFiles, ...additions.memoFiles];
+    const paired = pairAvailableBulkMemos(combinedRows, candidates);
+    setBulkRows(paired.rows);
+    setBulkMemoFiles(paired.memoFiles);
+    event.target.value = '';
+    setStatus(`${additions.rows.length} paper${additions.rows.length === 1 ? '' : 's'} added from the new files and checked by the detector.${paired.memoFiles.length ? ` ${paired.memoFiles.length} memo file${paired.memoFiles.length === 1 ? ' is' : 's are'} available to link.` : ''}`);
+  };
+
+  const changeBulkMemo = (rowId, selectedFileId) => {
+    const targetRow = bulkRows.find((row) => row.id === rowId);
+    if (!targetRow || selectedFileId === targetRow.memoFileId) return;
+
+    let sourceFile = null;
+    let sourceRowId = '';
+    let sourceRole = '';
+    bulkRows.forEach((row) => {
+      if (row.id !== rowId && row.paperFileId === selectedFileId) {
+        sourceFile = row.paperFile;
+        sourceRowId = row.id;
+        sourceRole = 'paper';
+      } else if (row.memoFileId === selectedFileId) {
+        sourceFile = row.memoFile;
+        sourceRowId = row.id === rowId ? '' : row.id;
+        sourceRole = 'memo';
+      }
+    });
+    const pooledEntry = bulkMemoFiles.find((entry) => entry.id === selectedFileId);
+    if (pooledEntry) {
+      sourceFile = pooledEntry.file;
+      sourceRole = 'pool';
+    }
+    if (selectedFileId && !sourceFile) return;
+
+    const nextRows = bulkRows.map((row) => ({ ...row }));
+    const nextPool = [...bulkMemoFiles];
+    const pushMemoToPool = (id, file) => {
+      if (id && file && !nextPool.some((entry) => entry.id === id)) nextPool.push({ id, file });
+    };
+    if (targetRow.memoFileId) pushMemoToPool(targetRow.memoFileId, targetRow.memoFile);
+
+    if (sourceRole === 'pool') {
+      const poolIndex = nextPool.findIndex((entry) => entry.id === selectedFileId);
+      if (poolIndex >= 0) nextPool.splice(poolIndex, 1);
+    } else if (sourceRole === 'memo' && sourceRowId) {
+      const sourceRow = nextRows.find((row) => row.id === sourceRowId);
+      if (sourceRow) {
+        sourceRow.memoFile = null;
+        sourceRow.memoFileId = '';
+      }
+    } else if (sourceRole === 'paper' && sourceRowId) {
+      const sourceRow = nextRows.find((row) => row.id === sourceRowId);
+      if (sourceRow?.memoFileId) pushMemoToPool(sourceRow.memoFileId, sourceRow.memoFile);
+      const sourceIndex = nextRows.findIndex((row) => row.id === sourceRowId);
+      if (sourceIndex >= 0) nextRows.splice(sourceIndex, 1);
+    }
+
+    const nextTarget = nextRows.find((row) => row.id === rowId);
+    if (nextTarget) {
+      nextTarget.memoFile = sourceFile;
+      nextTarget.memoFileId = selectedFileId;
+    }
+    setBulkRows(nextRows);
+    setBulkMemoFiles(nextPool.filter((entry) => entry.id !== selectedFileId));
+  };
+
+  const addBulkMemoFile = (rowId, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setStatus(`${file.name} is not a PDF. Memo files must be PDFs.`);
+      return;
+    }
+    const entry = makeBulkFileEntry(file);
+    const row = bulkRows.find((item) => item.id === rowId);
+    if (!row) return;
+    setBulkRows((current) => current.map((item) => item.id === rowId
+      ? { ...item, memoFile: file, memoFileId: entry.id }
+      : item));
+    if (row.memoFileId && row.memoFile) {
+      setBulkMemoFiles((current) => [...current.filter((item) => item.id !== row.memoFileId), { id: row.memoFileId, file: row.memoFile }]);
+    }
+    setStatus(`Memo ${file.name} added for ${row.paperFile.name}. It will not create a separate paper or trigger a second analysis.`);
+  };
+
+  const convertBulkMemoToPaper = (rowId) => {
+    const row = bulkRows.find((item) => item.id === rowId);
+    if (!row?.memoFile || !row.memoFileId) return;
+    const newPaperRow = {
+      id: row.memoFileId,
+      paperFileId: row.memoFileId,
+      paperFile: row.memoFile,
+      memoFileId: '',
+      memoFile: null,
+      ...inferMetadataFromName(row.memoFile, profile),
+      notes: '',
+    };
+    setBulkRows((current) => current.flatMap((item) => item.id === rowId
+      ? [{ ...item, memoFile: null, memoFileId: '' }, newPaperRow]
+      : [item]));
+    setBulkMemoFiles((current) => current.filter((entry) => entry.id !== row.memoFileId));
+    setStatus(`${newPaperRow.paperFile.name} is now a question paper and will be analyzed when the bulk upload is saved.`);
+  };
+
+  const removeBulkRow = (id) => {
+    const row = bulkRows.find((item) => item.id === id);
+    setBulkRows((current) => current.filter((item) => item.id !== id));
+    if (row?.memoFileId && row.memoFile) {
+      setBulkMemoFiles((current) => [...current.filter((entry) => entry.id !== row.memoFileId), { id: row.memoFileId, file: row.memoFile }]);
+    }
+  };
+
+  const renderMemoAction = (paper, label = 'Memo') => {
+    if (!paper.memoUrl) return <span className="rounded-full bg-slate-50 px-3 py-2 text-sm text-slate-500">No memo uploaded</span>;
+    if (role === ROLES.STUDENT && memoAccess.isMemoLocked(paper.id)) {
+      const message = memoAccess.error
+        ? 'Memo unavailable until submission status can be checked'
+        : memoAccess.isLoading
+          ? 'Checking memo access…'
+          : 'Submit today’s work to unlock memo';
+      return <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600" role="status">{message}</span>;
+    }
+    return <Link className="btn-secondary" to={`${paperPath(paper.id)}?document=memo&page=1`}>{label}</Link>;
+  };
+
+  const getCatalogDocumentTitle = (paper, type) => {
+    const rawPaperNumber = String(getPaperField(paper, 'paperNumber') || '').trim();
+    const paperNumber = rawPaperNumber.replace(/^paper\s*/i, '').trim();
+    const base = paperNumber ? `${type === 'memo' ? 'Memo' : 'Paper'} ${paperNumber}` : (type === 'memo' ? 'Memo' : 'Question paper');
+    const languageValue = getPaperField(paper, 'language') || getPaperField(paper, 'paperLanguage') || getPaperField(paper, 'languages');
+    const language = Array.isArray(languageValue) ? languageValue.filter(Boolean).join(' & ') : String(languageValue || '').trim();
+    const details = [language, getPaperField(paper, 'month'), getPaperField(paper, 'region')].filter(Boolean);
+    return details.length ? `${base} (${details.join(' · ')})` : base;
+  };
+
+  const downloadPaperDocument = async (paper, type) => {
+    const url = type === 'memo' ? paper.memoUrl : paper.paperUrl;
+    const downloadKey = `${paper.id}:${type}`;
+    if (!url || downloadingDocument) return;
+    setDownloadingDocument(downloadKey);
+    setDownloadStatus('');
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`The file server returned ${response.status}.`);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const sourceName = type === 'memo' ? paper.memoFileName : paper.paperFileName;
+      const fallbackName = getCatalogDocumentTitle(paper, type).replace(/[\\/:*?"<>|]+/g, '-');
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = sourceName || `${fallbackName}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      setDownloadStatus(`${type === 'memo' ? 'Memo' : 'Paper'} download started.`);
+    } catch (error) {
+      setDownloadStatus(`Could not download this file. ${error.message || 'Please try again.'}`);
+    } finally {
+      setDownloadingDocument('');
+    }
+  };
+
+  const renderCatalogOpenAction = (paper, type) => {
+    const url = type === 'memo' ? paper.memoUrl : paper.paperUrl;
+    if (!url) return <span className="text-xs text-slate-500">Unavailable</span>;
+    if (!isPublicCatalog && role === ROLES.STUDENT && type === 'memo' && memoAccess.isMemoLocked(paper.id)) {
+      const message = memoAccess.error
+        ? 'Memo unavailable until submission status can be checked'
+        : memoAccess.isLoading
+          ? 'Checking memo access…'
+          : 'Submit today’s work to unlock memo';
+      return <span className="text-xs font-medium text-slate-400" role="status" title={message}>{memoAccess.isLoading ? 'Checking…' : 'Locked'}</span>;
+    }
+    const downloadKey = `${paper.id}:${type}`;
+    return (
+      <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2">
+        <Link
+          className="inline-flex px-1 py-1 text-xs font-bold text-lime-300 transition hover:text-lime-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 sm:text-sm"
+          to={`${paperPath(paper.id)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
+          aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
+        >
+          Open
+        </Link>
+        <button
+          type="button"
+          className="inline-flex px-1 py-1 text-xs font-semibold text-slate-200 transition hover:text-emerald-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 disabled:cursor-wait disabled:opacity-60 sm:text-sm"
+          onClick={() => downloadPaperDocument(paper, type)}
+          disabled={Boolean(downloadingDocument)}
+          aria-label={`Download ${getCatalogDocumentTitle(paper, type)}`}
+          aria-busy={downloadingDocument === downloadKey}
+        >
+          {downloadingDocument === downloadKey ? 'Preparing…' : 'Download'}
+        </button>
+      </div>
+    );
+  };
+
+  const handleBulkSubmit = async () => {
+    if (!canUploadPapers(role)) {
+      setStatus('Only administrators can upload past-paper files.');
+      return;
+    }
+    if (!bulkRows.length) {
+      setStatus('Choose bulk files first.');
+      return;
+    }
+    try {
+      await runOperation({ operationName: `Uploading ${bulkRows.length} question papers`, successMessage: 'The question papers were saved and queued for analysis.' }, async () => {
+        const saved = [];
+        for (let index = 0; index < bulkRows.length; index += 1) {
+          saved.push(await saveReviewedPaper({ row: bulkRows[index], index, total: bulkRows.length }));
+        }
+        setPapers((current) => [...saved, ...current.filter((paper) => !saved.some((item) => item.id === paper.id))]);
+        setBulkRows([]);
+        setBulkMemoFiles([]);
+        setStatus(`${saved.length} paper${saved.length === 1 ? '' : 's'} saved. Papers will be analyzed one at a time in upload order.`);
+      });
+    } catch (error) {
+      setStatus(error.message || 'Bulk upload failed.');
+    }
+  };
+
+  const renderPaperCard = (paper) => (
+    <div key={paper.id}>
+      <div className="panel p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-950">{paper.displayName || getPaperTitle(paper)}</h3>
+            <p className="mt-1 text-sm text-slate-500">{paper.region} • {paper.month} {paper.year} • {paper.paperNumber ?? 'Paper 1'}</p>
+          </div>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-slate-600">{paper.subject}</span>
+        </div>
+        {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
+        <div className="mt-4 flex flex-wrap gap-3 text-sm">
+          <Link className="btn-secondary" to={`${paperPath(paper.id)}?page=1`}>Open paper</Link>
+          {renderMemoAction(paper, 'Open memo')}
+          {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
+          {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}
+          {canManagePaperAnalysis(role) && canStopPaperAnalysis(paper) ? <button type="button" className="btn-secondary text-rose-700 hover:text-rose-800" onClick={() => stopPaperAnalysis(paper).catch((error) => setStatus(error.message || 'Could not stop analysis.'))}>Stop analysis</button> : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  const pageContent = (
+    <>
+      <SectionHeader
+        eyebrow="Repository"
+        title="Question papers"
+        description={usesStudentCatalog
+          ? isStudentExploring
+            ? 'Search and filter all Examifying question papers.'
+            : 'Browse all Examifying question papers and memoranda. Search or filter to narrow the collection.'
+          : role === ROLES.ADMIN
+            ? 'Review papers grouped by analysis status. Each section has separate filters.'
+            : 'Browse papers across all subjects. Use filters to narrow the collection.'}
+      />
+      {role === ROLES.ADMIN ? (
+        <section className="panel mb-4 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Question-paper analysis queue controls">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-semibold text-slate-900">Question-paper analysis queue</h2>
+              {analysisQueueControlReady ? (
+                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${analysisQueuePaused
+                  ? 'border-amber-300 bg-amber-100 text-amber-900'
+                  : 'border-lime-300 bg-lime-100 text-lime-900'}`}>
+                  {analysisQueuePaused ? 'Paused' : 'Running'}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 text-sm text-slate-600">
+              {analysisQueueControlReady
+                ? analysisQueuePaused
+                  ? analysisQueueActivePaperId
+                    ? 'The current paper may finish. Remaining papers stay queued until you resume.'
+                    : 'Queued papers are being held until you resume analysis.'
+                  : 'Pause after the current paper finishes; queued papers will be kept.'
+                : analysisQueueControlFailed
+                  ? 'The queue status could not be loaded. Refresh the page before changing the queue.'
+                  : 'Checking the analysis queue status…'}
+            </p>
+            {analysisQueueMessage ? <p className="mt-2 text-sm text-slate-700" role="status">{analysisQueueMessage}</p> : null}
+            {driveTopicAllSyncError ? <p className="mt-2 text-sm text-rose-700" role="alert">{driveTopicAllSyncError}</p> : null}
+            {driveTopicAllSyncJob?.jobId ? (
+              <div className={`mt-3 rounded-xl border p-3 text-sm ${driveTopicAllSyncJob.status === 'running' ? 'border-lime-300 bg-lime-50 text-lime-950' : driveTopicAllSyncJob.status === 'completed_with_errors' || driveTopicAllSyncJob.status === 'failed' ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-800'}`} role="status">
+                <p className="font-semibold">
+                  {driveTopicAllSyncJob.status === 'running'
+                    ? `Syncing ${driveTopicAllSyncJob.currentSubject || 'topic catalogs'}${driveTopicAllSyncJob.currentGrade ? ` · ${driveTopicAllSyncJob.currentGrade}` : ''}`
+                    : driveTopicAllSyncJob.status === 'completed_with_errors'
+                      ? 'Topic sync finished with some folder or paper export errors.'
+                      : driveTopicAllSyncJob.status === 'failed'
+                        ? 'Topic sync stopped after an error.'
+                        : 'All topic catalogs have been synced.'}
+                </p>
+                {driveTopicAllSyncJob.error ? <p className="mt-1">{driveTopicAllSyncJob.error}</p> : null}
+                {driveTopicAllSyncJob.totalCount ? (
+                  <>
+                    <p className="mt-1">{Math.min(driveTopicAllSyncJob.currentIndex ?? 0, driveTopicAllSyncJob.totalCount)} of {driveTopicAllSyncJob.totalCount} grades processed · {driveTopicAllSyncJob.completedCount ?? 0} synced · {driveTopicAllSyncJob.failedCount ?? 0} with errors</p>
+                    <p className="mt-1 text-xs">
+                      Drive exports: {driveTopicAllSyncJob.paperUploadedCount ?? 0} papers · {driveTopicAllSyncJob.memoUploadedCount ?? 0} memos · {driveTopicAllSyncJob.analysisJsonWrittenCount ?? 0} analysis JSON files created/updated · {driveTopicAllSyncJob.exportFailureCount ?? 0} paper export issues
+                    </p>
+                  </>
+                ) : null}
+                {driveTopicAllSyncJob.failures?.length ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer font-semibold">Show folder and paper export errors</summary>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                      {driveTopicAllSyncJob.failures.map((failure) => <li key={`${failure.subject}-${failure.grade}`}>{failure.subject} · {failure.grade}: {failure.error}</li>)}
+                    </ul>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
+              onClick={handleStartDriveTopicAllSync}
+              disabled={driveTopicAllSyncStarting || driveTopicAllSyncJob?.status === 'running'}
+            >
+              {driveTopicAllSyncStarting || driveTopicAllSyncJob?.status === 'running'
+                ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                : <ListChecks className="h-4 w-4" aria-hidden="true" />}
+              {driveTopicAllSyncStarting ? 'Starting sync…' : driveTopicAllSyncJob?.status === 'running' ? 'Syncing topics…' : 'Sync all topics to Drive'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
+              onClick={() => { setDriveTopicSyncPreview(null); setTopicResolverStatus('Choose a subject and grade to preview a Drive and Firestore topic sync.'); setTopicResolverOpen(true); }}
+            >
+              <ListChecks className="h-4 w-4" aria-hidden="true" />
+              Topic review tools
+            </button>
+            <button
+              type="button"
+              className={analysisQueuePaused
+                ? 'btn-primary inline-flex shrink-0 items-center justify-center gap-2'
+                : 'btn-secondary inline-flex shrink-0 items-center justify-center gap-2'}
+              disabled={!analysisQueueControlReady || analysisQueueControlSaving}
+              onClick={handleToggleAnalysisQueue}
+            >
+              {analysisQueueControlSaving || (!analysisQueueControlReady && !analysisQueueControlFailed)
+                ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                : analysisQueueControlFailed
+                  ? <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                  : analysisQueuePaused
+                    ? <Play className="h-4 w-4" aria-hidden="true" />
+                    : <Pause className="h-4 w-4" aria-hidden="true" />}
+              {analysisQueueControlSaving
+                ? (analysisQueuePaused ? 'Resuming…' : 'Pausing…')
+                : !analysisQueueControlReady
+                  ? analysisQueueControlFailed ? 'Status unavailable' : 'Loading status…'
+                  : analysisQueuePaused
+                    ? 'Resume analysis'
+                    : 'Pause analysis queue'}
+            </button>
+            <p className="basis-full text-xs leading-5 text-slate-500">The all-topic sync processes each subject and grade in order, keeps only topics backed by analyzed questions, and writes the same catalog to Firestore and Drive. It creates an empty topics.json for a grade with no analyzed topics.</p>
+          </div>
+        </section>
+      ) : null}
+      {role === ROLES.ADMIN ? (
+        <div className="panel !bg-transparent space-y-4 p-4">
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
+                <h2 className="font-semibold text-slate-100">Google Drive past-paper folders</h2>
+              <p className="mt-1 text-sm text-slate-300">Browse folders to import selected papers, or queue all missing PDFs beneath the configured root. The importer processes each folder and its files sequentially.</p>
+              {driveImportMessage ? <p className="mt-2 text-sm text-lime-200" role="status">{driveImportMessage}</p> : null}
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-1 sm:justify-end">
+              <button
+                type="button"
+                className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                disabled={driveFullImportRunning || driveImportRunning}
+                onClick={handleDriveImportAll}
+              >
+                {driveFullImportRunning ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <HardDriveDownload className="h-4 w-4" aria-hidden="true" />}
+                {driveFullImportRunning ? 'Queueing all folders…' : 'Import all missing papers'}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary inline-flex shrink-0 items-center justify-center gap-2"
+                disabled={driveFolderLoading || driveImportRunning || driveFullImportRunning}
+                onClick={handleToggleDriveExplorer}
+              >
+                {driveFolderLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <HardDriveDownload className="h-4 w-4" aria-hidden="true" />}
+                {driveExplorerOpen ? 'Close Drive browser' : 'Browse Drive folders'}
+              </button>
+            </div>
+          </div>
+          {driveExplorerOpen ? (
+            <div className="w-full space-y-4 border-t border-slate-700 pt-4">
+              {driveFolderTrail.length ? (
+                <nav aria-label="Google Drive folder path" className="flex flex-wrap items-center gap-1 text-sm">
+                  {driveFolderTrail.map((folder, index) => (
+                    <span key={folder.id} className="inline-flex items-center gap-1">
+                      {index ? <ChevronRight className="h-4 w-4 text-slate-400" aria-hidden="true" /> : null}
+                      <button
+                        type="button"
+                        className={`rounded px-1 py-0.5 ${index === driveFolderTrail.length - 1 ? 'font-semibold text-white' : 'text-lime-300 hover:bg-lime-300/10 hover:text-lime-100'}`}
+                        onClick={() => loadDriveFolderContents(folder.id, driveFolderTrail.slice(0, index + 1))}
+                      >
+                        {folder.name}
+                      </button>
+                    </span>
+                  ))}
+                </nav>
+              ) : null}
+              {driveFolderLoading ? (
+                <div className="flex items-center gap-2 py-5 text-sm text-slate-200"><LoaderCircle className="h-4 w-4 animate-spin text-lime-300" aria-hidden="true" />Loading folder contents…</div>
+              ) : driveFolderContents ? (
+                <>
+                  {driveFolderContents.folders.length ? (
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {driveFolderContents.folders.map((folder) => (
+                        <button
+                          key={folder.id}
+                          type="button"
+                          className="flex items-center gap-2 rounded-xl border border-lime-300/30 bg-transparent px-3 py-2.5 text-left text-sm font-medium text-slate-100 transition-colors hover:bg-lime-300/10 hover:text-white"
+                          onClick={() => loadDriveFolderContents(folder.id, [...driveFolderTrail, folder])}
+                        >
+                          <Folder className="h-4 w-4 shrink-0 text-lime-300" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" aria-hidden="true" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {driveFolderContents.papers.length ? (
+                    <div className="overflow-x-auto rounded-xl border border-slate-700/80 bg-transparent">
+                      <table className="min-w-[860px] w-full divide-y divide-slate-700 text-left text-sm">
+                        <thead className="bg-transparent text-xs uppercase tracking-wide text-slate-300">
+                          <tr>
+                            <th className="px-4 py-3 font-semibold">Paper / Drive files</th>
+                            <th className="px-4 py-3 font-semibold">Question paper</th>
+                            <th className="px-4 py-3 font-semibold">Memo</th>
+                            <th className="px-4 py-3 text-right font-semibold">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800 bg-transparent">
+                          {driveFolderContents.papers.map((group) => {
+                            const title = group.metadata
+                              ? [group.metadata.subject, group.metadata.grade, group.metadata.region, group.metadata.year, group.metadata.paperNumber].filter(Boolean).join(' • ')
+                              : group.files.map((file) => file.name).join(', ');
+                            const questionName = group.questionFiles.map((file) => file.name).join(', ') || 'No question-paper PDF in this folder';
+                            const memoName = group.memoFiles.map((file) => file.name).join(', ') || 'No memo PDF in this folder';
+                            const statusBadge = (value, stage = '') => {
+                              const styles = {
+                                uploaded: 'bg-lime-100 text-lime-900',
+                                analyzed: 'bg-lime-100 text-lime-900',
+                                analyzing: 'bg-amber-100 text-amber-900',
+                                importing: 'bg-lime-200 text-lime-950',
+                                stalled: 'bg-amber-100 text-amber-900',
+                                'import-failed': 'bg-rose-100 text-rose-800',
+                                'analysis-failed': 'bg-rose-100 text-rose-800',
+                                missing: 'bg-amber-100 text-amber-900',
+                                waiting: 'bg-slate-100 text-slate-700',
+                                review: 'bg-rose-100 text-rose-800',
+                                'no-file': 'bg-slate-50 text-slate-500',
+                              };
+                              const labels = {
+                                uploaded: 'Uploaded', analyzed: 'Analyzed', analyzing: 'Analyzing', importing: 'Importing', stalled: 'Import stalled',
+                                'import-failed': 'Import failed', 'analysis-failed': 'Analysis failed', missing: 'Missing',
+                                waiting: 'Waiting for paper', review: 'Review required', 'no-file': 'No memo here',
+                              };
+                              const detail = driveImportStageLabels[stage];
+                              return <span title={detail} className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${styles[value] ?? styles.review}`}>{labels[value] ?? 'Review required'}</span>;
+                            };
+                            const questionImportStage = group.questionFiles.find((file) => ['importing', 'processing'].includes(file.importStatus))?.importStage;
+                            const memoImportStage = group.memoFiles.find((file) => ['importing', 'processing'].includes(file.importStatus))?.importStage;
+                            const reviewFileIds = group.files.filter((file) => file.importStatus === 'review').map((file) => file.id);
+                            const groupIsImporting = group.paperStatus === 'importing' || group.memoStatus === 'importing';
+                            return (
+                              <tr key={group.identityKey} className="align-top transition-colors hover:bg-lime-300/5">
+                                <td className="max-w-[22rem] px-4 py-3">
+                                  <p className="font-semibold text-slate-100">{title}</p>
+                                  {group.reviewReason ? <p className="mt-1 text-xs text-rose-300">{group.reviewReason}</p> : null}
+                                </td>
+                                <td className="max-w-[20rem] px-4 py-3">
+                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-200">{questionName}</span></div>
+                                  <div className="mt-2">{statusBadge(group.paperStatus, questionImportStage)}</div>
+                                </td>
+                                <td className="max-w-[20rem] px-4 py-3">
+                                  <div className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" /><span className="break-words text-slate-200">{memoName}</span></div>
+                                  <div className="mt-2">{statusBadge(group.memoStatus, memoImportStage)}</div>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  {groupIsImporting ? (
+                                    <span className="inline-flex items-center gap-2 text-xs font-semibold text-lime-300"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Importing…</span>
+                                  ) : group.importFileIds.length ? (
+                                    <button type="button" className="btn-primary whitespace-nowrap" disabled={driveImportRunning} onClick={() => handleDriveImport(group)}>
+                                      {driveImportRunning ? 'Importing…' : 'Import missing files'}
+                                    </button>
+                                  ) : group.reviewReason && reviewFileIds.length ? (
+                                    <button
+                                      type="button"
+                                      className="btn-secondary whitespace-nowrap"
+                                      disabled={driveImportRunning}
+                                      onClick={() => handleDriveImport({ ...group, importFileIds: reviewFileIds }, { retryReviewFileIds: reviewFileIds })}
+                                      title="Reruns validation for the selected reviewed files. Files that still conflict or fail validation remain in review."
+                                    >
+                                      {driveImportRunning ? 'Rechecking…' : 'Recheck reviewed files'}
+                                    </button>
+                                  ) : group.reviewReason ? (
+                                    <span className="text-xs font-medium text-rose-300">Review first</span>
+                                  ) : ['uploaded', 'analyzing', 'analyzed'].includes(group.paperStatus) && ['uploaded', 'analyzing', 'analyzed', 'no-file'].includes(group.memoStatus) ? (
+                                    <span className="text-xs font-medium text-lime-300">Up to date</span>
+                                  ) : (
+                                    <span className="text-xs text-slate-400">No import available</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : !driveFolderContents.folders.length ? (
+                    <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">This folder has no PDF papers, memos, or subfolders.</p>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {usesStudentCatalog ? (
+        <div className="panel grid gap-3 p-4">
+          <label className="relative block">
+            <span className="sr-only">Search all question papers</span>
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+            <input
+              type="search"
+              className="input pl-10"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search by year, subject, grade, region, paper..."
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <select aria-label="Filter by subject" className="input" value={studentFilterValues.subject} onChange={(event) => updateStudentFilter('subject', event.target.value)}>
+              <option value="all">All subjects</option>
+              {paperSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+            </select>
+            <select aria-label="Filter by grade" className="input" value={studentFilterValues.grade} onChange={(event) => updateStudentFilter('grade', event.target.value)}>
+              <option value="all">All grades</option>
+              {grades.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+            </select>
+            <select aria-label="Filter by year" className="input" value={studentFilterValues.year} onChange={(event) => updateStudentFilter('year', event.target.value)}>
+              <option value="all">All years</option>
+              {years.map((year) => <option key={year} value={year}>{year}</option>)}
+            </select>
+            <select aria-label="Filter by region" className="input" value={studentFilterValues.region} onChange={(event) => updateStudentFilter('region', event.target.value)}>
+              <option value="all">All regions</option>
+              {regions.map((region) => <option key={region} value={region}>{region}</option>)}
+            </select>
+            <select aria-label="Filter by month" className="input" value={studentFilterValues.month} onChange={(event) => updateStudentFilter('month', event.target.value)}>
+              <option value="all">All months</option>
+              {months.map((month) => <option key={month} value={month}>{month}</option>)}
+            </select>
+            <select aria-label="Filter by paper number" className="input" value={studentFilterValues.paperNumber} onChange={(event) => updateStudentFilter('paperNumber', event.target.value)}>
+              <option value="all">All papers</option>
+              {paperNumbers.map((paperNumber) => <option key={paperNumber} value={paperNumber}>{paperNumber}</option>)}
+            </select>
+          </div>
+          {isStudentExploring ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-3">
+              <p className="text-sm text-slate-500">{visiblePapers.length} matching paper{visiblePapers.length === 1 ? '' : 's'}</p>
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={resetStudentFilters}>
+                <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                Reset filters
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : role !== ROLES.ADMIN ? (
+        <div className="panel grid gap-3 p-4 md:grid-cols-2">
+          <select className="input" value={filters.subject} onChange={(event) => setFilters((current) => ({ ...current, subject: event.target.value }))}>
+            <option value="all">All subjects</option>
+            {paperSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+          </select>
+          <select className="input" value={filters.year} onChange={(event) => setFilters((current) => ({ ...current, year: event.target.value }))}>
+            <option value="all">All years</option>
+            {years.map((year) => <option key={year} value={year}>{year}</option>)}
+          </select>
+        </div>
+      ) : null}
+      {downloadStatus ? <p className={`rounded-xl border px-4 py-3 text-sm ${downloadStatus.startsWith('Could not') ? 'border-rose-300/30 bg-rose-300/10 text-rose-100' : 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100'}`} role="status">{downloadStatus}</p> : null}
+
+      {role === ROLES.ADMIN ? (
+        <div className="space-y-4">
+          {[
+            { key: 'analyzing', title: 'Analyzing', emptyMessage: 'No papers are currently analyzing.' },
+            { key: 'analyzed', title: 'Analyzed', emptyMessage: 'No completed paper analyses.' },
+            { key: 'review', title: 'Drive JSON needs review', emptyMessage: 'No Drive analysis JSON files need review.' },
+            { key: 'waiting', title: 'Waiting for Drive JSON', emptyMessage: 'No papers are waiting for Drive analysis JSON.' },
+            { key: 'failed', title: 'Failed', emptyMessage: 'No failed or cancelled paper analyses.' },
+          ].map(({ key, title, emptyMessage }) => {
+            const sectionPapers = adminPaperGroups[key];
+            const failedPapers = key === 'failed' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Failed') : [];
+            const waitingPapers = key === 'waiting' ? sectionPapers.filter((paper) => paper.analysisStatus === 'Waiting for Drive JSON') : [];
+            const reviewPapers = key === 'review' ? sectionPapers.filter((paper) => paper.driveAnalysisJsonStatus === 'review_required') : [];
+            const sectionFilter = adminPaperFilters[key];
+            const sectionSubjects = paperSubjects;
+            const sectionYears = [...new Set(sectionPapers.map((paper) => getPaperField(paper, 'year')).filter(Boolean))]
+              .sort((left, right) => Number(right) - Number(left));
+            const searchTokens = sectionFilter.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+            const filteredSectionPapers = sectionPapers.filter((paper) => {
+              const matchesSubject = sectionFilter.subject === 'all' || normalizePaperSubject(getPaperSubject(paper)) === normalizePaperSubject(sectionFilter.subject);
+              const matchesYear = sectionFilter.year === 'all' || String(getPaperField(paper, 'year')) === String(sectionFilter.year);
+              const searchText = getPaperSearchText(paper);
+              return matchesSubject && matchesYear && searchTokens.every((token) => searchText.includes(token));
+            });
+
+            return (
+              <details key={key} className="panel overflow-hidden">
+                <summary className="cursor-pointer list-none px-5 py-4 marker:hidden [&::-webkit-details-marker]:hidden">
+                  <span className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="text-lg font-semibold text-slate-950">{title}</span>
+                    <span className="flex items-center gap-3">
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{sectionPapers.length} paper{sectionPapers.length === 1 ? '' : 's'}</span>
+                      <ChevronDown className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                    </span>
+                  </span>
+                </summary>
+                <div className="space-y-4 border-t border-slate-200 p-4 md:p-5">
+                  {key === 'failed' && failedPapers.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-rose-950">{failedPapers.length} failed paper{failedPapers.length === 1 ? '' : 's'} can be retried.</p>
+                        <p className="mt-1 text-xs text-rose-800">Retry All adds them to the normal analysis queue in order. Individual retry buttons remain available on each paper.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                        disabled={failedRetryAllLoading}
+                        onClick={() => retryAllFailedPapers(failedPapers)}
+                      >
+                        {failedRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                        {failedRetryAllLoading ? 'Queueing retries…' : 'Retry All'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {key === 'waiting' && waitingPapers.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-950">{waitingPapers.length} paper{waitingPapers.length === 1 ? '' : 's'} are waiting for Drive JSON.</p>
+                        <p className="mt-1 text-xs text-amber-900">Resume All checks each matching Drive JSON before queueing a paper. Papers without a valid JSON are skipped and remain waiting. If the analysis queue is paused, eligible papers wait until you resume it.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                        disabled={waitingRetryAllLoading}
+                        onClick={() => resumeAllWaitingPapers(waitingPapers)}
+                      >
+                        {waitingRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
+                        {waitingRetryAllLoading ? 'Queueing retries…' : 'Resume All'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {key === 'review' && reviewPapers.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-orange-200 bg-orange-50 p-3">
+                      <div>
+                        <p className="text-sm font-semibold text-orange-950">{reviewPapers.length} paper{reviewPapers.length === 1 ? '' : 's'} have a prior Drive JSON review flag.</p>
+                        <p className="mt-1 text-xs text-orange-900">Recheck the current JSON files. Papers that pass validation are queued; any remaining issue stays here with its reason.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
+                        disabled={waitingRetryAllLoading}
+                        onClick={() => resumeAllWaitingPapers(reviewPapers)}
+                      >
+                        {waitingRetryAllLoading ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                        {waitingRetryAllLoading ? 'Rechecking…' : 'Recheck JSON'}
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="grid gap-3 md:grid-cols-[minmax(12rem,2fr)_minmax(10rem,1fr)_minmax(8rem,1fr)]">
+                    <label>
+                      <span className="sr-only">Search {title.toLowerCase()} papers</span>
+                      <input
+                        type="search"
+                        className="input"
+                        value={sectionFilter.search}
+                        onChange={(event) => updateAdminPaperFilter(key, 'search', event.target.value)}
+                        placeholder={`Search ${title.toLowerCase()} papers`}
+                      />
+                    </label>
+                    <select aria-label={`Filter ${title.toLowerCase()} papers by subject`} className="input" value={sectionFilter.subject} onChange={(event) => updateAdminPaperFilter(key, 'subject', event.target.value)}>
+                      <option value="all">All subjects</option>
+                      {sectionSubjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+                    </select>
+                    <select aria-label={`Filter ${title.toLowerCase()} papers by year`} className="input" value={sectionFilter.year} onChange={(event) => updateAdminPaperFilter(key, 'year', event.target.value)}>
+                      <option value="all">All years</option>
+                      {sectionYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                    </select>
+                  </div>
+                  {isLoadingPapers ? <LoadingState label={`Loading ${title.toLowerCase()} papers…`} /> : filteredSectionPapers.length ? (
+                    <div className="space-y-4">{filteredSectionPapers.map(renderPaperCard)}</div>
+                  ) : (
+                    <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+                      {sectionPapers.length ? 'No papers match these filters.' : emptyMessage}
+                    </div>
+                  )}
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      ) : usesStudentCatalog ? (
+        paperCatalogSections.length ? (
+          <div className="space-y-6">
+            {paperCatalogSections.map((subjectSection) => (
+              <section key={subjectSection.subject} className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/75 shadow-[0_4px_25px_rgba(0,0,0,0.35)]">
+                <header className="px-4 pb-3 pt-4 sm:px-5">
+                  <h2 className="text-xl font-semibold text-lime-200">{subjectSection.subject}</h2>
+                  <div className="mt-3 h-1 w-full rounded-full bg-slate-800" aria-hidden="true">
+                    <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-lime-400 via-lime-300 to-emerald-400" />
+                  </div>
+                </header>
+                <div className="space-y-5 px-3 pb-4 sm:px-5">
+                  {subjectSection.groups.map((group) => (
+                    <section key={`${subjectSection.subject}-${group.grade}-${group.year}`} aria-label={`${subjectSection.subject}, ${group.grade}, ${group.year}`}>
+                      <h3 className="mb-2 px-2 text-sm font-semibold text-lime-300">{group.grade} · {group.year}</h3>
+                      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/35">
+                        <table className="w-full min-w-[19rem] border-collapse text-left text-sm">
+                          <thead className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
+                            <tr>
+                              <th scope="col" className="px-3 py-3 sm:px-4">Title</th>
+                              <th scope="col" className="w-44 px-3 py-3 text-right sm:w-52 sm:px-4">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/90">
+                            {group.papers.flatMap((paper) => ([
+                              <tr key={`${paper.id}-question`} className="transition-colors hover:bg-lime-400/5">
+                                <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getCatalogDocumentTitle(paper, 'paper')}</td>
+                                <td className="px-3 py-2 text-right sm:px-4">{renderCatalogOpenAction(paper, 'paper')}</td>
+                              </tr>,
+                              ...(paper.memoUrl ? [
+                                <tr key={`${paper.id}-memo`} className="transition-colors hover:bg-lime-400/5">
+                                  <td className="break-words px-3 py-3 font-medium text-lime-200 sm:px-4">{getCatalogDocumentTitle(paper, 'memo')}</td>
+                                  <td className="px-3 py-2 text-right sm:px-4">{renderCatalogOpenAction(paper, 'memo')}</td>
+                                </tr>,
+                              ] : []),
+                            ]))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="panel p-5 text-sm text-slate-400">{isLoadingPapers ? <LoadingState label="Loading past papers…" /> : status ? <span role="alert">{status}</span> : 'No papers match these filters.'}</div>
+        )
+      ) : (
+        <div className="space-y-4">
+          {visiblePapers.map(renderPaperCard)}
+          {isLoadingPapers ? <LoadingState label="Loading past papers…" /> : null}
+          {!isLoadingPapers && status ? <div className="panel p-5 text-sm text-rose-300" role="alert">{status}</div> : null}
+          {!isLoadingPapers && !status && !visiblePapers.length ? <div className="panel p-5 text-sm text-slate-500">No papers match these filters.</div> : null}
+        </div>
+      )}
+
+      {canUploadPapers(role) ? <section className="panel space-y-5 p-6">
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={uploadTab === 'single' ? 'btn-primary' : 'btn-secondary'} onClick={() => setUploadTab('single')}>Single upload</button>
+          <button type="button" className={uploadTab === 'bulk' ? 'btn-primary' : 'btn-secondary'} onClick={() => setUploadTab('bulk')}>Bulk upload</button>
+        </div>
+
+        {uploadTab === 'single' ? (
+          <form onSubmit={handleSingleSubmit} className="grid gap-4 md:grid-cols-2">
+            <UploadFields value={singleForm} onChange={(patch) => setSingleForm((current) => ({ ...current, ...patch }))} subjects={visibleSubjects} />
+            <label className="md:col-span-2"><span className="label">Question paper</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setSingleForm((current) => ({ ...current, paperFile: event.target.files?.[0] ?? null }))} required /><span className="mt-1 block text-xs text-slate-500">PDF only. Analysis runs securely in queued page batches.</span></label>
+            <label className="md:col-span-2"><span className="label">Memo optional</span><input type="file" className="input" accept=".pdf,application/pdf" onChange={(event) => setSingleForm((current) => ({ ...current, memoFile: event.target.files?.[0] ?? null }))} /></label>
+            <button type="submit" className="btn-primary md:col-span-2">Upload and analyze</button>
+          </form>
+        ) : (
+          <div className="space-y-4">
+            <label className="block"><span className="label">Bulk files</span><input type="file" className="input" multiple accept=".pdf,application/pdf" onChange={handleBulkFiles} /><span className="mt-1 block text-xs text-slate-500">Select PDF question papers and optional PDF memos together. The detector checks each file, then pairs likely memos by filename. You can correct the file roles in the table.</span></label>
+            {bulkRows.length ? (
+              <div className="w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900/90">
+                <div className="overflow-x-auto overscroll-x-contain">
+                  <table className="min-w-[1390px] border-collapse text-left text-sm">
+                    <thead className="bg-slate-800 text-xs uppercase tracking-[0.2em] text-slate-400">
+                      <tr>
+                        <th className="w-12 px-4 py-3 font-semibold">#</th>
+                        <th className="min-w-64 px-4 py-3 font-semibold">Question paper</th>
+                        <th className="min-w-56 px-4 py-3 font-semibold">Linked memo</th>
+                        <th className="min-w-56 px-4 py-3 font-semibold">Subject</th>
+                        <th className="min-w-40 px-4 py-3 font-semibold">Grade</th>
+                        <th className="min-w-44 px-4 py-3 font-semibold">Region</th>
+                        <th className="min-w-32 px-4 py-3 font-semibold">Year</th>
+                        <th className="min-w-40 px-4 py-3 font-semibold">Month</th>
+                        <th className="min-w-40 px-4 py-3 font-semibold">Paper</th>
+                        <th className="min-w-64 px-4 py-3 font-semibold">Notes</th>
+                        <th className="min-w-48 px-4 py-3 font-semibold">Preview</th>
+                        <th className="min-w-52 px-4 py-3 font-semibold">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {bulkRows.map((row, index) => {
+                        const memoOptions = [
+                          ...bulkMemoFiles,
+                          ...bulkRows.filter((sourceRow) => sourceRow.memoFileId).map((sourceRow) => ({ id: sourceRow.memoFileId, file: sourceRow.memoFile })),
+                        ].filter((entry, optionIndex, entries) => entry.id && entry.file && entries.findIndex((candidate) => candidate.id === entry.id) === optionIndex);
+                        return (
+                        <tr key={row.id} className="align-top">
+                          <td className="px-4 py-3 font-semibold text-slate-500">{index + 1}</td>
+                          <td className="px-4 py-3"><p className="font-semibold text-slate-950">{row.paperFile.name}</p><p className="mt-1 text-xs text-slate-500">{Math.round((row.paperFile.size || 0) / 1024)} KB</p></td>
+                          <td className="px-4 py-3">
+                            <select className="input min-w-52" aria-label={`Memo for ${row.paperFile.name}`} value={row.memoFileId ?? ''} onChange={(event) => changeBulkMemo(row.id, event.target.value)}>
+                              <option value="">No memo linked</option>
+                              {memoOptions.map((entry) => <option key={`${row.id}-${entry.id}`} value={entry.id}>{entry.file.name}{entry.id === row.memoFileId ? ' (linked)' : ' (memo)'}</option>)}
+                              {bulkRows.filter((sourceRow) => sourceRow.id !== row.id).map((sourceRow) => <option key={`${row.id}-paper-${sourceRow.paperFileId}`} value={sourceRow.paperFileId}>{sourceRow.paperFile.name} (currently a paper; selecting moves it to memo)</option>)}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3"><select className="input min-w-52" value={row.subject} onChange={(event) => updateBulkRow(row.id, { subject: event.target.value })}>{visibleSubjects.map((subject) => <option key={subject}>{subject}</option>)}</select></td>
+                          <td className="px-4 py-3"><select className="input min-w-36" value={row.grade} onChange={(event) => updateBulkRow(row.id, { grade: event.target.value })}>{SOUTH_AFRICAN_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</select></td>
+                          <td className="px-4 py-3"><select className="input min-w-40" value={row.region} onChange={(event) => updateBulkRow(row.id, { region: event.target.value })}>{REGIONS.map((region) => <option key={region}>{region}</option>)}</select></td>
+                          <td className="px-4 py-3"><input type="number" min="2000" max="2100" className="input min-w-28" value={row.year} onChange={(event) => updateBulkRow(row.id, { year: event.target.value })} /></td>
+                          <td className="px-4 py-3"><select className="input min-w-36" value={row.month} onChange={(event) => updateBulkRow(row.id, { month: event.target.value })}>{PAPER_MONTHS.map((month) => <option key={month}>{month}</option>)}</select></td>
+                          <td className="px-4 py-3"><select className="input min-w-36" value={row.paperNumber} onChange={(event) => updateBulkRow(row.id, { paperNumber: event.target.value })}>{PAPER_NUMBERS.map((paperNumber) => <option key={paperNumber}>{paperNumber}</option>)}</select></td>
+                          <td className="px-4 py-3"><input className="input min-w-60" value={row.notes} onChange={(event) => updateBulkRow(row.id, { notes: event.target.value })} placeholder="Optional notes" /></td>
+                          <td className="px-4 py-3">
+                            <div className="flex min-w-44 flex-wrap gap-2">
+                              <button type="button" className="btn-secondary text-xs" onClick={() => openLocalFilePreview(row.paperFile)}>Open paper</button>
+                              <button type="button" className="btn-secondary text-xs" onClick={() => openLocalFilePreview(row.memoFile)} disabled={!row.memoFile}>Open memo</button>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex min-w-48 flex-col items-start gap-2">
+                              <label className="btn-secondary cursor-pointer text-xs">
+                                {row.memoFile ? 'Replace memo file' : 'Upload memo file'}
+                                <input type="file" className="sr-only" accept=".pdf,application/pdf" onChange={(event) => addBulkMemoFile(row.id, event)} />
                               </label>
                               <button type="button" className="btn-secondary text-xs" onClick={() => convertBulkMemoToPaper(row.id)} disabled={!row.memoFile}>Convert memo to paper</button>
                               <button type="button" className="btn-secondary text-xs" onClick={() => removeBulkRow(row.id)}>Remove paper</button>

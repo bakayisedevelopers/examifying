@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 14316)
-Total output lines: 1083
-
 import { createHash } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
@@ -502,7 +499,174 @@ const mergeModelMetadata = (prior = {}, next = {}, { pageCount = 0, answerImageC
       ? 'multiple' : String(next.contextCacheStatus || prior.contextCacheStatus || 'none'),
     contextCacheUsed: prior.contextCacheUsed === true || next.contextCacheUsed === true,
     usage,
-    requestDurationMs: (Number(prior.requestDurationMs) || 0) + (Numbe…2316 tokens truncated…: record.aiMarking?.submissionType === 'peer_marking' });
+    requestDurationMs: (Number(prior.requestDurationMs) || 0) + (Number(next.requestDurationMs) || 0),
+    responseId: String(next.responseId || prior.responseId || ''),
+    pdfPageCount: (Number(prior.pdfPageCount) || 0) + pageCount,
+    answerImageCount: (Number(prior.answerImageCount) || 0) + answerImageCount,
+  };
+};
+
+const getTaskData = async ({ db, task, exerciseRef, assignmentRef }) => {
+  if (task.submissionType === 'student_exercise') {
+    const exerciseSnapshot = await exerciseRef.get();
+    if (!exerciseSnapshot.exists) return null;
+    return { sourceRecord: exerciseSnapshot.data(), sourceRef: exerciseRef, exercise: exerciseSnapshot.data(), assignment: null };
+  }
+  if (task.submissionType !== 'peer_marking') return null;
+  const assignmentSnapshot = await assignmentRef.get();
+  if (!assignmentSnapshot.exists) return null;
+  const assignment = assignmentSnapshot.data();
+  const revieweeExercisePath = String(assignment.exercisePath || assignmentRef.parent.parent.path);
+  if (revieweeExercisePath !== assignmentRef.parent.parent.path) throw new Error('Peer assignment source path failed ownership validation.');
+  const reviewerExercisePath = String(assignment.reviewerExercisePath || '');
+  const expectedReviewerExercisePath = `users/${task.studentId}/subjects/${task.subjectInstanceId}/exercises/${assignment.reviewerExerciseId}`;
+  if (reviewerExercisePath !== expectedReviewerExercisePath) throw new Error('Peer marking exercise path failed ownership validation.');
+  const [revieweeSnapshot, reviewerSnapshot] = await Promise.all([
+    db.doc(revieweeExercisePath).get(),
+    db.doc(reviewerExercisePath).get(),
+  ]);
+  if (!revieweeSnapshot.exists || !reviewerSnapshot.exists) throw new Error('The original submission or peer marking exercise is unavailable.');
+  const sourceRecord = {
+    ...assignment,
+    questionLinks: Array.isArray(assignment.questionLinks) && assignment.questionLinks.length
+      ? assignment.questionLinks : revieweeSnapshot.data().questionLinks ?? [],
+    topicBreakdown: assignment.topicBreakdown ?? revieweeSnapshot.data().topicBreakdown ?? [],
+  };
+  return {
+    sourceRecord,
+    sourceRef: assignmentRef,
+    exercise: revieweeSnapshot.data(),
+    assignment,
+    reviewerExercise: reviewerSnapshot.data(),
+    reviewerExerciseRef: db.doc(reviewerExercisePath),
+  };
+};
+
+const clearPeerSubmission = async ({ db, bucket, assignmentRef, assignment, studentId, subjectInstanceId, version, status, message }) => {
+  const reviewerExercisePath = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${assignment.reviewerExerciseId}`;
+  const reviewerExerciseRef = db.doc(reviewerExercisePath);
+  const allowedPrefix = `${reviewerExercisePath}/peer-reviews/`;
+  const reviewRef = assignment.reviewId ? assignmentRef.parent.parent.collection('peerReviews').doc(String(assignment.reviewId)) : null;
+  const exactUrls = normalizeImageRefs(assignment, { preferReview: true }).map((image) => image.url);
+  const files = exactUrls.map((url) => {
+    const parsed = parseStorageUrl(url);
+    if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith(allowedPrefix)) {
+      throw new Error('Peer marking cleanup path failed ownership validation.');
+    }
+    return bucket.file(parsed.path);
+  });
+  await Promise.all(files.map((file) => file.delete({ ignoreNotFound: true })));
+  await db.runTransaction(async (transaction) => {
+    const [currentAssignment, reviewerExercise] = await Promise.all([
+      transaction.get(assignmentRef), transaction.get(reviewerExerciseRef),
+    ]);
+    if (!currentAssignment.exists || currentAssignment.data().status !== 'completed'
+      || currentVersionFor(currentAssignment.data(), normalizeImageRefs(currentAssignment.data(), { preferReview: true })) !== version
+      || currentAssignment.data().aiMarking?.version !== version) return;
+    if (reviewRef) transaction.delete(reviewRef);
+    transaction.set(assignmentRef, {
+      status: 'assigned', reviewImages: FieldValue.delete(), reviewImageUrl: FieldValue.delete(), reviewFileName: FieldValue.delete(),
+      reviewId: FieldValue.delete(), completedAt: FieldValue.delete(),
+      aiMarking: { status, version, message, validatedResult: FieldValue.delete(), completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    if (reviewerExercise.exists && reviewerExercise.data().peerMarkingAssignmentId === assignmentRef.id) {
+      transaction.set(reviewerExerciseRef, {
+        peerMarkingImages: FieldValue.delete(), peerMarkingAssignmentId: FieldValue.delete(), peerMarkingStatus: 'pending',
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  });
+};
+
+const clearExerciseSubmission = async ({ db, bucket, exerciseRef, exerciseId, version, status, message }) => {
+  const exercisePath = exerciseRef.path;
+  const prefix = `${exercisePath}/submissions/`;
+  const nestedSubmissionRef = exerciseRef.collection('submissions').doc(exerciseId);
+  const currentSnapshot = await exerciseRef.get();
+  if (!currentSnapshot.exists || currentVersionFor(currentSnapshot.data(), normalizeImageRefs(currentSnapshot.data())) !== version) return false;
+  const files = normalizeImageRefs(currentSnapshot.data()).map((image) => {
+    const parsed = parseStorageUrl(image.url);
+    if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith(prefix)) {
+      throw new Error('Exercise submission cleanup path failed ownership validation.');
+    }
+    return bucket.file(parsed.path);
+  });
+  await Promise.all(files.map((file) => file.delete({ ignoreNotFound: true })));
+  const patch = {
+    submittedImageUrl: FieldValue.delete(), imageUrl: FieldValue.delete(), submittedImages: FieldValue.delete(),
+    submittedFileName: FieldValue.delete(), submittedFileNames: FieldValue.delete(), submissionPageCount: FieldValue.delete(),
+    submittedAt: FieldValue.delete(), submitted: 'No', submissionStatus: 'not-submitted', status: 'not-submitted',
+    submittedImageAnalysis: FieldValue.delete(), submittedImageAnalysisModel: FieldValue.delete(), submittedImageAnalyzedAt: FieldValue.delete(),
+    peerReviewed: 'No', peerReviewStatus: 'pending', peerReviewDate: FieldValue.delete(), peerMarkedImages: FieldValue.delete(),
+    peerReviewerId: FieldValue.delete(), peerReviewSubmittedBy: FieldValue.delete(),
+    aiMarking: { status, version, message, validatedResult: FieldValue.delete(), completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() },
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await db.runTransaction(async (transaction) => {
+    const latest = await transaction.get(exerciseRef);
+    if (!latest.exists || currentVersionFor(latest.data(), normalizeImageRefs(latest.data())) !== version
+      || latest.data().aiMarking?.version !== version) return;
+    const assignments = await transaction.get(exerciseRef.collection('peerMarkingAssignments').where('status', '==', 'assigned'));
+    transaction.set(exerciseRef, patch, { merge: true });
+    transaction.set(nestedSubmissionRef, { ...patch, exerciseId }, { merge: true });
+    assignments.docs.forEach((item) => transaction.delete(item.ref));
+  });
+  return true;
+};
+
+const applyMarks = async ({ task, sourceRecord, questions, results, tutorId, assignmentRef }) => {
+  const questionsByTopic = new Map();
+  for (const mark of results) {
+    const list = questionsByTopic.get(mark.topic) ?? [];
+    list.push({ questionReference: mark.questionNumber, paperId: mark.paperId, pageNumber: mark.pageNumber, earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks });
+    questionsByTopic.set(mark.topic, list);
+  }
+  const scoreEventId = `ai-${hash(`${task.submissionType}:${task.documentPath}:${task.version}`)}`;
+  if (task.submissionType === 'student_exercise') {
+    const outputs = [];
+    for (const [topic, questionMarks] of questionsByTopic) {
+      const topicQuestion = questions.find((question) => question.topic === topic);
+      outputs.push(await applyAiTutorExerciseScores({
+        tutorId,
+        studentId: task.studentId,
+        subjectInstanceId: task.subjectInstanceId,
+        exerciseId: task.exerciseId,
+        subject: sourceRecord.subject,
+        topic,
+        topicId: topicQuestion?.topicId || '',
+        questionMarks,
+        scoreEventId,
+        aiMarkingVersion: task.version,
+      }));
+    }
+    return outputs;
+  }
+  const topicMarks = [...questionsByTopic].map(([topic, questionMarks]) => ({
+    topic,
+    topicId: questions.find((question) => question.topic === topic)?.topicId || '',
+    questionMarks,
+  }));
+  return applyAiTutorPeerMarkingScores({
+    tutorId,
+    peerAssignmentPath: assignmentRef.path,
+    peerAssignmentId: assignmentRef.id,
+    reviewerExerciseId: sourceRecord.reviewerExerciseId,
+    studentId: task.studentId,
+    topicMarks,
+    scoreEventId,
+    aiMarkingVersion: task.version,
+  });
+};
+
+const claimTask = async ({ ref, version }) => {
+  const db = getDb();
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return { run: false, reason: 'missing' };
+    const record = snapshot.data();
+    const ai = record.aiMarking ?? {};
+    const images = normalizeImageRefs(record, { preferReview: record.aiMarking?.submissionType === 'peer_marking' });
     if (currentVersionFor(record, images) !== version || ai.version !== version) return { run: false, reason: 'stale' };
     if (['completed', 'partially_completed', 'incorrect_submission', 'unclear_images', 'failed', 'skipped'].includes(ai.status)) return { run: false, reason: 'terminal' };
     if (ai.status === 'processing' && timestampMillis(ai.leaseExpiresAt) > Date.now()) return { run: false, reason: 'already_processing' };

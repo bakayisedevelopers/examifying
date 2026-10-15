@@ -4,6 +4,7 @@ import { AppShell } from '../components/common/AppShell';
 import { LoadingState } from '../components/common/LoadingState';
 import { OperationStatusOverlay } from '../components/common/OperationStatusOverlay';
 import { SectionHeader } from '../components/common/SectionHeader';
+import { RecordTopicsSection } from '../components/tutor/RecordTopicsSection';
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { useStudentWorkspaceProfile } from '../hooks/useStudentWorkspaceProfile';
 import { useEffectiveRole } from '../utils/effectiveRole';
@@ -260,6 +261,18 @@ export const TopicsPage = () => {
     <AppShell title={title} subtitle={description} role={viewerRole} user={profile} onLogout={logout}>
       <div className="space-y-6">
         <SectionHeader eyebrow="Learning progress" title="Topics" description={description} />
+        {isTutorView ? <RecordTopicsSection
+          tutorId={profile?.uid}
+          contexts={contexts}
+          isLoading={isLoading}
+          runOperation={runOperation}
+          onTopicsSaved={async (context) => {
+            if (selectedContext?.studentId !== context.studentId || selectedContext?.subjectInstanceId !== context.subjectInstanceId) return;
+            const updated = await getTopicOverviewForEpisode({ studentId: context.studentId, subjectInstanceId: context.subjectInstanceId });
+            setTopics(updated.topics);
+            setSelectedIds([]);
+          }}
+        /> : null}
         <section className="panel space-y-5 p-5 sm:p-6">
           <div className="flex flex-wrap items-end gap-4">
             {isTutorView ? (

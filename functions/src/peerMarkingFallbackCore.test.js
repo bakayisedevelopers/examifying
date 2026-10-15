@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   selectReusableSystemPeerWork,
+  selectReusableSystemPeerWorkWithFallback,
   selectSystemPeerWorkQuestions,
   selectSystemPeerWorkQuestionsWithFallback,
   systemPeerWorkCohortKey,
@@ -83,15 +84,61 @@ test('same-day papers are a last resort and already assigned question references
   assert.deepEqual(selected.questionLinks.map((item) => item.questionReference), ['1.2']);
 });
 
-test('same-day last resort does not repeat the only question already assigned today', () => {
+test('same-day question reuse is the final last resort when no other matching question exists', () => {
   const usedToday = paper('used-today', 'Mathematics', 'Grade 10', [
     { questionReference: '1.1', pageNumber: 2, marks: 3, topic: topics[0] },
   ]);
-  assert.equal(selectSystemPeerWorkQuestionsWithFallback({
+  const selected = selectSystemPeerWorkQuestionsWithFallback({
     papers: [usedToday], subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
     excludedPaperIds: new Set(['used-today']),
     excludedQuestionIds: new Set([questionIdentity('used-today', '1.1')]),
-  }), null);
+  });
+  assert.equal(selected.sourceSelectionMode, 'same-day-question-last-resort');
+  assert.deepEqual(selected.questionLinks.map((item) => item.questionReference), ['1.1']);
+});
+
+test('wrong-subject and wrong-grade papers remain excluded by the repeated-question last resort', () => {
+  const selected = selectSystemPeerWorkQuestionsWithFallback({
+    papers: [
+      paper('wrong-subject', 'Physical Sciences', 'Grade 10', [
+        { questionReference: '1.1', pageNumber: 2, marks: 3, topic: topics[0] },
+      ]),
+      paper('wrong-grade', 'Mathematics', 'Grade 11', [
+        { questionReference: '1.1', pageNumber: 2, marks: 3, topic: topics[0] },
+      ]),
+    ],
+    subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    excludedPaperIds: new Set(['wrong-subject', 'wrong-grade']),
+    excludedQuestionIds: new Set([questionIdentity('wrong-subject', '1.1'), questionIdentity('wrong-grade', '1.1')]),
+  });
+  assert.equal(selected, null);
+});
+
+test('saved work using already-assigned questions is reused only after unused options are exhausted', () => {
+  const usedPack = {
+    id: 'used-pack', status: 'ready', subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    paperIds: ['used-today'],
+    questionLinks: [{ questionId: questionIdentity('used-today', '1.1'), paperId: 'used-today', questionReference: '1.1', topic: topics[0] }],
+    images: [{ questionId: questionIdentity('used-today', '1.1') }],
+  };
+  const unusedPack = {
+    ...usedPack, id: 'unused-pack', paperIds: ['unused-paper'],
+    questionLinks: [{ questionId: questionIdentity('unused-paper', '1.1'), paperId: 'unused-paper', questionReference: '1.1', topic: topics[0] }],
+  };
+  const selected = selectReusableSystemPeerWorkWithFallback([usedPack, unusedPack], {
+    subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    excludedPaperIds: new Set(['used-today']),
+    excludedQuestionIds: new Set([questionIdentity('used-today', '1.1')]),
+  });
+  assert.equal(selected.pack.id, 'unused-pack');
+
+  const lastResort = selectReusableSystemPeerWorkWithFallback([usedPack], {
+    subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    excludedPaperIds: new Set(['used-today']),
+    excludedQuestionIds: new Set([questionIdentity('used-today', '1.1')]),
+  });
+  assert.equal(lastResort.pack.id, 'used-pack');
+  assert.equal(lastResort.sourceSelectionMode, 'used-question-last-resort');
 });
 
 test('fallback topic selection uses the same hierarchical label matching as exercise generation', () => {

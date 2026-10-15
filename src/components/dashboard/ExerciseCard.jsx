@@ -188,7 +188,7 @@ export const ExerciseCard = ({
   const canTutorAct = viewerRole === 'tutor' && accessRole !== 'viewer' && !isHistorical;
   const canRetryAiMarking = ['tutor', 'teacher'].includes(viewerRole)
     && accessRole !== 'viewer' && !isHistorical
-    && hasSubmittedImages && exercise.aiMarking?.status === 'unclear_images';
+    && hasSubmittedImages && ['failed', 'unclear_images'].includes(exercise.aiMarking?.status);
   const canEditTopicScores = canTutorAct && hasSubmittedImages;
   const peerAiAssignments = completedMarkingAssignments.filter((item) =>
     item.reviewerExerciseId === exercise.id

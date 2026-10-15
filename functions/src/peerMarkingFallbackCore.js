@@ -9,7 +9,7 @@ import { normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { questionIdentity } from './aiMarkingCore.js';
 import { exerciseGenerationTopicLabelsMatch } from './exerciseGenerationTopicMatching.js';
 
-export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v1';
+export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v2';
 
 const hash = (value) => createHash('sha256').update(String(value ?? '')).digest('hex').slice(0, 40);
 const uniqueTopics = (topics = []) => [...new Map(topics.map((topic) => String(topic ?? '').trim())
@@ -87,6 +87,26 @@ export const selectReusableSystemPeerWork = (packs = [], {
   };
 };
 
+export const selectReusableSystemPeerWorkWithFallback = (packs = [], options = {}) => {
+  const preferred = selectReusableSystemPeerWork(packs, options);
+  if (preferred) return { ...preferred, sourceSelectionMode: 'unused-paper' };
+
+  const sameDayPaperFallback = selectReusableSystemPeerWork(packs, {
+    ...options,
+    excludedPaperIds: new Set(),
+  });
+  if (sameDayPaperFallback) return { ...sameDayPaperFallback, sourceSelectionMode: 'same-day-paper-last-resort' };
+
+  const usedQuestionFallback = selectReusableSystemPeerWork(packs, {
+    ...options,
+    excludedPaperIds: new Set(),
+    excludedQuestionIds: new Set(),
+  });
+  return usedQuestionFallback
+    ? { ...usedQuestionFallback, sourceSelectionMode: 'used-question-last-resort' }
+    : null;
+};
+
 export const selectSystemPeerWorkQuestions = ({
   papers = [],
   subject,
@@ -155,11 +175,24 @@ export const selectSystemPeerWorkQuestionsWithFallback = (options = {}) => {
   const preferred = selectSystemPeerWorkQuestions(options);
   if (preferred) return { ...preferred, sourceSelectionMode: 'unused-paper' };
 
-  const lastResort = selectSystemPeerWorkQuestions({
+  const sameDayPaperFallback = selectSystemPeerWorkQuestions({
     ...options,
     excludedPaperIds: new Set(),
   });
-  return lastResort ? { ...lastResort, sourceSelectionMode: 'same-day-paper-last-resort' } : null;
+  if (sameDayPaperFallback) return { ...sameDayPaperFallback, sourceSelectionMode: 'same-day-paper-last-resort' };
+
+  const usedQuestionFallback = selectSystemPeerWorkQuestions({
+    ...options,
+    excludedPaperIds: new Set(),
+    excludedQuestionIds: new Set(),
+  });
+  if (!usedQuestionFallback) return null;
+  const repeatsSameDayQuestion = usedQuestionFallback.questionLinks.some((link) =>
+    options.excludedQuestionIds?.has(questionIdentity(link.paperId, link.questionReference)));
+  return {
+    ...usedQuestionFallback,
+    sourceSelectionMode: repeatsSameDayQuestion ? 'same-day-question-last-resort' : 'used-question-last-resort',
+  };
 };
 
 export const validateSystemPeerWorkSolutions = ({ response, questionLinks = [] }) => {

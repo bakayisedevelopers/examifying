@@ -6,6 +6,7 @@ import {
   getPendingMarkingQuestions,
   getRequestedMarkingQuestions,
   groupAiContextRequestsByPaper,
+  isRetryableAiMarkingStatus,
   mergeAiMarkingResults,
   resolvePaperPageContext,
   runAiMarkingOnce,
@@ -304,6 +305,13 @@ test('a tutor retry gets a fresh marking version for the same submitted images',
   const first = submissionVersionForRecord({ submittedAt: { toMillis: () => 10 }, aiMarking: { retrySequence: 0 } }, images);
   const retry = submissionVersionForRecord({ submittedAt: { toMillis: () => 10 }, aiMarking: { retrySequence: 1 } }, images);
   assert.notEqual(first, retry);
+});
+
+test('tutor retries are allowed for failed and unclear AI marking outcomes only', () => {
+  assert.equal(isRetryableAiMarkingStatus('failed'), true);
+  assert.equal(isRetryableAiMarkingStatus('unclear_images'), true);
+  assert.equal(isRetryableAiMarkingStatus('completed'), false);
+  assert.equal(isRetryableAiMarkingStatus('pending'), false);
 });
 
 test('peer marking and student marking use distinct instructions', () => {

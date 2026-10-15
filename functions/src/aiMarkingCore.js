@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 export const AI_MARKING_STATUSES = Object.freeze([
   'pending', 'processing', 'completed', 'partially_completed', 'incorrect_submission', 'unclear_images', 'failed', 'skipped',
 ]);
+export const RETRYABLE_AI_MARKING_STATUSES = Object.freeze(['unclear_images', 'failed']);
+export const isRetryableAiMarkingStatus = (status) => RETRYABLE_AI_MARKING_STATUSES.includes(String(status ?? ''));
 
 export const normalizeQuestionReference = (value) => String(value ?? '')
   .trim()

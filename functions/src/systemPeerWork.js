@@ -17,7 +17,9 @@ import {
   normalizeExerciseGenerationSubject,
 } from './exerciseGenerationPaperMatching.js';
 import {
+  SYSTEM_PEER_WORK_PROMPT_VERSION,
   selectReusableSystemPeerWork,
+  selectReusableSystemPeerWorkWithFallback,
   selectSystemPeerWorkQuestionsWithFallback,
   systemPeerWorkCohortKey,
   systemPeerWorkPackId,
@@ -193,25 +195,17 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
   });
 
   for (const group of topicGroups.values()) {
-    let reusable = selectReusableSystemPeerWork(packs, {
+    const reusable = selectReusableSystemPeerWorkWithFallback(packs, {
       subject: cohort.subject, grade: cohort.grade, topics: group.topics, excludedPaperIds,
+      excludedQuestionIds,
     });
-    let reusableFromSameDayPaper = false;
-    if (!reusable) {
-      reusable = selectReusableSystemPeerWork(packs, {
-        subject: cohort.subject,
-        grade: cohort.grade,
-        topics: group.topics,
-        excludedQuestionIds,
-      });
-      reusableFromSameDayPaper = Boolean(reusable);
-    }
     if (reusable) {
       const pack = { ...reusable.pack, ref: reusable.pack.ref };
-      if (reusableFromSameDayPaper) {
-        logger.info('Reusing saved peer work from a same-day paper as a last resort', {
+      if (reusable.sourceSelectionMode !== 'unused-paper') {
+        logger.info('Reusing saved peer work as a fallback', {
           cohortKey, workId: pack.id, subject: cohort.subject, grade: cohort.grade,
           questionCount: reusable.questionLinks.length,
+          sourceSelectionMode: reusable.sourceSelectionMode,
         });
       }
       for (const reviewer of group.reviewers) {
@@ -285,13 +279,14 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
         });
         continue;
       }
-      if (source.sourceSelectionMode === 'same-day-paper-last-resort') {
-        logger.info('Using a new question from a same-day paper as a peer-work last resort', {
+      if (source.sourceSelectionMode !== 'unused-paper') {
+        logger.info('Using a previously assigned question or paper as a peer-work last resort', {
           cohortKey,
           subject: cohort.subject,
           grade: cohort.grade,
           paperId: source.paper.id,
           questionCount: source.questionLinks.length,
+          sourceSelectionMode: source.sourceSelectionMode,
         });
       }
       const packId = systemPeerWorkPackId({
@@ -310,7 +305,7 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
         questionLinks: source.questionLinks,
         sourceSelectionMode: source.sourceSelectionMode,
         status: 'generating',
-        promptVersion: 'v1',
+        promptVersion: SYSTEM_PEER_WORK_PROMPT_VERSION,
         assignmentCount: 0,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),

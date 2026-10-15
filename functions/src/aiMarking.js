@@ -18,6 +18,7 @@ import {
   getPendingMarkingQuestions,
   getRequestedMarkingQuestions,
   groupAiContextRequestsByPaper,
+  isRetryableAiMarkingStatus,
   mergeAiMarkingResults,
   resolvePaperPageContext,
   submissionVersionForRecord,
@@ -239,8 +240,8 @@ export const retryStudentExerciseAiMarking = onCall({ cpu: 'gcf_gen1' }, async (
     if (!images.length || !isExerciseSubmitted(record)) {
       throw new HttpsError('failed-precondition', 'The student submission is no longer available.');
     }
-    if (record.aiMarking?.status !== 'unclear_images') {
-      throw new HttpsError('failed-precondition', 'A retry is available only when marking reports unclear images.');
+    if (!isRetryableAiMarkingStatus(record.aiMarking?.status)) {
+      throw new HttpsError('failed-precondition', 'A retry is available only when marking failed or the images were unclear.');
     }
     const retrySequence = Math.max(0, Number(record.aiMarking?.retrySequence) || 0) + 1;
     const nextRecord = { ...record, aiMarking: { ...(record.aiMarking ?? {}), retrySequence } };

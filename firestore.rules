@@ -111,6 +111,39 @@ service cloud.firestore {
     function exerciseIsOpen() {
       return exerciseAccessIsOpen(resource.data);
     }
+    function validStudentExerciseSubmissionUpdate(userId, subjectInstanceId, exerciseId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return signedIn() && (request.auth.uid == userId || isParentOf(userId)) && exerciseIsOpen()
+        && changed.hasOnly([
+          'studentId', 'exerciseId', 'subjectInstanceId',
+          'submittedImageUrl', 'submittedImages', 'submittedFileName', 'submittedFileNames',
+          'submissionPageCount', 'submittedAt', 'firstSubmittedAt', 'submissionVersion', 'updatedAt',
+          'peerReviewed', 'peerReviewStatus', 'peerNotes', 'peerReviewDate', 'submitted', 'submissionStatus'
+        ])
+        && request.resource.data.studentId == userId
+        && request.resource.data.exerciseId == exerciseId
+        && request.resource.data.subjectInstanceId == subjectInstanceId
+        && request.resource.data.submissionStatus == 'submitted'
+        && request.resource.data.submitted == 'Yes'
+        && request.resource.data.submittedImageUrl is string
+        && request.resource.data.submittedImages is list
+        && request.resource.data.submittedImages.size() > 0
+        && request.resource.data.submissionVersion is int
+        && request.resource.data.submissionVersion == resource.data.get('submissionVersion', 0) + 1;
+    }
+    function validStudentSubmissionAnalysisUpdate(userId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return signedIn() && request.auth.uid == userId
+        && (resource.data.get('submissionStatus', '') == 'submitted'
+          || resource.data.get('submitted', '') == 'Yes'
+          || resource.data.get('submittedImageUrl', '') is string)
+        && changed.hasOnly(['submittedImageAnalysis', 'submittedImageAnalysisModel', 'submittedImageAnalyzedAt'])
+        && changed.hasAny(['submittedImageAnalysis'])
+        && request.resource.data.submittedImageAnalysis is string
+        && (request.resource.data.get('submittedImageAnalysisModel', null) == null
+          || request.resource.data.submittedImageAnalysisModel is string)
+        && request.resource.data.submittedImageAnalyzedAt is timestamp;
+    }
     function isExerciseAccessWindowOpen(studentId, subjectInstanceId, exerciseId) {
       let exercise = get(/databases/$(database)/documents/users/$(studentId)/subjects/$(subjectInstanceId)/exercises/$(exerciseId)).data;
       return exerciseAccessIsOpen(exercise);
@@ -222,12 +255,8 @@ service cloud.firestore {
               && request.resource.data.subjectInstanceId == subjectInstanceId);
           allow delete: if isAdmin() || canTeach(userId, subjectInstanceId);
           allow update: if isAdmin() || canMark(userId, subjectInstanceId)
-            || (signedIn() && (request.auth.uid == userId || isParentOf(userId)) && exerciseIsOpen()
-              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                'submittedImageUrl', 'submittedImages', 'submittedFileName', 'submittedFileNames',
-                'submissionPageCount', 'submittedAt', 'updatedAt', 'peerReviewed',
-                'peerReviewStatus', 'peerNotes', 'peerReviewDate', 'submitted', 'submissionStatus'
-              ]));
+            || validStudentExerciseSubmissionUpdate(userId, subjectInstanceId, exerciseId)
+            || validStudentSubmissionAnalysisUpdate(userId);
           match /submissions/{submissionId} {
             allow read: if canReadEpisode(userId, subjectInstanceId);
             allow create, update: if signedIn() && (request.auth.uid == userId || isParentOf(userId))

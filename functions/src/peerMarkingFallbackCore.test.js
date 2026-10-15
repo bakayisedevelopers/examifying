@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildSystemPeerWorkImageMetadata,
   selectReusableSystemPeerWork,
   selectReusableSystemPeerWorkWithFallback,
   selectSystemPeerWorkQuestions,
@@ -18,6 +19,29 @@ import { questionIdentity } from './aiMarkingCore.js';
 const topics = ['Linear functions | Functions', 'Quadratic functions | Functions'];
 const paper = (id, subject, grade, questions) => ({
   id, subject, grade, analysisStatus: 'Analyzed', availableForGeneration: true, questions,
+});
+
+test('generated image metadata takes its topic from the selected paper question link', () => {
+  const metadata = buildSystemPeerWorkImageMetadata({
+    question: { questionId: 'paper-1::1.1', questionNumber: '1.1' },
+    questionLink: { questionId: 'paper-1::1.1', topic: topics[0] },
+    storagePath: 'systemGeneratedPeerWork/pack/question-1.png',
+    pageNumber: 1,
+    sizeBytes: 512,
+  });
+
+  assert.equal(metadata.topic, topics[0]);
+  assert.equal(metadata.questionReference, '1.1');
+});
+
+test('generated image metadata rejects missing source topics instead of writing undefined to Firestore', () => {
+  assert.throws(() => buildSystemPeerWorkImageMetadata({
+    question: { questionId: 'paper-1::1.1', questionNumber: '1.1' },
+    questionLink: { questionId: 'paper-1::1.1' },
+    storagePath: 'systemGeneratedPeerWork/pack/question-1.png',
+    pageNumber: 1,
+    sizeBytes: 512,
+  }), /missing its assigned topic/);
 });
 
 test('manual retries get a fresh pack identity while normal pack identities remain stable', () => {

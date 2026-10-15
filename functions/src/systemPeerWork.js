@@ -17,6 +17,7 @@ import {
   normalizeExerciseGenerationSubject,
 } from './exerciseGenerationPaperMatching.js';
 import {
+  buildSystemPeerWorkImageMetadata,
   SYSTEM_PEER_WORK_PROMPT_VERSION,
   selectReusableSystemPeerWork,
   selectReusableSystemPeerWorkWithFallback,
@@ -485,13 +486,14 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
     for (const question of requestedQuestions) {
       const solution = generated.solutions.find((item) => item.questionId === question.questionId);
       if (!solution) throw new Error('A selected question solution was missing.');
+      const questionLink = pack.questionLinks.find((item) => item.questionId === question.questionId);
+      if (!questionLink) throw new Error('A selected question link was missing.');
       const imageBuffer = renderSolutionPng({ subject: pack.subject, grade: pack.grade,
-        question: pack.questionLinks.find((item) => item.questionId === question.questionId), solutionText: solution.solutionText });
+        question: questionLink, solutionText: solution.solutionText });
       const storagePath = `${documentPath}/question-${imageRows.length + 1}.png`;
       await savePrivateGeneratedImage({ file: bucket.file(storagePath), buffer: imageBuffer });
-      imageRows.push({ storagePath, pageNumber: imageRows.length + 1,
-        questionId: question.questionId, questionReference: question.questionNumber,
-        topic: question.topic, sizeBytes: imageBuffer.length });
+      imageRows.push(buildSystemPeerWorkImageMetadata({ question, questionLink, storagePath,
+        pageNumber: imageRows.length + 1, sizeBytes: imageBuffer.length }));
     }
     failureStage = 'save_generated_work_record';
     await packRef.set({

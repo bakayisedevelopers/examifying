@@ -45,6 +45,19 @@ export const systemPeerWorkPackId = ({ subject, grade, topicSignature, paperId, 
   ...questionLinks.map((item) => `${item.paperId}::${item.questionReference}`).sort(),
 ].join('::'));
 
+export const buildSystemPeerWorkImageMetadata = ({ question, questionLink, storagePath, pageNumber, sizeBytes }) => {
+  const topic = String(questionLink?.topic ?? '').trim();
+  if (!topic) throw new Error('The selected peer-work question is missing its assigned topic.');
+  return {
+    storagePath,
+    pageNumber,
+    questionId: question.questionId,
+    questionReference: question.questionNumber,
+    topic,
+    sizeBytes,
+  };
+};
+
 export const canRegenerateSystemPeerWork = (assignment = {}) => assignment.systemGenerated === true
   && assignment.status === 'assigned'
   && !assignment.reviewId

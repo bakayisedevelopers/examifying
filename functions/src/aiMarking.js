@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 15391)
-Total output lines: 1170
-
 import { createHash } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
@@ -615,7 +612,37 @@ const getTaskData = async ({ db, task, exerciseRef, assignmentRef }) => {
     db.doc(revieweeExercisePath).get(),
     db.doc(reviewerExercisePath).get(),
   ]);
-  if (!revieweeSnapshot.exists || !reviewerSnapshot.exists) throw new Error('The original submission or peer marking exerci…391 tokens truncated…oreNotFound: true })));
+  if (!revieweeSnapshot.exists || !reviewerSnapshot.exists) throw new Error('The original submission or peer marking exercise is unavailable.');
+  const sourceRecord = {
+    ...assignment,
+    questionLinks: Array.isArray(assignment.questionLinks) && assignment.questionLinks.length
+      ? assignment.questionLinks : revieweeSnapshot.data().questionLinks ?? [],
+    topicBreakdown: assignment.topicBreakdown ?? revieweeSnapshot.data().topicBreakdown ?? [],
+  };
+  return {
+    sourceRecord,
+    sourceRef: assignmentRef,
+    exercise: revieweeSnapshot.data(),
+    assignment,
+    reviewerExercise: reviewerSnapshot.data(),
+    reviewerExerciseRef: db.doc(reviewerExercisePath),
+  };
+};
+
+const clearPeerSubmission = async ({ db, bucket, assignmentRef, assignment, studentId, subjectInstanceId, version, status, message }) => {
+  const reviewerExercisePath = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${assignment.reviewerExerciseId}`;
+  const reviewerExerciseRef = db.doc(reviewerExercisePath);
+  const allowedPrefix = `${reviewerExercisePath}/peer-reviews/`;
+  const reviewRef = assignment.reviewId ? assignmentRef.parent.parent.collection('peerReviews').doc(String(assignment.reviewId)) : null;
+  const exactUrls = normalizeImageRefs(assignment, { preferReview: true }).map((image) => image.url);
+  const files = exactUrls.map((url) => {
+    const parsed = parseStorageUrl(url);
+    if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith(allowedPrefix)) {
+      throw new Error('Peer marking cleanup path failed ownership validation.');
+    }
+    return bucket.file(parsed.path);
+  });
+  await Promise.all(files.map((file) => file.delete({ ignoreNotFound: true })));
   await db.runTransaction(async (transaction) => {
     const [currentAssignment, reviewerExercise] = await Promise.all([
       transaction.get(assignmentRef), transaction.get(reviewerExerciseRef),

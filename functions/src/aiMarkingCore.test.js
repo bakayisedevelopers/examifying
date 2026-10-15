@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   aiMarkingTaskId,
+  excludeScoredMarkingQuestions,
   getPendingMarkingQuestions,
   getRequestedMarkingQuestions,
   groupAiContextRequestsByPaper,
@@ -10,6 +11,7 @@ import {
   runAiMarkingOnce,
   shouldPreserveAuthoritativeMark,
   submissionIsCurrent,
+  submissionVersionForRecord,
   tutorAiMarkingEnabled,
   validateAiMarkingResponse,
 } from './aiMarkingCore.js';
@@ -96,6 +98,18 @@ test('question identity includes paper ID when an exercise spans papers', () => 
   assert.equal(validateAiMarkingResponse({ response, requestedQuestions: questions }).results.length, 2);
 });
 
+test('student and peer prompts strictly reconcile handwritten numbering and continuation without guessing', () => {
+  for (const instructions of [STUDENT_EXERCISE_MARKING_INSTRUCTIONS, PEER_MARKING_REVIEW_INSTRUCTIONS]) {
+    assert.match(instructions, /questionId, paperId, questionNumber.*authoritative/i);
+    assert.match(instructions, /formatting variants/i);
+    assert.match(instructions, /continuation/i);
+    assert.match(instructions, /same array position/i);
+    assert.match(instructions, /remains ambiguous.*do not guess/i);
+  }
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /peer marker's annotations, marks, and comments/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /wrong attempt.*still an attempt/i);
+});
+
 test('validates all questions and uses the authoritative maximum mark', () => {
   const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1', 'Algebra', 2)] });
   const response = { status: 'completed', message: '', results: [{
@@ -112,6 +126,7 @@ test('accepts partial marks with a full-paper request for only unresolved questi
     status: 'full_paper_search',
     results: [{ questionId: markedQuestion.questionId, awardedMark: 1 }],
     contextRequests: [{ questionId: fallbackQuestion.questionId, material: 'full_paper' }],
+    unansweredQuestionIds: [],
   }, requestedQuestions: questions, suppliedMaterialsByQuestion: {
     [markedQuestion.questionId]: ['analysis_pages'],
   } });
@@ -120,6 +135,41 @@ test('accepts partial marks with a full-paper request for only unresolved questi
     { questionId: fallbackQuestion.questionId, material: 'full_paper' },
   ]);
   assert.deepEqual(getPendingMarkingQuestions(questions, result.results).map((question) => question.questionId), [fallbackQuestion.questionId]);
+});
+
+test('accepts partial work and returns only the submitted question mark plus unanswered IDs', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1'), link('paper-a', '1.2', 'Geometry')] });
+  const result = validateAiMarkingResponse({ response: {
+    status: 'partially_completed',
+    results: [{ questionId: questions[0].questionId, awardedMark: 1 }],
+    contextRequests: [],
+    unansweredQuestionIds: [questions[1].questionId],
+  }, requestedQuestions: questions });
+  assert.equal(result.status, 'partially_completed');
+  assert.deepEqual(result.results.map((item) => item.questionId), [questions[0].questionId]);
+  assert.deepEqual(result.unansweredQuestionIds, [questions[1].questionId]);
+});
+
+test('rejects partial responses that omit or duplicate a requested question', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1'), link('paper-a', '1.2', 'Geometry')] });
+  assert.throws(() => validateAiMarkingResponse({ response: {
+    status: 'partially_completed', results: [], contextRequests: [], unansweredQuestionIds: [questions[0].questionId],
+  }, requestedQuestions: questions }), /did not account for every requested question/);
+  assert.throws(() => validateAiMarkingResponse({ response: {
+    status: 'partially_completed', results: [{ questionId: questions[0].questionId, awardedMark: 1 }],
+    contextRequests: [], unansweredQuestionIds: [questions[0].questionId, questions[1].questionId],
+  }, requestedQuestions: questions }), /more than once/);
+});
+
+test('repeat submissions exclude prior saved scores by paper and question identity', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [
+    link('paper-a', '1.1'), link('paper-a', '1.2', 'Geometry'), link('paper-b', '1.1', 'Statistics'),
+  ] });
+  const pending = excludeScoredMarkingQuestions(questions, [
+    { sourceType: 'Exercise', paperId: 'paper-a', questionReference: '1.1', markSource: 'ai' },
+    { sourceType: 'Marking', paperId: 'paper-a', questionReference: '1.2' },
+  ]);
+  assert.deepEqual(pending.map((question) => question.questionId), ['paper-a::1.2', 'paper-b::1.1']);
 });
 
 test('allows a memo request only for an unresolved question and blocks repeated material', () => {
@@ -229,6 +279,24 @@ test('stale AI versions are rejected and versioned task identities differ', () =
   assert.equal(submissionIsCurrent({ currentVersion: 'v2', requestedVersion: 'v2' }), true);
   assert.notEqual(aiMarkingTaskId({ submissionType: 'student_exercise', submissionId: 'x', version: 'a' }),
     aiMarkingTaskId({ submissionType: 'student_exercise', submissionId: 'x', version: 'b' }));
+});
+
+test('a later image upload always receives a different marking version', () => {
+  const first = submissionVersionForRecord({ submittedAt: { toMillis: () => 10 } }, [
+    { url: 'https://storage.test/first.jpg', pageNumber: 1 },
+  ]);
+  const second = submissionVersionForRecord({ submittedAt: { toMillis: () => 20 } }, [
+    { url: 'https://storage.test/second.jpg', pageNumber: 1 },
+  ]);
+  assert.notEqual(first, second);
+  assert.notEqual(
+    submissionVersionForRecord({ submittedAt: { toMillis: () => 10 }, submissionVersion: 1 }, [
+      { url: 'https://storage.test/same.jpg', pageNumber: 1 },
+    ]),
+    submissionVersionForRecord({ submittedAt: { toMillis: () => 10 }, submissionVersion: 2 }, [
+      { url: 'https://storage.test/same.jpg', pageNumber: 1 },
+    ]),
+  );
 });
 
 test('peer marking and student marking use distinct instructions', () => {

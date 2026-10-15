@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 14316)
+Total output lines: 1083
+
 import { createHash } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
@@ -13,12 +16,13 @@ import { callMarkingWithFallback } from './aiMarkingProviders.js';
 import {
   aiMarkingTaskId,
   buildCompactQuestionContext,
+  excludeScoredMarkingQuestions,
   getPendingMarkingQuestions,
   getRequestedMarkingQuestions,
   groupAiContextRequestsByPaper,
   mergeAiMarkingResults,
   resolvePaperPageContext,
-  submissionVersion,
+  submissionVersionForRecord,
   tutorAiMarkingEnabled,
   validateAiMarkingResponse,
 } from './aiMarkingCore.js';
@@ -82,10 +86,7 @@ const isStoredUnder = (url, bucketName, prefix) => {
   return Boolean(parsed && parsed.bucketName === bucketName && parsed.path.startsWith(prefix));
 };
 
-const currentVersionFor = (record, images) => submissionVersion(images.map((image) => ({
-  url: image.url,
-  pageNumber: image.pageNumber,
-})).concat([{ url: String(record?.submittedAt?.toMillis?.() ?? record?.completedAt?.toMillis?.() ?? ''), pageNumber: 0 }]));
+const currentVersionFor = (record, images) => submissionVersionForRecord(record, images);
 
 const setAiStatus = async ({ ref, status, version, attemptCount, submissionType = '', extra = {} }) => {
   const db = getDb();
@@ -96,7 +97,7 @@ const setAiStatus = async ({ ref, status, version, attemptCount, submissionType 
     const prior = record.aiMarking ?? {};
     const type = submissionType || prior.submissionType || '';
     const images = normalizeImageRefs(record, { preferReview: type === 'peer_marking' });
-    if (currentVersionFor(record, images) !== version || (prior.version && prior.version !== version)) return false;
+    if (currentVersionFor(record, images) !== version) return false;
     transaction.set(ref, {
       aiMarking: {
         status,
@@ -145,7 +146,6 @@ const enqueueAiJob = async ({ ref, studentId, subjectInstanceId, submissionType,
     if (currentVersionFor(data, currentImages) !== version) return;
     const prior = data.aiMarking ?? {};
     if (prior.version === version && prior.status !== 'pending') return;
-    if (prior.version && prior.version !== version) return;
     if (prior.version !== version) transaction.set(ref, {
       aiMarking: {
         status: 'pending', version, submissionType, attemptCount: 0,
@@ -154,6 +154,7 @@ const enqueueAiJob = async ({ ref, studentId, subjectInstanceId, submissionType,
         leaseExpiresAt: FieldValue.delete(), errorCode: FieldValue.delete(), errorMessage: FieldValue.delete(),
         model: FieldValue.delete(), usage: FieldValue.delete(), message: FieldValue.delete(),
         contextCacheStatus: FieldValue.delete(), contextCacheUsed: FieldValue.delete(),
+        unansweredQuestionIds: FieldValue.delete(),
       },
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -316,8 +317,8 @@ const getTutorContext = async ({ db, studentId, subjectInstanceId }) => {
   return { episode, tutorId, enabled: tutorAiMarkingEnabled(tutorSnapshot.exists ? tutorSnapshot.data() : {}) };
 };
 
-const buildSubmissionContext = async ({ db, sourceRecord, bucket }) => {
-  const questions = getRequestedMarkingQuestions(sourceRecord);
+const buildSubmissionContext = async ({ db, sourceRecord, bucket, requestedQuestions = null }) => {
+  const questions = requestedQuestions ?? getRequestedMarkingQuestions(sourceRecord);
   const paperIds = [...new Set(questions.map((question) => question.paperId))];
   const paperSnapshots = await Promise.all(paperIds.map((paperId) => db.doc(`questionPapers/${paperId}`).get()));
   const analysesByPaper = {};
@@ -501,176 +502,9 @@ const mergeModelMetadata = (prior = {}, next = {}, { pageCount = 0, answerImageC
       ? 'multiple' : String(next.contextCacheStatus || prior.contextCacheStatus || 'none'),
     contextCacheUsed: prior.contextCacheUsed === true || next.contextCacheUsed === true,
     usage,
-    requestDurationMs: (Number(prior.requestDurationMs) || 0) + (Number(next.requestDurationMs) || 0),
-    responseId: String(next.responseId || prior.responseId || ''),
-    pdfPageCount: (Number(prior.pdfPageCount) || 0) + pageCount,
-    answerImageCount: (Number(prior.answerImageCount) || 0) + answerImageCount,
-  };
-};
-
-const getTaskData = async ({ db, task, exerciseRef, assignmentRef }) => {
-  if (task.submissionType === 'student_exercise') {
-    const exerciseSnapshot = await exerciseRef.get();
-    if (!exerciseSnapshot.exists) return null;
-    return { sourceRecord: exerciseSnapshot.data(), sourceRef: exerciseRef, exercise: exerciseSnapshot.data(), assignment: null };
-  }
-  if (task.submissionType !== 'peer_marking') return null;
-  const assignmentSnapshot = await assignmentRef.get();
-  if (!assignmentSnapshot.exists) return null;
-  const assignment = assignmentSnapshot.data();
-  const revieweeExercisePath = String(assignment.exercisePath || assignmentRef.parent.parent.path);
-  if (revieweeExercisePath !== assignmentRef.parent.parent.path) throw new Error('Peer assignment source path failed ownership validation.');
-  const reviewerExercisePath = String(assignment.reviewerExercisePath || '');
-  const expectedReviewerExercisePath = `users/${task.studentId}/subjects/${task.subjectInstanceId}/exercises/${assignment.reviewerExerciseId}`;
-  if (reviewerExercisePath !== expectedReviewerExercisePath) throw new Error('Peer marking exercise path failed ownership validation.');
-  const [revieweeSnapshot, reviewerSnapshot] = await Promise.all([
-    db.doc(revieweeExercisePath).get(),
-    db.doc(reviewerExercisePath).get(),
-  ]);
-  if (!revieweeSnapshot.exists || !reviewerSnapshot.exists) throw new Error('The original submission or peer marking exercise is unavailable.');
-  const sourceRecord = {
-    ...assignment,
-    questionLinks: Array.isArray(assignment.questionLinks) && assignment.questionLinks.length
-      ? assignment.questionLinks : revieweeSnapshot.data().questionLinks ?? [],
-    topicBreakdown: assignment.topicBreakdown ?? revieweeSnapshot.data().topicBreakdown ?? [],
-  };
-  return {
-    sourceRecord,
-    sourceRef: assignmentRef,
-    exercise: revieweeSnapshot.data(),
-    assignment,
-    reviewerExercise: reviewerSnapshot.data(),
-    reviewerExerciseRef: db.doc(reviewerExercisePath),
-  };
-};
-
-const clearPeerSubmission = async ({ db, bucket, assignmentRef, assignment, studentId, subjectInstanceId, version, status, message }) => {
-  const reviewerExercisePath = `users/${studentId}/subjects/${subjectInstanceId}/exercises/${assignment.reviewerExerciseId}`;
-  const reviewerExerciseRef = db.doc(reviewerExercisePath);
-  const allowedPrefix = `${reviewerExercisePath}/peer-reviews/`;
-  const reviewRef = assignment.reviewId ? assignmentRef.parent.parent.collection('peerReviews').doc(String(assignment.reviewId)) : null;
-  const exactUrls = normalizeImageRefs(assignment, { preferReview: true }).map((image) => image.url);
-  const files = exactUrls.map((url) => {
-    const parsed = parseStorageUrl(url);
-    if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith(allowedPrefix)) {
-      throw new Error('Peer marking cleanup path failed ownership validation.');
-    }
-    return bucket.file(parsed.path);
-  });
-  await Promise.all(files.map((file) => file.delete({ ignoreNotFound: true })));
-  await db.runTransaction(async (transaction) => {
-    const [currentAssignment, reviewerExercise] = await Promise.all([
-      transaction.get(assignmentRef), transaction.get(reviewerExerciseRef),
-    ]);
-    if (!currentAssignment.exists || currentAssignment.data().status !== 'completed'
-      || currentVersionFor(currentAssignment.data(), normalizeImageRefs(currentAssignment.data(), { preferReview: true })) !== version
-      || currentAssignment.data().aiMarking?.version !== version) return;
-    if (reviewRef) transaction.delete(reviewRef);
-    transaction.set(assignmentRef, {
-      status: 'assigned', reviewImages: FieldValue.delete(), reviewImageUrl: FieldValue.delete(), reviewFileName: FieldValue.delete(),
-      reviewId: FieldValue.delete(), completedAt: FieldValue.delete(),
-      aiMarking: { status, version, message, validatedResult: FieldValue.delete(), completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() },
-      updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    if (reviewerExercise.exists && reviewerExercise.data().peerMarkingAssignmentId === assignmentRef.id) {
-      transaction.set(reviewerExerciseRef, {
-        peerMarkingImages: FieldValue.delete(), peerMarkingAssignmentId: FieldValue.delete(), peerMarkingStatus: 'pending',
-        updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-    }
-  });
-};
-
-const clearExerciseSubmission = async ({ db, bucket, exerciseRef, exerciseId, version, status, message }) => {
-  const exercisePath = exerciseRef.path;
-  const prefix = `${exercisePath}/submissions/`;
-  const nestedSubmissionRef = exerciseRef.collection('submissions').doc(exerciseId);
-  const currentSnapshot = await exerciseRef.get();
-  if (!currentSnapshot.exists || currentVersionFor(currentSnapshot.data(), normalizeImageRefs(currentSnapshot.data())) !== version) return false;
-  const files = normalizeImageRefs(currentSnapshot.data()).map((image) => {
-    const parsed = parseStorageUrl(image.url);
-    if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith(prefix)) {
-      throw new Error('Exercise submission cleanup path failed ownership validation.');
-    }
-    return bucket.file(parsed.path);
-  });
-  await Promise.all(files.map((file) => file.delete({ ignoreNotFound: true })));
-  const patch = {
-    submittedImageUrl: FieldValue.delete(), imageUrl: FieldValue.delete(), submittedImages: FieldValue.delete(),
-    submittedFileName: FieldValue.delete(), submittedFileNames: FieldValue.delete(), submissionPageCount: FieldValue.delete(),
-    submittedAt: FieldValue.delete(), submitted: 'No', submissionStatus: 'not-submitted', status: 'not-submitted',
-    submittedImageAnalysis: FieldValue.delete(), submittedImageAnalysisModel: FieldValue.delete(), submittedImageAnalyzedAt: FieldValue.delete(),
-    peerReviewed: 'No', peerReviewStatus: 'pending', peerReviewDate: FieldValue.delete(), peerMarkedImages: FieldValue.delete(),
-    peerReviewerId: FieldValue.delete(), peerReviewSubmittedBy: FieldValue.delete(),
-    aiMarking: { status, version, message, validatedResult: FieldValue.delete(), completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() },
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  await db.runTransaction(async (transaction) => {
-    const latest = await transaction.get(exerciseRef);
-    if (!latest.exists || currentVersionFor(latest.data(), normalizeImageRefs(latest.data())) !== version
-      || latest.data().aiMarking?.version !== version) return;
-    const assignments = await transaction.get(exerciseRef.collection('peerMarkingAssignments').where('status', '==', 'assigned'));
-    transaction.set(exerciseRef, patch, { merge: true });
-    transaction.set(nestedSubmissionRef, { ...patch, exerciseId }, { merge: true });
-    assignments.docs.forEach((item) => transaction.delete(item.ref));
-  });
-  return true;
-};
-
-const applyMarks = async ({ task, sourceRecord, questions, results, tutorId, assignmentRef }) => {
-  const questionsByTopic = new Map();
-  for (const mark of results) {
-    const list = questionsByTopic.get(mark.topic) ?? [];
-    list.push({ questionReference: mark.questionNumber, paperId: mark.paperId, pageNumber: mark.pageNumber, earnedMarks: mark.earnedMarks, totalMarks: mark.totalMarks });
-    questionsByTopic.set(mark.topic, list);
-  }
-  const scoreEventId = `ai-${hash(`${task.submissionType}:${task.documentPath}:${task.version}`)}`;
-  if (task.submissionType === 'student_exercise') {
-    const outputs = [];
-    for (const [topic, questionMarks] of questionsByTopic) {
-      const topicQuestion = questions.find((question) => question.topic === topic);
-      outputs.push(await applyAiTutorExerciseScores({
-        tutorId,
-        studentId: task.studentId,
-        subjectInstanceId: task.subjectInstanceId,
-        exerciseId: task.exerciseId,
-        subject: sourceRecord.subject,
-        topic,
-        topicId: topicQuestion?.topicId || '',
-        questionMarks,
-        scoreEventId,
-        aiMarkingVersion: task.version,
-      }));
-    }
-    return outputs;
-  }
-  const topicMarks = [...questionsByTopic].map(([topic, questionMarks]) => ({
-    topic,
-    topicId: questions.find((question) => question.topic === topic)?.topicId || '',
-    questionMarks,
-  }));
-  return applyAiTutorPeerMarkingScores({
-    tutorId,
-    peerAssignmentPath: assignmentRef.path,
-    peerAssignmentId: assignmentRef.id,
-    reviewerExerciseId: sourceRecord.reviewerExerciseId,
-    studentId: task.studentId,
-    topicMarks,
-    scoreEventId,
-    aiMarkingVersion: task.version,
-  });
-};
-
-const claimTask = async ({ ref, version }) => {
-  const db = getDb();
-  return db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(ref);
-    if (!snapshot.exists) return { run: false, reason: 'missing' };
-    const record = snapshot.data();
-    const ai = record.aiMarking ?? {};
-    const images = normalizeImageRefs(record, { preferReview: record.aiMarking?.submissionType === 'peer_marking' });
+    requestDurationMs: (Number(prior.requestDurationMs) || 0) + (Numbe…2316 tokens truncated…: record.aiMarking?.submissionType === 'peer_marking' });
     if (currentVersionFor(record, images) !== version || ai.version !== version) return { run: false, reason: 'stale' };
-    if (['completed', 'incorrect_submission', 'unclear_images', 'failed', 'skipped'].includes(ai.status)) return { run: false, reason: 'terminal' };
+    if (['completed', 'partially_completed', 'incorrect_submission', 'unclear_images', 'failed', 'skipped'].includes(ai.status)) return { run: false, reason: 'terminal' };
     if (ai.status === 'processing' && timestampMillis(ai.leaseExpiresAt) > Date.now()) return { run: false, reason: 'already_processing' };
     const attemptCount = Number(ai.attemptCount || 0) + 1;
     if (attemptCount > MAX_ATTEMPTS) return { run: false, reason: 'attempt_limit' };
@@ -776,7 +610,26 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       return;
     }
     const { tutorId } = tutorContext;
-    const sourceContext = await buildSubmissionContext({ db, sourceRecord, bucket });
+    let requestedQuestions = getRequestedMarkingQuestions(sourceRecord);
+    if (task.submissionType === 'student_exercise') {
+      const topicPrefix = `users/${task.studentId}/subjects/${task.subjectInstanceId}/topics/`;
+      const priorScores = await db.collectionGroup('understandingScores')
+        .where('sourceId', '==', task.exerciseId).get();
+      const scoreRecords = priorScores.docs
+        .filter((score) => score.ref.path.startsWith(topicPrefix)
+          && score.data().sourceType === 'Exercise')
+        .map((score) => score.data());
+      requestedQuestions = excludeScoredMarkingQuestions(requestedQuestions, scoreRecords);
+      if (!requestedQuestions.length) {
+        await setAiStatus({ ref: sourceRef, status: 'completed', version: task.version,
+          submissionType: task.submissionType, attemptCount,
+          extra: { completedAt: FieldValue.serverTimestamp(), message: 'All exercise questions have already been marked.' } });
+        logMarkingStats({ operation: task.submissionType, task, status: 'completed', attemptCount,
+          model: '', provider: '', fallbackUsed: false, usage: {}, requestDurationMs: 0, pdfPageCount: 0, answerImageCount: 0 });
+        return;
+      }
+    }
+    const sourceContext = await buildSubmissionContext({ db, sourceRecord, bucket, requestedQuestions });
     const { questions, initialQuestions } = sourceContext;
     contextPages = sourceContext.contextPages;
 
@@ -828,6 +681,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
           pdfPageCount: metadata.pdfPageCount, answerImageCount: metadata.answerImageCount,
           contextFallbackPasses: progress?.fallbackPasses ?? 0,
           contextRequestCount: progress?.contextRequestCount ?? 0,
+          unansweredQuestionIds: progress?.unansweredQuestionIds ?? [],
           ...(status === 'failed' ? { errorCode, errorMessage: message } : { errorCode: FieldValue.delete(), errorMessage: FieldValue.delete() }),
           validatedResult: FieldValue.delete(), leaseExpiresAt: FieldValue.delete(), message,
         }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
@@ -843,6 +697,10 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         ? 'The submitted images did not match the assigned exercise. Please upload the correct work.'
         : 'We could not read your uploaded work clearly. Please upload clear images and submit again.';
       await persistValidatedResult({ ref: sourceRef, version: task.version, validated, metadata });
+      if (task.submissionType === 'student_exercise' && validated.status === 'unclear_images') {
+        await finalize({ status: 'unclear_images', message });
+        return;
+      }
       if (task.submissionType === 'student_exercise') {
         await clearExerciseSubmission({ db, bucket, exerciseRef, exerciseId: task.exerciseId, version: task.version, status: validated.status, message });
       } else {
@@ -909,7 +767,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
     }
 
     if (!progress) {
-      let initialValidated = { status: 'full_paper_search', results: [], contextRequests: [] };
+      let initialValidated = { status: 'full_paper_search', results: [], contextRequests: [], unansweredQuestionIds: [] };
       if (initialQuestions.length) {
         initialValidated = await callModelForQuestions({
           requestedQuestions: initialQuestions,
@@ -923,23 +781,28 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         }
       }
       const completedIds = new Set(initialValidated.results.map((result) => result.questionId));
+      const resolvedIds = new Set([...completedIds, ...(initialValidated.unansweredQuestionIds ?? [])]);
       const forcedFallbackRequests = sourceContext.contextRequests
-        .filter((item) => !completedIds.has(item.questionId));
+        .filter((item) => !resolvedIds.has(item.questionId));
       const contextRequests = mergeContextRequests(initialValidated.contextRequests, forcedFallbackRequests);
       const initialSuppliedMaterials = Object.fromEntries(initialQuestions.map((question) => [question.questionId, ['analysis_pages']]));
       progress = {
         pipelineVersion: 1,
-        status: contextRequests.length ? 'full_paper_search' : 'completed',
+        status: contextRequests.length ? (initialValidated.status === 'memo_search' ? 'memo_search' : 'full_paper_search')
+          : initialValidated.unansweredQuestionIds?.length ? 'partially_completed' : 'completed',
         results: initialValidated.results,
         contextRequests,
+        unansweredQuestionIds: initialValidated.unansweredQuestionIds ?? [],
         suppliedMaterialsByQuestion: initialSuppliedMaterials,
         fallbackPasses: 0,
         contextRequestCount: contextRequests.length,
       };
       await saveProgress(progress);
       await applyAcceptedResults(progress.results);
-      if (progress.status === 'completed') {
-        await finalize({ status: 'completed' });
+      if (['completed', 'partially_completed'].includes(progress.status)) {
+        const message = progress.status === 'partially_completed'
+          ? 'Some questions still need answers. Upload the remaining work when you are ready.' : '';
+        await finalize({ status: progress.status, message });
         return;
       }
     }
@@ -998,12 +861,19 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
 
       const results = mergeAiMarkingResults(progress.results ?? [], validated.results);
       const remainingIds = new Set(getPendingMarkingQuestions(questions, results).map((question) => question.questionId));
-      const nextRequests = validated.contextRequests.filter((item) => remainingIds.has(item.questionId));
+      const unansweredQuestionIds = [...new Set([
+        ...(progress.unansweredQuestionIds ?? []).filter((questionId) => !availableIds.has(questionId)),
+        ...(validated.unansweredQuestionIds ?? []),
+      ])];
+      const unansweredIds = new Set(unansweredQuestionIds);
+      const nextRequests = validated.contextRequests.filter((item) => remainingIds.has(item.questionId)
+        && !unansweredIds.has(item.questionId));
       progress = {
         ...progress,
-        status: nextRequests.length ? validated.status : 'completed',
+        status: nextRequests.length ? validated.status : unansweredQuestionIds.length ? 'partially_completed' : 'completed',
         results,
         contextRequests: nextRequests,
+        unansweredQuestionIds,
         suppliedMaterialsByQuestion: suppliedForPass,
         fallbackPasses: progress.fallbackPasses + 1,
         contextRequestCount: (progress.contextRequestCount ?? 0) + requests.length,
@@ -1013,7 +883,9 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       await applyAcceptedResults(validated.results);
     }
 
-    const unmarkedQuestions = getPendingMarkingQuestions(questions, progress.results ?? []);
+    const unansweredIds = new Set(progress.unansweredQuestionIds ?? []);
+    const unmarkedQuestions = getPendingMarkingQuestions(questions, progress.results ?? [])
+      .filter((question) => !unansweredIds.has(question.questionId));
     if (unmarkedQuestions.length) {
       const message = 'Some questions need tutor review because their source paper or memo was unavailable or insufficient.';
       progress = { ...progress, status: 'manual_review', contextRequests: [] };
@@ -1021,7 +893,10 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       await finalize({ status: 'failed', errorCode: 'source_context_incomplete', message });
       return;
     }
-    await finalize({ status: 'completed' });
+    const finalStatus = unansweredIds.size ? 'partially_completed' : 'completed';
+    const finalMessage = finalStatus === 'partially_completed'
+      ? 'Some questions still need answers. Upload the remaining work when you are ready.' : '';
+    await finalize({ status: finalStatus, message: finalMessage });
   } catch (error) {
     const current = await sourceRef.get().catch(() => null);
     if (current?.exists && current.data()?.aiMarking?.version === task.version

@@ -23,7 +23,7 @@ const call = async ({ contextPages, questions, answerText }) => {
     clientFactory: () => ({ responses: { create: async (payload) => {
       request = payload;
       return {
-        output_text: '{"status":"unclear_images","results":[]}',
+        output_text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}',
         model: 'gpt-6-luna',
         usage: {
           input_tokens: 2000,
@@ -50,6 +50,10 @@ test('Luna caches only the shared exam-page prefix and leaves answer images unca
     assert.match(request.prompt_cache_key, /^examifying-ai-marking-v1-[a-f0-9]{32}$/);
     assert.equal(request.input[1].role, 'user');
     assert.equal(request.input[1].content.at(-1).prompt_cache_breakpoint.mode, 'explicit');
+    assert.equal(request.reasoning.effort, 'xhigh');
+    assert.equal(request.max_output_tokens, 2048);
+    assert.equal(request.input.flatMap((item) => item.content ?? []).filter((item) => item.type === 'input_image')
+      .every((item) => item.detail === 'high'), true);
     assert.match(request.input[1].content[0].text, /paper-a, page 3/);
     assert.doesNotMatch(JSON.stringify(request.input[1]), /c3R1ZGVudC1hbnN3ZXI=/);
     assert.match(JSON.stringify(request.input[2]), /c3R1ZGVudC1hbnN3ZXI=/);

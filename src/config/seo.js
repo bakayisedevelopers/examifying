@@ -41,9 +41,121 @@ const PAGE_DESCRIPTIONS = {
 };
 
 const getSiteOrigin = (portal) => getPortalSiteUrl(portal).replace(/\/$/, '');
+export const PUBLIC_SEARCH_ORIGIN = getSiteOrigin('student');
+const publicPaperPath = /^\/papers\/([^/]+)\/?$/;
+
+const getPaperFields = (paper = {}) => {
+  const metadata = paper.paperMetadata && typeof paper.paperMetadata === 'object' ? paper.paperMetadata : {};
+  const subject = String(paper.subject || metadata.subject || 'Past examination paper').trim();
+  const grade = String(paper.grade || metadata.grade || '').trim();
+  const year = String(paper.year || metadata.year || '').trim();
+  const month = String(paper.month || metadata.month || '').trim();
+  const region = String(paper.region || paper.province || metadata.region || metadata.province || '').trim();
+  const rawPaperNumber = String(paper.paperNumber || metadata.paperNumber || '').trim();
+  const paperNumber = rawPaperNumber && !/^paper\b/i.test(rawPaperNumber) ? `Paper ${rawPaperNumber}` : rawPaperNumber;
+  return { subject, grade, year, month, region, paperNumber };
+};
+
+const getQuestionPaperObjectPath = (value) => {
+  try {
+    const url = new URL(String(value ?? ''));
+    if (url.protocol !== 'https:') return '';
+    if (url.hostname === 'firebasestorage.googleapis.com') return decodeURIComponent(url.pathname.split('/o/')[1] ?? '');
+    if (url.hostname === 'storage.googleapis.com') return decodeURIComponent(url.pathname.split('/').slice(2).join('/'));
+  } catch { return ''; }
+  return '';
+};
+
+export const getPublicPaperSeo = (paper, paperId, portal = 'student') => {
+  if (!paperId || !getQuestionPaperObjectPath(paper?.paperUrl).startsWith('questionPapers/') || paper?.isPublic === false
+    || paper?.public === false || paper?.publiclyAvailable === false
+    || String(paper?.visibility ?? '').toLowerCase() === 'private'
+    || String(paper?.status ?? '').toLowerCase() === 'deleted') return null;
+  const fields = getPaperFields(paper);
+  const origin = getSiteOrigin(portal);
+  const title = `${[fields.subject, fields.grade, fields.month, fields.year, fields.region, fields.paperNumber].filter(Boolean).join(' · ')} Past Paper | Examifying`;
+  const memoAvailable = getQuestionPaperObjectPath(paper?.memoUrl).startsWith('questionPapers/');
+  const description = `${fields.subject}${fields.grade ? ` ${fields.grade}` : ''}${fields.year ? ` ${fields.year}` : ''}${fields.month ? ` ${fields.month}` : ''}${fields.region ? ` · ${fields.region}` : ''}${fields.paperNumber ? ` · ${fields.paperNumber}` : ''} South African past exam paper. ${memoAvailable ? 'A memorandum is available.' : 'No memorandum is currently listed.'}`;
+  return {
+    ...fields,
+    title,
+    description,
+    memoAvailable,
+    url: `${origin}/papers/${encodeURIComponent(paperId)}`,
+    robots: 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
+    indexable: true,
+  };
+};
+
+export const buildPublicPaperStructuredData = (seo, portal = 'student') => {
+  const origin = getSiteOrigin(portal);
+  return {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'EducationalOrganization',
+      '@id': `${origin}/#organization`,
+      name: 'Examifying',
+      url: `${origin}/`,
+      logo: { '@type': 'ImageObject', url: `${origin}/logo.png` },
+    },
+    {
+      '@type': 'LearningResource',
+      '@id': `${seo.url}#learning-resource`,
+      name: seo.title,
+      description: seo.description,
+      url: seo.url,
+      learningResourceType: 'Past examination question paper',
+      educationalLevel: seo.grade || undefined,
+      about: seo.subject,
+      inLanguage: 'en-ZA',
+      isAccessibleForFree: true,
+      provider: { '@id': `${origin}/#organization` },
+      additionalProperty: [
+        { '@type': 'PropertyValue', name: 'Year', value: seo.year || 'Not listed' },
+        { '@type': 'PropertyValue', name: 'Month', value: seo.month || 'Not listed' },
+        { '@type': 'PropertyValue', name: 'Province or region', value: seo.region || 'Not listed' },
+        { '@type': 'PropertyValue', name: 'Paper number', value: seo.paperNumber || 'Not listed' },
+        { '@type': 'PropertyValue', name: 'Memo available', value: seo.memoAvailable ? 'Yes' : 'No' },
+      ],
+    },
+    {
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: `${origin}/` },
+        { '@type': 'ListItem', position: 2, name: 'Past papers', item: `${origin}/papers` },
+        { '@type': 'ListItem', position: 3, name: seo.title, item: seo.url },
+      ],
+    },
+  ],
+  };
+};
 
 export const getRouteSeo = (pathname, portal) => {
   const portalSeo = PORTAL_SEO[portal] || PORTAL_SEO.student;
+
+  if (pathname === '/papers') {
+    return {
+      title: 'South African Past Exam Papers | Examifying',
+      description: 'Browse public South African past examination question papers by subject, grade, year, month, province or region, and paper number. Check whether each paper has a memo.',
+      keywords: 'South African past exam papers, question papers, exam memoranda, subject, grade, province, Examifying',
+      url: `${getSiteOrigin(portal)}/papers`,
+      robots: portal === 'admin' ? 'noindex,nofollow' : 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
+      indexable: portal !== 'admin',
+    };
+  }
+
+  const publicPaperMatch = pathname.match(publicPaperPath);
+  if (publicPaperMatch) {
+    return {
+      title: 'Past Exam Paper | Examifying',
+      description: 'Open this public South African past exam paper and check whether a memorandum is available.',
+      keywords: 'past exam paper, question paper, memorandum, South Africa, Examifying',
+      url: `${getSiteOrigin(portal)}/papers/${encodeURIComponent(decodeURIComponent(publicPaperMatch[1]))}`,
+      robots: portal === 'admin' ? 'noindex,nofollow' : 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
+      indexable: portal !== 'admin',
+    };
+  }
 
   if (pathname === '/') {
     return {
@@ -60,8 +172,8 @@ export const getRouteSeo = (pathname, portal) => {
       description: PAGE_DESCRIPTIONS.policies,
       keywords: 'Examifying terms, privacy policy, refund policy, contact',
       url: `${getSiteOrigin(portal)}/policies`,
-      robots: 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
-      indexable: true,
+      robots: portal === 'admin' ? 'noindex,nofollow' : 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
+      indexable: portal !== 'admin',
     };
   }
 
@@ -95,6 +207,17 @@ export const getRouteSeo = (pathname, portal) => {
 export const buildStructuredData = (portal, pathname = '/') => {
   const routeSeo = getRouteSeo(pathname, portal);
   if (!routeSeo.indexable) return null;
+
+  if (pathname === '/papers') {
+    return {
+      '@context': 'https://schema.org',
+      '@type': 'CollectionPage',
+      name: routeSeo.title,
+      description: routeSeo.description,
+      url: routeSeo.url,
+      inLanguage: 'en-ZA',
+    };
+  }
 
   const origin = getSiteOrigin(portal);
   const organizationId = `${origin}/#organization`;

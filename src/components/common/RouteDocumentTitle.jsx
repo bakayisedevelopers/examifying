@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
-import { buildStructuredData, getRouteSeo } from '../../config/seo';
+import { buildPublicPaperStructuredData, buildStructuredData, getPublicPaperSeo, getRouteSeo } from '../../config/seo';
 import { getPortal } from '../../utils/portal';
+import { getPublicQuestionPaperById } from '../../services/publicQuestionPaperService';
 
 const roleTitles = {
   admin: 'Admin',
@@ -47,69 +48,93 @@ export const RouteDocumentTitle = () => {
   const portal = getPortal();
 
   useEffect(() => {
+    let active = true;
     const routeSeo = getRouteSeo(pathname, portal);
     const pathRole = pathname.split('/').filter(Boolean)[0];
     const normalizedRole = profile?.isTeacher || pathRole === 'teacher'
       ? 'teacher'
       : (profile?.role || (roleTitles[pathRole] ? pathRole : null));
 
+    let pageTitle = routeSeo.title;
     if (pathname === '/' || pathname === '/login' || pathname === '/signup' || pathname === '/policies') {
-      document.title = routeSeo.title;
+      pageTitle = routeSeo.title;
     } else {
       const roleTitle = roleTitles[normalizedRole];
-      const pageTitle = getPageTitle(pathname, normalizedRole || pathRole);
-      document.title = roleTitle ? `${roleTitle} | ${pageTitle}` : `Examifying | ${pageTitle}`;
+      const workspaceTitle = getPageTitle(pathname, normalizedRole || pathRole);
+      pageTitle = roleTitle ? `${roleTitle} | ${workspaceTitle}` : `Examifying | ${workspaceTitle}`;
     }
 
-    const setMeta = (selector, attribute, value) => {
-      let element = document.head.querySelector(selector);
-      if (!value) {
-        element?.remove();
-        return;
+    const applySeo = (seo, title, structuredPayload) => {
+      if (!active) return;
+      document.title = title;
+      const setMeta = (selector, attribute, value) => {
+        let element = document.head.querySelector(selector);
+        if (!value) {
+          element?.remove();
+          return;
+        }
+        if (!element) {
+          element = document.createElement('meta');
+          document.head.appendChild(element);
+        }
+        element.setAttribute(attribute, value);
+      };
+
+      setMeta('meta[name="description"]', 'content', seo.description);
+      setMeta('meta[name="keywords"]', 'content', seo.keywords);
+      setMeta('meta[name="robots"]', 'content', seo.robots);
+      setMeta('meta[property="og:title"]', 'content', title);
+      setMeta('meta[property="og:description"]', 'content', seo.description);
+      setMeta('meta[property="og:url"]', 'content', seo.url || `${window.location.origin}${pathname}`);
+      setMeta('meta[property="og:type"]', 'content', pathname.startsWith('/papers/') ? 'article' : 'website');
+      setMeta('meta[property="og:image"]', 'content', `${window.location.origin}/logo.png`);
+      setMeta('meta[name="twitter:title"]', 'content', title);
+      setMeta('meta[name="twitter:description"]', 'content', seo.description);
+      setMeta('meta[name="twitter:image"]', 'content', `${window.location.origin}/logo.png`);
+
+      let canonical = document.head.querySelector('link[rel="canonical"]');
+      if (seo.indexable && seo.url) {
+        if (!canonical) {
+          canonical = document.createElement('link');
+          canonical.rel = 'canonical';
+          document.head.appendChild(canonical);
+        }
+        canonical.href = seo.url;
+      } else {
+        canonical?.remove();
       }
-      if (!element) {
-        element = document.createElement('meta');
-        document.head.appendChild(element);
+
+      let structuredData = document.head.querySelector('#seo-structured-data');
+      if (structuredPayload) {
+        if (!structuredData) {
+          structuredData = document.createElement('script');
+          structuredData.id = 'seo-structured-data';
+          structuredData.type = 'application/ld+json';
+          document.head.appendChild(structuredData);
+        }
+        structuredData.textContent = JSON.stringify(structuredPayload);
+      } else {
+        structuredData?.remove();
       }
-      element.setAttribute(attribute, value);
     };
 
-    setMeta('meta[name="description"]', 'content', routeSeo.description);
-    setMeta('meta[name="keywords"]', 'content', routeSeo.keywords);
-    setMeta('meta[name="robots"]', 'content', routeSeo.robots);
-    setMeta('meta[property="og:title"]', 'content', document.title);
-    setMeta('meta[property="og:description"]', 'content', routeSeo.description);
-    setMeta('meta[property="og:url"]', 'content', routeSeo.url || `${window.location.origin}${pathname}`);
-    setMeta('meta[property="og:image"]', 'content', `${window.location.origin}/logo.png`);
-    setMeta('meta[name="twitter:title"]', 'content', document.title);
-    setMeta('meta[name="twitter:description"]', 'content', routeSeo.description);
-    setMeta('meta[name="twitter:image"]', 'content', `${window.location.origin}/logo.png`);
+    applySeo(routeSeo, pageTitle, buildStructuredData(portal, pathname));
 
-    let canonical = document.head.querySelector('link[rel="canonical"]');
-    if (routeSeo.indexable && routeSeo.url) {
-      if (!canonical) {
-        canonical = document.createElement('link');
-        canonical.rel = 'canonical';
-        document.head.appendChild(canonical);
-      }
-      canonical.href = routeSeo.url;
-    } else {
-      canonical?.remove();
+    const paperMatch = pathname.match(/^\/papers\/([A-Za-z0-9_-]{1,150})\/?$/);
+    if (paperMatch && portal !== 'admin') {
+      getPublicQuestionPaperById(paperMatch[1]).then((paper) => {
+        if (!active) return;
+        const paperSeo = getPublicPaperSeo(paper, paperMatch[1], portal);
+        if (paperSeo) {
+          applySeo(paperSeo, paperSeo.title, buildPublicPaperStructuredData(paperSeo, portal));
+        } else {
+          applySeo({ ...routeSeo, title: 'Past paper not found | Examifying', robots: 'noindex,follow', indexable: false }, 'Past paper not found | Examifying', null);
+        }
+        }).catch(() => {
+        if (active) applySeo({ ...routeSeo, robots: 'noindex,follow', indexable: false }, 'Past paper | Examifying', null);
+      });
     }
-
-    let structuredData = document.head.querySelector('#seo-structured-data');
-    const structuredPayload = buildStructuredData(portal, pathname);
-    if (structuredPayload) {
-      if (!structuredData) {
-        structuredData = document.createElement('script');
-        structuredData.id = 'seo-structured-data';
-        structuredData.type = 'application/ld+json';
-        document.head.appendChild(structuredData);
-      }
-      structuredData.textContent = JSON.stringify(structuredPayload);
-    } else {
-      structuredData?.remove();
-    }
+    return () => { active = false; };
   }, [pathname, portal, profile?.isTeacher, profile?.role]);
 
   return null;

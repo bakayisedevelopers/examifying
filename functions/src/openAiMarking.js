@@ -87,8 +87,8 @@ export const callOpenAiMarkingOnce = async ({
   const response = await client.responses.create({
     model,
     store: false,
-    max_output_tokens: 512,
-    reasoning: { effort: 'none' },
+    max_output_tokens: 2048,
+    reasoning: { effort: 'xhigh' },
     input: [
       { role: 'system', content: [{ type: 'input_text', text: getSystemInstructions(submissionType) }] },
       ...(sharedContent.length ? [{ role: 'user', content: sharedContent }] : []),

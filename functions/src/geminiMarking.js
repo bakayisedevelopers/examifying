@@ -10,7 +10,10 @@ const getSystemInstructions = (submissionType) => submissionType === 'peer_marki
 const imagePart = (image) => {
   const match = String(image?.dataUrl ?? '').match(/^data:([^;,]+);base64,([\s\S]+)$/);
   if (!match) throw new Error('AI marking received an invalid image payload.');
-  return { inline_data: { mime_type: match[1], data: match[2] } };
+  return {
+    inline_data: { mime_type: match[1], data: match[2] },
+    media_resolution: { level: 'MEDIA_RESOLUTION_ULTRA_HIGH' },
+  };
 };
 
 const addImages = (parts, images = [], label) => {
@@ -104,8 +107,8 @@ export const callGeminiMarkingOnce = async ({
         ...(cacheWasUsed ? { cachedContent: sourceCache.cacheName } : {}),
         generationConfig: {
           temperature: 0,
-          maxOutputTokens: 512,
-          thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false },
+          maxOutputTokens: 2048,
+          thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: false },
           responseFormat: {
             text: {
               mimeType: 'APPLICATION_JSON',
@@ -137,8 +140,8 @@ export const callGeminiMarkingOnce = async ({
           contents: [{ role: 'user', parts: [...sourceParts, ...dynamicParts] }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 512,
-            thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false },
+            maxOutputTokens: 2048,
+            thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: false },
             responseFormat: {
               text: {
                 mimeType: 'APPLICATION_JSON',

@@ -34,7 +34,7 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
         return {
           ok: true,
           json: async () => ({
-            candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[]}' }] } }],
+            candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }],
             usageMetadata: { promptTokenCount: 80, candidatesTokenCount: 12, totalTokenCount: 92 },
           }),
         };
@@ -44,12 +44,14 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
     assert.equal(call.url, `https://gemini.example.test/v1beta/models/${GEMINI_MARKING_MODEL}:generateContent`);
     assert.equal(call.options.headers['x-goog-api-key'], 'unit-test-gemini-key');
     assert.equal(new URL(call.url).search, '');
-    assert.equal(call.body.generationConfig.maxOutputTokens, 512);
-    assert.equal(call.body.generationConfig.thinkingConfig.thinkingLevel, 'MINIMAL');
+    assert.equal(call.body.generationConfig.maxOutputTokens, 2048);
+    assert.equal(call.body.generationConfig.thinkingConfig.thinkingLevel, 'HIGH');
     assert.equal(call.body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
-    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties), ['status', 'results', 'contextRequests']);
+    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties), ['status', 'results', 'contextRequests', 'unansweredQuestionIds']);
     assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties.results.items.properties), ['questionId', 'awardedMark']);
     assert.equal(call.body.contents[0].parts.filter((part) => part.inline_data).length, 2);
+    assert.deepEqual(call.body.contents[0].parts.filter((part) => part.inline_data)
+      .map((part) => part.media_resolution.level), ['MEDIA_RESOLUTION_ULTRA_HIGH', 'MEDIA_RESOLUTION_ULTRA_HIGH']);
     assert.equal(result.status, 'completed');
     assert.equal(result.model, 'gemini-3.5-flash-lite');
     assert.equal(result.usage.totalTokens, 92);
@@ -68,7 +70,7 @@ test('peer-marking request carries both original work and marker images', async 
       answerImages: [{ pageNumber: 1, dataUrl: 'data:image/jpeg;base64,AQ==' }],
       fetchImpl: async (_url, options) => {
         requestBody = JSON.parse(options.body);
-        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[]}' }] } }] }) };
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }] }) };
       },
     });
     const parts = requestBody.contents[0].parts;
@@ -92,7 +94,7 @@ test('Gemini source labels distinguish fallback memos from full question papers'
       suppliedMaterialsByQuestion: { 'paper-a::1.1': ['analysis_pages', 'memo'] },
       fetchImpl: async (_url, options) => {
         requestBody = JSON.parse(options.body);
-        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[]}' }] } }] }) };
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }] }) };
       },
     });
     assert.match(requestBody.contents[0].parts[0].text, /Official marking memo paper-a, page 2/);
@@ -127,7 +129,7 @@ test('Gemini explicitly caches shared paper pages but excludes student answer im
       return {
         ok: true,
         json: async () => ({
-          candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[]}' }] } }],
+          candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }],
           usageMetadata: { promptTokenCount: 510, candidatesTokenCount: 10, totalTokenCount: 520, cachedContentTokenCount: 1100 },
         }),
       };
@@ -168,7 +170,7 @@ test('Gemini reuses a live context cache for another submission with the same so
       }
       generationRequests += 1;
       assert.equal(JSON.parse(options.body).cachedContent, 'cachedContents/shared-paper');
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[]}' }] } }] }) };
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }] }) };
     };
     const common = {
       submissionType: 'student_exercise',
@@ -198,7 +200,7 @@ test('Gemini cache creation failure safely falls back to a regular Gemini reques
         requests.push({ url, body: JSON.parse(options.body) });
         return url.endsWith('/cachedContents')
           ? { ok: false, status: 400, json: async () => ({ error: { status: 'INVALID_ARGUMENT' } }) }
-          : { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[]}' }] } }] }) };
+          : { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }] }) };
       },
     });
     assert.equal(requests.length, 2);
@@ -227,7 +229,7 @@ test('Gemini retries uncached if a previously cached context is rejected or expi
         const body = JSON.parse(options.body);
         assert.equal(body.cachedContent, undefined);
         assert.equal(body.contents[0].parts.some((part) => part.inline_data), true);
-        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[]}' }] } }] }) };
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }] }) };
       },
     });
     assert.equal(generationCalls, 2);

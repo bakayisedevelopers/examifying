@@ -107,9 +107,8 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
     if (!exerciseSnapshot.exists()) throw new Error('This exercise could not be found.');
     const exercise = exerciseSnapshot.data();
     if (exercise.studentId && exercise.studentId !== studentId) throw new Error('This exercise belongs to another student.');
-    if (exercise.submittedImageUrl || exercise.submitted === 'Yes' || exercise.submissionStatus === 'submitted') {
-      throw new Error('Work has already been submitted for this exercise.');
-    }
+    const hasPriorSubmission = Boolean(exercise.submittedImageUrl || exercise.submitted === 'Yes'
+      || exercise.submissionStatus === 'submitted' || (Array.isArray(exercise.submittedImages) && exercise.submittedImages.length));
     const opensAt = asDate(exercise.assignmentOpensAt);
     const locksAt = asDate(exercise.locksAt);
     const isOpen = opensAt && locksAt
@@ -153,6 +152,8 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
       submitted: 'Yes',
       submissionStatus: 'submitted',
       submittedAt,
+      firstSubmittedAt: exercise.firstSubmittedAt || exercise.submittedAt || submittedAt,
+      submissionVersion: (Number(exercise.submissionVersion) || 0) + 1,
       updatedAt: serverTimestamp(),
     };
     const batch = writeBatch(db);
@@ -166,14 +167,20 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
       submittedFileNames: fileNames,
       submissionPageCount: submittedImages.length,
       submittedAt,
+      firstSubmittedAt: exercise.firstSubmittedAt || exercise.submittedAt || submittedAt,
+      submissionVersion: (Number(exercise.submissionVersion) || 0) + 1,
       updatedAt: serverTimestamp(),
-      peerReviewed: 'No',
-      peerReviewStatus: 'pending',
-      peerNotes: '',
-      peerReviewDate: null,
       submitted: 'Yes',
       submissionStatus: 'submitted',
     };
+    if (!hasPriorSubmission) {
+      Object.assign(exercisePatch, {
+        peerReviewed: 'No',
+        peerReviewStatus: 'pending',
+        peerNotes: '',
+        peerReviewDate: null,
+      });
+    }
 
     batch.set(exerciseRef, exercisePatch, { merge: true });
     const nestedSubRef = doc(db, 'users', studentId, 'subjects', resolvedSubjectInstanceId, 'exercises', exerciseId, 'submissions', exerciseId);

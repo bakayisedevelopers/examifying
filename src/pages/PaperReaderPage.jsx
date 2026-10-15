@@ -8,9 +8,10 @@ import { useStudentWorkspaceProfile } from '../hooks/useStudentWorkspaceProfile'
 import { useOperationStatus } from '../hooks/useOperationStatus';
 import { useStudentExercisePaperAccess } from '../hooks/useStudentExercisePaperAccess';
 import { ROLES } from '../lib/constants';
+import { getPublicQuestionPaperById } from '../services/publicQuestionPaperService';
 import { getQuestionPaperById, subscribeQuestionPaperAnalysisActivity, updateQuestionPaper } from '../services/firestoreService';
 
-const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, questionReference, status, onPageChange, onBack }) => {
+const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, questionReference, status, onPageChange, onBack, isPublicPaper = false }) => {
   const paperTitle = paper?.displayName || `${paper?.subject || 'Question paper'} ${paper?.grade || ''}`.trim();
   const title = documentTitle && documentTitle !== 'Question paper' ? `${paperTitle} · ${documentTitle}` : paperTitle;
   return (
@@ -26,6 +27,14 @@ const StudentFullPagePdf = ({ paper, documentUrl, documentTitle, pageNumber, que
           <button type="button" className="grid h-9 w-9 place-items-center rounded-full border border-slate-700/80 bg-slate-950 text-lime-300 shadow-[0_3px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-lime-400/60 hover:bg-slate-900 lg:h-10 lg:w-10 lg:rounded-md lg:border-transparent lg:bg-transparent lg:text-slate-700 lg:shadow-none lg:hover:bg-slate-100" onClick={() => onPageChange(pageNumber + 1)} aria-label="Next PDF page"><ChevronRight className="h-5 w-5" /></button>
         </div>
       </header>
+      {isPublicPaper && paper ? (
+        <section className="shrink-0 border-b border-slate-800 bg-slate-900 px-4 py-3 text-slate-100 sm:px-6" aria-label="Public past paper details">
+          <h1 className="text-sm font-bold sm:text-base">{paper.displayName || `${paper.subject || 'Past examination paper'} ${paper.grade || ''}`.trim()}</h1>
+          <p className="mt-1 text-xs leading-5 text-slate-300 sm:text-sm">
+            Subject: {paper.subject || 'Not listed'} · Grade: {paper.grade || 'Not listed'} · Year: {paper.year || 'Not listed'} · Month: {paper.month || 'Not listed'} · Province or region: {paper.region || 'Not listed'} · Paper: {paper.paperNumber || 'Not listed'} · {paper.memoAvailable ? 'Memo available' : 'Memo not listed'}
+          </p>
+        </section>
+      ) : null}
       {status || !documentUrl ? (
         <div role="status" className="grid min-h-0 flex-1 place-items-center p-6 text-center text-sm text-white">
           {status === 'Loading paper...'
@@ -310,7 +319,12 @@ export const PaperReaderPage = () => {
     let active = true;
     const load = async () => {
       try {
-        const result = await getQuestionPaperById(paperId);
+        let result;
+        if (isPublicPaper) {
+          result = await getPublicQuestionPaperById(paperId);
+        } else {
+          result = await getQuestionPaperById(paperId);
+        }
         if (!active) return;
         setPaper(result);
         setStatus(result ? '' : 'Question paper not found.');
@@ -321,7 +335,7 @@ export const PaperReaderPage = () => {
     };
     load();
     return () => { active = false; };
-  }, [paperId]);
+  }, [isPublicPaper, paperId]);
 
   useEffect(() => {
     if (isPublicPaper) {
@@ -372,7 +386,7 @@ export const PaperReaderPage = () => {
   };
 
   if (isPublicPaper || role === ROLES.STUDENT || role === ROLES.TUTOR) {
-    return <StudentFullPagePdf paper={paper} documentUrl={visibleDocumentUrl} documentTitle={documentTitle} pageNumber={pageNumber} questionReference={questionReference} status={visibleDocumentStatus} onPageChange={updatePage} onBack={goBack} />;
+    return <StudentFullPagePdf paper={paper} documentUrl={visibleDocumentUrl} documentTitle={documentTitle} pageNumber={pageNumber} questionReference={questionReference} status={visibleDocumentStatus} onPageChange={updatePage} onBack={goBack} isPublicPaper={isPublicPaper} />;
   }
 
   return (

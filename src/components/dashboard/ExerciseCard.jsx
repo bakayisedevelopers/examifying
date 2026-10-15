@@ -23,6 +23,7 @@ const AiMarkingNotice = ({ record, viewerRole = 'student' }) => {
     pending: ['bg-sky-50 text-sky-900', 'Your work is queued for marking.'],
     processing: ['bg-sky-50 text-sky-900', 'Your work is being marked.'],
     completed: ['bg-lime-50 text-lime-900', 'Marking completed.'],
+    partially_completed: ['bg-amber-50 text-amber-900', record.aiMarking.message || 'Some questions still need answers. Upload the remaining work when you are ready.'],
     failed: ['bg-amber-50 text-amber-900', viewerRole === 'tutor'
       ? 'Marking could not be completed. The original submission is available for manual marking.'
       : 'Marking could not be completed. Your submitted work is saved for tutor review.'],
@@ -62,7 +63,6 @@ export const ExerciseCard = ({
   const peerMarkingImages = imagePages(exercise.peerMarkingImages, exercise.peerMarkingImageUrl, exercise.peerMarkingFileName);
   const [studentSubmissionImages, setStudentSubmissionImages] = useState(() => imagePages(exercise.submittedImages, exercise.submittedImageUrl, exercise.submittedFileName));
   const [studentSubmissionUrl, setStudentSubmissionUrl] = useState(exercise.submittedImageUrl ?? '');
-  const [studentSubmissionFileName, setStudentSubmissionFileName] = useState(exercise.submittedFileName ?? '');
   const [isTutorMarking, setIsTutorMarking] = useState(false);
   const [isStudentMarking, setIsStudentMarking] = useState(false);
   const [markStatus, setMarkStatus] = useState('');
@@ -73,7 +73,6 @@ export const ExerciseCard = ({
     setMarkedImages(imagePages(exercise.tutorMarkedImages, exercise.tutorMarkedImageUrl, exercise.tutorMarkedFileName));
     setStudentSubmissionImages(imagePages(exercise.submittedImages, exercise.submittedImageUrl, exercise.submittedFileName));
     setStudentSubmissionUrl(exercise.submittedImageUrl ?? '');
-    setStudentSubmissionFileName(exercise.submittedFileName ?? '');
     setIsStudentMarking(false);
     setOpenViewer('');
   }, [exercise.id, exercise.submittedImageUrl, exercise.submittedFileName, exercise.submittedImages, exercise.tutorMarkedFileName, exercise.tutorMarkedImageUrl, exercise.tutorMarkedImages]);
@@ -131,7 +130,6 @@ export const ExerciseCard = ({
   }, async () => {
     const result = await uploadSubmissionImages({ files, exerciseId, studentId, subjectInstanceId: exercise.subjectInstanceId });
     setStudentSubmissionUrl(result.submittedImageUrl);
-    setStudentSubmissionFileName(result.submittedFileName);
     setStudentSubmissionImages(result.submittedImages ?? imagePages([], result.submittedImageUrl, result.submittedFileName));
     return result;
   });
@@ -234,12 +232,12 @@ export const ExerciseCard = ({
         {viewerRole === 'student' ? (
           <div className="space-y-4 border-t border-slate-200 pt-4">
             {availability.state === 'active' ? (
-              !(studentSubmissionUrl && studentSubmissionFileName) && !paymentLocked && exercise ? (
-                <SubmissionUpload exerciseId={exercise.id} onSubmit={handleStudentSubmit} exercise={exercise} />
-              ) : !(studentSubmissionUrl && studentSubmissionFileName) ? (
+              !paymentLocked && exercise ? (
+                <SubmissionUpload exerciseId={exercise.id} onSubmit={handleStudentSubmit} exercise={exercise} hasPriorSubmission={hasSubmittedImages} />
+              ) : !hasSubmittedImages ? (
                 <div className="panel flex min-h-36 items-center justify-center p-6 text-center text-sm text-slate-500">Uploads unlock only after payment is complete and an exercise has been assigned.</div>
               ) : null
-            ) : !(studentSubmissionUrl && studentSubmissionFileName) ? (
+            ) : !hasSubmittedImages ? (
               <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-500"><Lock className="h-4 w-4" />Submission unavailable</span>
             ) : null}
             {hasSubmittedImages ? <div className="flex flex-wrap items-center gap-3">

@@ -8,6 +8,7 @@
     "build": "vite build && node scripts/create-role-sites.mjs",
     "preview": "vite preview",
     "lint": "eslint .",
+    "search-console": "node scripts/search-console.mjs",
     "functions:serve": "firebase emulators:start --only functions",
     "functions:lint": "cd functions && npm run lint",
     "deploy": "firebase deploy --only hosting,functions",

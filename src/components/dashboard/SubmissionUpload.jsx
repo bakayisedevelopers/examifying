@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { UploadCloud } from 'lucide-react';
 
-export const SubmissionUpload = ({ exerciseId, onSubmit }) => {
+export const SubmissionUpload = ({ exerciseId, onSubmit, hasPriorSubmission = false }) => {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -29,8 +29,10 @@ export const SubmissionUpload = ({ exerciseId, onSubmit }) => {
   return (
     <form onSubmit={handleSubmit} className="panel space-y-4 p-5 w-full">
       <div>
-        <h3 className="text-lg font-semibold text-slate-950">Upload Handwritten Work</h3>
-        <p className="mt-2 text-sm text-slate-500">Submit a clear photo of your paper. JPG, PNG, or HEIC files are supported for answer uploads.</p>
+        <h3 className="text-lg font-semibold text-slate-950">{hasPriorSubmission ? 'Upload More or Clearer Work' : 'Upload Handwritten Work'}</h3>
+        <p className="mt-2 text-sm text-slate-500">{hasPriorSubmission
+          ? 'Your work is still recorded as submitted. Add clearer images or submit the remaining answers; questions already marked will be skipped.'
+          : 'Submit a clear photo of your paper. JPG, PNG, or HEIC files are supported for answer uploads.'}</p>
       </div>
       <input type="file" accept="image/*" multiple className="input" onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
       {files.length ? <p className="text-sm text-slate-500">{files.length} image page(s) selected.</p> : null}
@@ -38,7 +40,7 @@ export const SubmissionUpload = ({ exerciseId, onSubmit }) => {
         <UploadCloud className="h-4 w-4" />
         {loading ? 'Uploading…' : `Submit ${files.length || ''} image page${files.length === 1 ? '' : 's'}`}
       </button>
-      {message ? <p className="text-sm font-medium text-rose-400">{message}</p> : null}
+      {message ? <p role="status" className={`text-sm font-medium ${loading ? 'text-slate-500' : 'text-lime-700'}`}>{message}</p> : null}
     </form>
   );
 };

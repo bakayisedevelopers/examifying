@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { admin, getDb } from './admin.js';
 import { getExerciseTopicNames } from './peerMarkingAllocation.js';
-import { shouldPreserveAuthoritativeMark } from './aiMarkingCore.js';
+import { shouldPreserveAuthoritativeMark, submissionVersionForRecord } from './aiMarkingCore.js';
 
 const normalizeTopicKey = (value = '') => String(value)
   .normalize('NFKD')
@@ -558,8 +558,15 @@ const saveTutorExerciseScoreCore = async ({
     }
     if (!exerciseSnapshot.exists) throw new HttpsError('not-found', 'Exercise not found.');
     const exercise = exerciseSnapshot.data();
+    const exerciseImageRefs = Array.isArray(exercise.submittedImages) && exercise.submittedImages.length
+      ? exercise.submittedImages
+      : exercise.submittedImageUrl ? [{ url: exercise.submittedImageUrl, pageNumber: 1 }] : [];
+    const exerciseVersion = submissionVersionForRecord(exercise, exerciseImageRefs
+      .map((image, index) => ({ url: String(image?.url ?? image?.downloadUrl ?? '').trim(), pageNumber: Number(image?.pageNumber) || index + 1 }))
+      .filter((image) => image.url));
     if (markSource === 'ai' && (exercise.aiMarking?.version !== aiMarkingVersion
-      || exercise.aiMarking?.status !== 'processing')) {
+      || exercise.aiMarking?.status !== 'processing'
+      || exerciseVersion !== aiMarkingVersion)) {
       throw new HttpsError('failed-precondition', 'This AI marking result is no longer current.');
     }
     if (exercise.studentId && exercise.studentId !== studentId) throw new HttpsError('permission-denied', 'This exercise belongs to another student.');

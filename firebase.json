@@ -14,8 +14,61 @@
       ],
       "rewrites": [
         {
+          "source": "/sitemap.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-core.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-papers-*.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-data/**",
+          "function": {
+            "functionId": "servePublicPaperData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-catalog",
+          "function": {
+            "functionId": "servePublicPaperCatalogData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers/**",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/policies",
+          "destination": "/policies.html"
+        },
+        {
           "source": "**",
-          "destination": "/index.html"
+          "destination": "/app.html"
         }
       ]
     },
@@ -29,8 +82,61 @@
       ],
       "rewrites": [
         {
+          "source": "/sitemap.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-core.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-papers-*.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-data/**",
+          "function": {
+            "functionId": "servePublicPaperData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-catalog",
+          "function": {
+            "functionId": "servePublicPaperCatalogData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers/**",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/policies",
+          "destination": "/policies.html"
+        },
+        {
           "source": "**",
-          "destination": "/index.html"
+          "destination": "/app.html"
         }
       ]
     },
@@ -44,8 +150,61 @@
       ],
       "rewrites": [
         {
+          "source": "/sitemap.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-core.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-papers-*.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-data/**",
+          "function": {
+            "functionId": "servePublicPaperData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-catalog",
+          "function": {
+            "functionId": "servePublicPaperCatalogData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers/**",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/policies",
+          "destination": "/policies.html"
+        },
+        {
           "source": "**",
-          "destination": "/index.html"
+          "destination": "/app.html"
         }
       ]
     },
@@ -59,8 +218,61 @@
       ],
       "rewrites": [
         {
+          "source": "/sitemap.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-core.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/sitemap-papers-*.xml",
+          "function": {
+            "functionId": "servePublicSitemap",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-data/**",
+          "function": {
+            "functionId": "servePublicPaperData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/public-paper-catalog",
+          "function": {
+            "functionId": "servePublicPaperCatalogData",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/papers/**",
+          "function": {
+            "functionId": "servePublicPaperSeo",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/policies",
+          "destination": "/policies.html"
+        },
+        {
           "source": "**",
-          "destination": "/index.html"
+          "destination": "/app.html"
         }
       ]
     },
@@ -74,8 +286,12 @@
       ],
       "rewrites": [
         {
+          "source": "/policies",
+          "destination": "/policies.html"
+        },
+        {
           "source": "**",
-          "destination": "/index.html"
+          "destination": "/app.html"
         }
       ]
     }

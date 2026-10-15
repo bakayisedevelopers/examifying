@@ -115,6 +115,8 @@ export {
 } from './peerMarking.js';
 export { generateSystemPeerWorkTask } from './systemPeerWork.js';
 
+export { servePublicSitemap, servePublicPaperSeo, servePublicPaperData, servePublicPaperCatalogData } from './publicSeo.js';
+
 export {
   queueStudentExerciseAiMarking,
   queuePeerMarkingAiReview,

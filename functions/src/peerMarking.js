@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
@@ -131,6 +132,119 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
   },
 );
 
+export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 180 }, async (request) => {
+  const uid = String(request.auth?.uid ?? '').trim();
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in before retrying work generation.');
+  const { studentId, subjectInstanceId, exerciseId } = request.data ?? {};
+  if (![studentId, subjectInstanceId, exerciseId].every((value) => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.trim()))) {
+    throw new HttpsError('invalid-argument', 'Student, subject episode, and exercise are required.');
+  }
+
+  const db = getDb();
+  const [actorSnapshot, episodeSnapshot, exerciseSnapshot] = await Promise.all([
+    db.doc(`users/${uid}`).get(),
+    db.doc(`users/${studentId}/subjects/${subjectInstanceId}`).get(),
+    db.doc(`users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}`).get(),
+  ]);
+  if (!actorSnapshot.exists || !['admin', 'tutor', 'teacher'].includes(actorSnapshot.data()?.role)) {
+    throw new HttpsError('permission-denied', 'Only an assigned tutor or admin can retry work generation.');
+  }
+  if (!episodeSnapshot.exists || episodeSnapshot.data()?.status !== 'active' || !exerciseSnapshot.exists) {
+    throw new HttpsError('failed-precondition', 'The student exercise or active subject is no longer available.');
+  }
+  const episode = episodeSnapshot.data();
+  const actorRole = uid === episode.primaryTutorId ? 'co-owner' : episode.staffByUid?.[uid];
+  if (actorSnapshot.data()?.role !== 'admin' && !['co-owner', 'marker'].includes(actorRole)) {
+    throw new HttpsError('permission-denied', 'Your tutor access does not allow work-generation retries.');
+  }
+  const exercise = exerciseSnapshot.data();
+  if (String(exercise.subjectInstanceId ?? subjectInstanceId) !== subjectInstanceId
+    || String(exercise.studentId ?? studentId) !== studentId
+    || !hasSubmission(exercise)) {
+    throw new HttpsError('failed-precondition', 'This exercise has no submitted work to generate a marking task for.');
+  }
+  const cohort = cohortFor(exercise);
+  if (!cohort.assignmentDate || !cohort.subject || !cohort.grade) {
+    throw new HttpsError('failed-precondition', 'The exercise is missing its subject, grade, or assignment date.');
+  }
+
+  const reviewerAssignments = await db.collectionGroup('peerMarkingAssignments')
+    .where('reviewerId', '==', studentId).get();
+  const currentAssignment = reviewerAssignments.docs.find((document) => {
+    const assignment = document.data();
+    return assignment.reviewerExerciseId === exerciseId
+      && assignment.reviewerSubjectInstanceId === subjectInstanceId
+      && assignment.assignmentDate === cohort.assignmentDate
+      && assignment.subject === cohort.subject
+      && String(assignment.grade) === String(cohort.grade);
+  });
+  if (currentAssignment && currentAssignment.data().status !== 'fallback_failed') {
+    return { status: currentAssignment.data().status, alreadyAllocated: true };
+  }
+  if (currentAssignment && currentAssignment.data().systemGenerated !== true) {
+    throw new HttpsError('failed-precondition', 'Only failed system-generated work can be retried from here.');
+  }
+
+  const reviewerExerciseRef = exerciseSnapshot.ref;
+  const fallbackAssignmentRef = reviewerExerciseRef.collection('peerMarkingAssignments').doc(studentId);
+  const lockRef = db.collection('peerMarkingAssignmentLocks')
+    .doc(peerMarkingAllocationLockId({ ...cohort, reviewerId: studentId }));
+  await db.runTransaction(async (transaction) => {
+    const [assignmentSnapshot, lockSnapshot] = await Promise.all([
+      transaction.get(fallbackAssignmentRef), transaction.get(lockRef),
+    ]);
+    const existing = assignmentSnapshot.exists ? assignmentSnapshot.data() : null;
+    if (existing && existing.status !== 'fallback_failed') {
+      throw new HttpsError('already-exists', 'Work is already assigned or being prepared.');
+    }
+    if (existing && existing.systemGenerated !== true) {
+      throw new HttpsError('failed-precondition', 'This assignment is not a system-generated fallback.');
+    }
+    if (lockSnapshot.exists && lockSnapshot.data()?.assignmentPath
+      && lockSnapshot.data().assignmentPath !== fallbackAssignmentRef.path) {
+      throw new HttpsError('already-exists', 'A peer-marking task is already assigned for this exercise.');
+    }
+    if (existing) transaction.delete(fallbackAssignmentRef);
+    if (lockSnapshot.exists) transaction.delete(lockRef);
+    transaction.set(reviewerExerciseRef, {
+      peerMarkingWorkStatus: 'pending',
+      peerMarkingWorkAssignmentId: admin.firestore.FieldValue.delete(),
+      peerMarkingWorkAssignmentPath: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+
+  const sameDayExercises = await db.collectionGroup('exercises')
+    .where('assignmentDate', '==', cohort.assignmentDate)
+    .where('subject', '==', cohort.subject)
+    .where('grade', '==', cohort.grade).get();
+  const excludedPaperIds = new Set(sameDayExercises.docs.flatMap((document) => {
+    const row = document.data();
+    return [...(Array.isArray(row.paperIds) ? row.paperIds : []),
+      ...(Array.isArray(row.questionLinks) ? row.questionLinks.map((link) => link.paperId) : [])]
+      .map((paperId) => String(paperId ?? '').trim()).filter(Boolean);
+  }));
+  const excludedQuestionIds = new Set(sameDayExercises.docs.flatMap((document) => [...getExerciseQuestionIdentities(document.data())]));
+  const reviewer = { ...exercise, id: exerciseId, studentId, subjectInstanceId, ref: reviewerExerciseRef };
+  await assignFallbackPeerWork({ db, cohort, reviewers: [reviewer], excludedPaperIds, excludedQuestionIds, retryNonce: randomUUID() });
+
+  const finalAssignment = await fallbackAssignmentRef.get();
+  const finalStatus = finalAssignment.exists ? finalAssignment.data()?.status : 'not_available';
+  if (finalStatus === 'not_available') {
+    await reviewerExerciseRef.set({
+      peerMarkingWorkStatus: 'not_available',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+  logger.info('Tutor retried system-generated peer-work fallback', {
+    studentId,
+    exerciseId,
+    assignmentDate: cohort.assignmentDate,
+    status: finalStatus,
+  });
+  return { status: finalStatus, assignmentPath: finalAssignment.exists ? finalAssignment.ref.path : '' };
+});
+
 export const completePeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in to submit peer marking.');
@@ -172,6 +286,8 @@ export const completePeerMarkingAssignment = onCall({ cpu: 'gcf_gen1' }, async (
   if (assignment.reviewerExercisePath) batch.set(db.doc(assignment.reviewerExercisePath), {
     peerMarkingImages: pages, markedPeerExerciseId: assignment.exerciseId,
     peerMarkingAssignmentId: assignmentRef.id, peerMarkingStatus: 'completed', updatedAt: now,
+    peerMarkingWorkStatus: 'completed', peerMarkingWorkAssignmentId: assignmentRef.id,
+    peerMarkingWorkAssignmentPath: assignmentRef.path,
   }, { merge: true });
   await batch.commit();
   return { success: true, assignmentId: assignmentRef.id, reviewId: reviewRef.id, status: 'completed' };

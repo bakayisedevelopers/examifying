@@ -1666,6 +1666,13 @@ export const retryStudentExerciseAiMarking = async ({ studentId, subjectInstance
   return (await callable({ studentId, subjectInstanceId, exerciseId })).data;
 };
 
+export const retryPeerMarkingFallbackForTutor = async ({ studentId, subjectInstanceId, exerciseId }) => {
+  if (!studentId || !subjectInstanceId || !exerciseId) throw new Error('Student, subject, and exercise are required.');
+  if (!isFirebaseConfigured || !functions) throw new Error('Connect to Firebase to retry work generation.');
+  const callable = httpsCallable(functions, 'retryPeerMarkingFallbackForTutor');
+  return (await callable({ studentId, subjectInstanceId, exerciseId })).data;
+};
+
 export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, topicId = '', exerciseId, peerAssignmentId, peerAssignmentPath, reviewerExerciseId, questionMarks = [] }) => {
   const topicName = String(topic || '').trim();
   if (!tutorId || !studentId || !topicName || (!exerciseId && !peerAssignmentId && !peerAssignmentPath)) throw new Error('Tutor, student, topic, and exercise or marking assignment are required.');
@@ -3142,6 +3149,9 @@ const getPeerMarkingAssignmentsForTutorContext = async ({ studentId, subject, su
   return trackDataRequest('Tutor peer-marking assignments', async () =>
     (await callable({ studentId, subject, subjectInstanceId })).data);
 };
+
+export const getTutorPeerMarkingAssignments = async ({ studentId, subject, subjectInstanceId }) =>
+  getPeerMarkingAssignmentsForTutorContext({ studentId, subject, subjectInstanceId });
 
 export const getCompletedPeerMarkingAssignmentsForStudent = async (reviewerId, subject = DEFAULT_SUBJECT) => {
   if (!reviewerId || !isFirebaseConfigured) return [];

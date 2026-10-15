@@ -123,7 +123,7 @@ export const StudentExerciseDetailsPage = () => {
         && assignment.reviewerId === profile.uid
         && assignmentBelongsToExercise(assignment, exercise)) ?? null;
       setAssignedMarkingAssignment(matchingAssignment);
-    });
+    }, (error) => setStatus(error.message || 'Could not refresh peer-marking assignments.'));
   }, [exercise, profile?.uid]);
 
   const handlePeerMarkingCompleted = ({ assignment, reviewImages }) => {

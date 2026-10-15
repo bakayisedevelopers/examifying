@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { LoaderCircle, RotateCw, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell';
 import { LoadingState } from '../../components/common/LoadingState';
 import { ExerciseCard } from '../../components/dashboard/ExerciseCard';
 import { useAuth } from '../../hooks/useAuth';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
-import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTopicUnderstandingQuestionScores, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData, subscribeToExerciseAssignment, subscribeToPeerMarkingAssignmentsAtPaths, subscribeToTopicUnderstandingQuestionScores } from '../../services/firestoreService';
+import { deleteExerciseAssignmentForTutor, getCompletedPeerMarkingWorkForTutor, getExerciseAssignmentById, getStudentTopicScoresForTutor, getTopicUnderstandingQuestionScores, getTutorAssignedStudentContexts, getTutorAssignmentHistoryContexts, getTutorAssignmentHistoryData, getTutorPeerMarkingAssignments, retryPeerMarkingFallbackForTutor, subscribeToExerciseAssignment, subscribeToPeerMarkingAssignmentsAtPaths, subscribeToTopicUnderstandingQuestionScores } from '../../services/firestoreService';
 import { deleteExerciseSubmissionFiles } from '../../services/storageService';
 import { getExerciseAvailability, getExerciseStatusLabels } from '../../utils/exerciseRules';
 import { useEffectiveRole } from '../../utils/effectiveRole';
@@ -33,6 +33,7 @@ export const TutorExerciseDetailsPage = () => {
   const [status, setStatus] = useState('Loading exercise...');
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isRetryingPeerWork, setIsRetryingPeerWork] = useState(false);
   const [topicScores, setTopicScores] = useState({});
   const [accessRole, setAccessRole] = useState('viewer');
   const [isHistorical, setIsHistorical] = useState(false);
@@ -76,14 +77,23 @@ export const TutorExerciseDetailsPage = () => {
         setIsHistorical(false);
         setStatus('');
         if (profile?.uid) {
-          const [contexts, allMarkingAssignments] = await Promise.all([
+          const [contexts, allMarkingAssignments, reviewerAssignments] = await Promise.all([
             getTutorAssignedStudentContexts(profile.uid, result.studentId),
             getCompletedPeerMarkingWorkForTutor({ tutorId: profile.uid, studentId: result.studentId, subject: result.subject }).catch(() => []),
+            getTutorPeerMarkingAssignments({
+              studentId: result.studentId,
+              subject: result.subject,
+              subjectInstanceId: result.subjectInstanceId,
+            }).catch(() => []),
           ]);
           const selectedContext = contexts.find((context) => context.subject === result.subject) ?? null;
+          const reviewerAssignment = reviewerAssignments.find((item) => item.reviewerExerciseId === result.id
+            && item.reviewerSubjectInstanceId === result.subjectInstanceId
+            && item.assignmentDate === result.assignmentDate);
           const exerciseWithStudent = {
             ...result,
             studentName: selectedContext?.displayName || selectedContext?.name || selectedContext?.email || 'Student',
+            peerMarkingWorkStatus: reviewerAssignment?.status || result.peerMarkingWorkStatus || '',
           };
           setExercise(exerciseWithStudent);
           const markingAssignments = allMarkingAssignments.filter((item) => markingBelongsToExercise(item, exerciseWithStudent));
@@ -173,6 +183,30 @@ export const TutorExerciseDetailsPage = () => {
     }
   };
 
+  const retryPeerWork = async () => {
+    if (!exercise || !profile?.uid || isRetryingPeerWork) return;
+    setIsRetryingPeerWork(true);
+    setStatus('');
+    try {
+      const result = await runOperation({
+        operationName: 'Retrying work generation',
+        successMessage: 'The work-generation retry has started.',
+      }, () => retryPeerMarkingFallbackForTutor({
+        studentId: exercise.studentId,
+        subjectInstanceId: exercise.subjectInstanceId,
+        exerciseId: exercise.id,
+      }));
+      setExercise((current) => current ? { ...current, peerMarkingWorkStatus: result.status || 'pending' } : current);
+      if (result.status === 'not_available') {
+        setStatus('No eligible practice work could be generated for this exercise yet. You can retry later.');
+      }
+    } catch (error) {
+      setStatus(error.message || 'Could not retry work generation.');
+    } finally {
+      setIsRetryingPeerWork(false);
+    }
+  };
+
   return (
     <AppShell title="Exercise details" subtitle={exercise ? `${exercise.studentName || 'Student'} • ${exercise.subject} • ${exercise.assignmentDate}` : status} role={role} user={profile} onLogout={logout}>
       {isLoading ? <LoadingState label="Loading exercise, scores, and marking history…" /> : null}
@@ -192,6 +226,17 @@ export const TutorExerciseDetailsPage = () => {
           </section>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link to={`${basePath}/exercises`} className="btn-secondary hidden w-fit lg:inline-flex">Back to exercises</Link>
+            {['tutor', 'teacher'].includes(role)
+              && ['co-owner', 'marker'].includes(accessRole)
+              && !isHistorical
+              && (exercise.submissionStatus === 'submitted' || exercise.submitted === 'Yes'
+                || Boolean(exercise.submittedImageUrl) || (Array.isArray(exercise.submittedImages) && exercise.submittedImages.length > 0))
+              && ['', 'pending', 'not_available', 'fallback_failed', 'failed'].includes(exercise.peerMarkingWorkStatus || '') ? (
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={retryPeerWork} disabled={isRetryingPeerWork}>
+                {isRetryingPeerWork ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCw className="h-4 w-4" aria-hidden="true" />}
+                {isRetryingPeerWork ? 'Retrying…' : 'Retry work generation'}
+              </button>
+            ) : null}
             {accessRole === 'co-owner' && !isHistorical && !exerciseStatus?.isToday ? <button type="button" className="hidden btn-secondary inline-flex items-center gap-2 text-rose-300" onClick={removeExercise} disabled={isDeleting}>
               <Trash2 className="h-4 w-4" aria-hidden="true" /> {isDeleting ? 'Deleting...' : 'Delete exercise'}
             </button> : null}

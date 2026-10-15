@@ -112,6 +112,7 @@ export {
 export {
   assignPeerMarkingOnSubmission,
   completePeerMarkingAssignment,
+  retryPeerMarkingFallbackForTutor,
 } from './peerMarking.js';
 export { generateSystemPeerWorkTask } from './systemPeerWork.js';
 

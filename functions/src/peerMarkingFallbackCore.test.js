@@ -5,6 +5,7 @@ import {
   selectReusableSystemPeerWorkWithFallback,
   selectSystemPeerWorkQuestions,
   selectSystemPeerWorkQuestionsWithFallback,
+  systemPeerWorkPackId,
   systemPeerWorkCohortKey,
   systemPeerWorkTopicSignature,
   validateSystemPeerWorkSolutions,
@@ -15,6 +16,17 @@ import { questionIdentity } from './aiMarkingCore.js';
 const topics = ['Linear functions | Functions', 'Quadratic functions | Functions'];
 const paper = (id, subject, grade, questions) => ({
   id, subject, grade, analysisStatus: 'Analyzed', availableForGeneration: true, questions,
+});
+
+test('manual retries get a fresh pack identity while normal pack identities remain stable', () => {
+  const input = {
+    subject: 'Mathematics', grade: 'Grade 10', topicSignature: 'topics', paperId: 'paper',
+    questionLinks: [{ paperId: 'paper', questionReference: '1.1' }],
+  };
+  const original = systemPeerWorkPackId(input);
+  assert.equal(systemPeerWorkPackId(input), original);
+  assert.notEqual(systemPeerWorkPackId({ ...input, retryNonce: 'retry-one' }), original);
+  assert.notEqual(systemPeerWorkPackId({ ...input, retryNonce: 'retry-two' }), original);
 });
 
 test('saved work is reusable only for the exact normalized subject and grade', () => {

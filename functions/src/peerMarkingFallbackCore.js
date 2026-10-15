@@ -35,12 +35,13 @@ export const systemPeerWorkTopicSignature = (topics = []) => hash(
   uniqueTopics(topics).map(normalizeExerciseTopicKey).sort().join('|'),
 );
 
-export const systemPeerWorkPackId = ({ subject, grade, topicSignature, paperId, questionLinks = [] }) => hash([
+export const systemPeerWorkPackId = ({ subject, grade, topicSignature, paperId, questionLinks = [], retryNonce = '' }) => hash([
   SYSTEM_PEER_WORK_PROMPT_VERSION,
   normalizeExerciseGenerationSubject(subject),
   normalizeExerciseGenerationGrade(grade),
   topicSignature,
   String(paperId ?? ''),
+  ...(retryNonce ? [String(retryNonce)] : []),
   ...questionLinks.map((item) => `${item.paperId}::${item.questionReference}`).sort(),
 ].join('::'));
 

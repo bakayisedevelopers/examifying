@@ -27,6 +27,7 @@ import {
 } from './peerMarkingFallbackCore.js';
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
 import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
+import { publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
 
 const GENERATION_TASK = 'generateSystemPeerWorkTask';
 const GENERATION_OPTIONS = {
@@ -39,6 +40,10 @@ const GENERATION_OPTIONS = {
 const SAFE_IMAGE_DIMENSION = 3000;
 const safeErrorCode = (error) => String(error?.code || error?.name || 'peer_work_generation_failed')
   .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+const safeErrorMessage = (error) => String(error?.message || 'Unknown publish error')
+  .replace(/https?:\/\/\S+/gi, '[url]')
+  .replace(/(token|key|secret)=\S+/gi, '$1=[redacted]')
+  .slice(0, 240);
 
 const workCollection = (db, cohortKey) => db.collection('systemGeneratedPeerWork').doc(cohortKey).collection('packs');
 const packPath = (cohortKey, packId) => `systemGeneratedPeerWork/${cohortKey}/packs/${packId}`;
@@ -131,11 +136,20 @@ const copyPackImagesToReviewer = async ({ bucket, pack, links, reviewer }) => {
 const markAssignmentFailed = async (assignmentRef, reasonCode) => assignmentRef.firestore.runTransaction(async (transaction) => {
   const snapshot = await transaction.get(assignmentRef);
   if (!snapshot.exists || snapshot.data()?.status !== 'preparing') return false;
+  const assignment = snapshot.data();
   transaction.update(assignmentRef, {
     status: 'fallback_failed',
     fallbackErrorCode: String(reasonCode || 'peer_work_unavailable').slice(0, 80),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  if (assignment.reviewerExercisePath) {
+    transaction.set(assignmentRef.firestore.doc(assignment.reviewerExercisePath), {
+      peerMarkingWorkStatus: 'fallback_failed',
+      peerMarkingWorkAssignmentId: assignmentRef.id,
+      peerMarkingWorkAssignmentPath: assignmentRef.path,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
   return true;
 });
 
@@ -162,6 +176,14 @@ const publishAssignment = async ({ db, bucket, assignmentRef, assignment, pack }
       systemGeneratedWorkReadyAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    if (assignment.reviewerExercisePath) {
+      transaction.set(db.doc(assignment.reviewerExercisePath), {
+        peerMarkingWorkStatus: 'assigned',
+        peerMarkingWorkAssignmentId: assignmentRef.id,
+        peerMarkingWorkAssignmentPath: assignmentRef.path,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
     transaction.update(pack.ref, { assignmentCount: FieldValue.increment(1), lastAssignedAt: FieldValue.serverTimestamp() });
     return true;
   });
@@ -179,7 +201,20 @@ const publishAssignment = async ({ db, bucket, assignmentRef, assignment, pack }
   return updated;
 };
 
-const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds }) => {
+const publishAssignmentWithRetry = (options) => publishPeerWorkWithRetry({
+  publish: () => publishAssignment(options),
+  maxAttempts: 3,
+  retryDelayMs: 250,
+  onRetry: (error, attempt) => logger.warn('Retrying generated peer-work publication', {
+    workId: options.pack.id,
+    assignmentId: options.assignmentRef.id,
+    attempt,
+    code: safeErrorCode(error),
+    errorMessage: safeErrorMessage(error),
+  }),
+});
+
+const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds, retryNonce = '' }) => {
   const cohortKey = systemPeerWorkCohortKey(cohort);
   const packsRef = workCollection(db, cohortKey);
   const packSnapshot = await packsRef.where('status', 'in', ['ready', 'generating']).get();
@@ -291,7 +326,7 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
       }
       const packId = systemPeerWorkPackId({
         subject: cohort.subject, grade: cohort.grade, topicSignature: group.signature,
-        paperId: source.paper.id, questionLinks: source.questionLinks,
+        paperId: source.paper.id, questionLinks: source.questionLinks, retryNonce,
       });
       const packRef = packsRef.doc(packId);
       const packData = {
@@ -433,8 +468,16 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
   if (pack.status === 'ready') {
     const waiting = await db.collectionGroup('peerMarkingAssignments').where('systemGeneratedWorkId', '==', pack.id).get();
     for (const document of waiting.docs.filter((item) => item.data().status === 'preparing')) {
-      try { await publishAssignment({ db, bucket, assignmentRef: document.ref, assignment: document.data(), pack }); }
-      catch (error) { await markAssignmentFailed(document.ref, safeErrorCode(error)); }
+      try { await publishAssignmentWithRetry({ db, bucket, assignmentRef: document.ref, assignment: document.data(), pack }); }
+      catch (error) {
+        await markAssignmentFailed(document.ref, safeErrorCode(error));
+        logger.warn('Could not publish generated peer-marking work', {
+          workId: pack.id,
+          assignmentId: document.id,
+          code: safeErrorCode(error),
+          errorMessage: safeErrorMessage(error),
+        });
+      }
     }
     return;
   }
@@ -501,10 +544,15 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
     });
     const waiting = await db.collectionGroup('peerMarkingAssignments').where('systemGeneratedWorkId', '==', pack.id).get();
     for (const document of waiting.docs.filter((item) => item.data().status === 'preparing')) {
-      try { await publishAssignment({ db, bucket, assignmentRef: document.ref, assignment: document.data(), pack }); }
+      try { await publishAssignmentWithRetry({ db, bucket, assignmentRef: document.ref, assignment: document.data(), pack }); }
       catch (error) {
         await markAssignmentFailed(document.ref, safeErrorCode(error));
-        logger.warn('Could not publish generated peer-marking work', { workId: pack.id, code: safeErrorCode(error) });
+        logger.warn('Could not publish generated peer-marking work', {
+          workId: pack.id,
+          assignmentId: document.id,
+          code: safeErrorCode(error),
+          errorMessage: safeErrorMessage(error),
+        });
       }
     }
   } catch (error) {
@@ -520,10 +568,10 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
 });
 
 export const assignFallbackPeerWork = async ({
-  db, cohort, reviewers, excludedPaperIds = new Set(), excludedQuestionIds = new Set(),
+  db, cohort, reviewers, excludedPaperIds = new Set(), excludedQuestionIds = new Set(), retryNonce = '',
 }) => {
   try {
-    await queueSystemPeerWorkForReviewers({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds });
+    await queueSystemPeerWorkForReviewers({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds, retryNonce });
   } catch (error) {
     logger.error('Could not queue system-generated peer-marking fallback', {
       cohortKey: systemPeerWorkCohortKey(cohort),

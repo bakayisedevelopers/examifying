@@ -7,6 +7,7 @@ import {
 } from './exerciseGenerationPaperMatching.js';
 import { normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { questionIdentity } from './aiMarkingCore.js';
+import { exerciseGenerationTopicLabelsMatch } from './exerciseGenerationTopicMatching.js';
 
 export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v1';
 
@@ -48,8 +49,10 @@ export const selectReusableSystemPeerWork = (packs = [], {
   grade,
   topics = [],
   excludedPaperIds = new Set(),
+  excludedQuestionIds = new Set(),
 } = {}) => {
-  const requestedKeys = new Set(uniqueTopics(topics).map(normalizeExerciseTopicKey));
+  const requestedTopics = uniqueTopics(topics);
+  const requestedKeys = new Set(requestedTopics.map(normalizeExerciseTopicKey));
   if (!requestedKeys.size) return null;
   const expectedSubject = normalizeExerciseGenerationSubject(subject);
   const expectedGrade = normalizeExerciseGenerationGrade(grade);
@@ -60,16 +63,22 @@ export const selectReusableSystemPeerWork = (packs = [], {
     && Array.isArray(pack.images) && pack.images.length
     && !(pack.paperIds ?? [pack.paperId]).some((paperId) => excludedPaperIds.has(String(paperId))));
   const ranked = eligible.map((pack) => {
-    const matchingTopicKeys = new Set((pack.topics ?? pack.questionLinks.map((item) => item.topic))
-      .map(normalizeExerciseTopicKey).filter((key) => requestedKeys.has(key)));
-    return { pack, matchingTopicKeys };
+    const questionLinks = pack.questionLinks.filter((item) => {
+      const matchingTopic = requestedTopics.find((topic) => exerciseGenerationTopicLabelsMatch(item.topic, topic));
+      const identity = questionIdentity(item.paperId ?? pack.paperId, item.questionReference ?? item.questionNumber);
+      return Boolean(matchingTopic) && !excludedQuestionIds.has(identity);
+    });
+    const matchingTopicKeys = new Set(questionLinks.flatMap((item) => {
+      const matchingTopic = requestedTopics.find((topic) => exerciseGenerationTopicLabelsMatch(item.topic, topic));
+      return matchingTopic ? [normalizeExerciseTopicKey(matchingTopic)] : [];
+    }));
+    return { pack, questionLinks, matchingTopicKeys };
   }).filter((entry) => entry.matchingTopicKeys.size)
     .sort((left, right) => right.matchingTopicKeys.size - left.matchingTopicKeys.size
       || (Number(left.pack.assignmentCount) || 0) - (Number(right.pack.assignmentCount) || 0)
       || String(left.pack.id ?? '').localeCompare(String(right.pack.id ?? '')));
   if (!ranked.length) return null;
-  const { pack, matchingTopicKeys } = ranked[0];
-  const questionLinks = pack.questionLinks.filter((item) => matchingTopicKeys.has(normalizeExerciseTopicKey(item.topic)));
+  const { pack, questionLinks, matchingTopicKeys } = ranked[0];
   return {
     pack,
     questionLinks,
@@ -84,6 +93,7 @@ export const selectSystemPeerWorkQuestions = ({
   grade,
   topics = [],
   excludedPaperIds = new Set(),
+  excludedQuestionIds = new Set(),
 } = {}) => {
   const requestedTopics = uniqueTopics(topics);
   const requestedByKey = new Map(requestedTopics.map((topic) => [normalizeExerciseTopicKey(topic), topic]));
@@ -105,13 +115,15 @@ export const selectSystemPeerWorkQuestions = ({
     const selectedQuestionIds = new Set();
     questions.forEach((question) => {
       for (const label of questionTopics(question)) {
-        const key = normalizeExerciseTopicKey(label);
+        const requestedTopic = requestedTopics.find((topic) => exerciseGenerationTopicLabelsMatch(label, topic));
+        if (!requestedTopic) continue;
+        const key = normalizeExerciseTopicKey(requestedTopic);
         const questionId = questionIdentity(paper.id, question.questionReference);
-        if (requestedByKey.has(key) && !selectedByTopic.has(key) && !selectedQuestionIds.has(questionId)) {
-          selectedByTopic.set(key, { question, topic: requestedByKey.get(key) });
-          selectedQuestionIds.add(questionId);
-          break;
-        }
+        if (!requestedByKey.has(key) || excludedQuestionIds.has(questionId)
+          || selectedByTopic.has(key) || selectedQuestionIds.has(questionId)) continue;
+        selectedByTopic.set(key, { question, topic: requestedByKey.get(key) });
+        selectedQuestionIds.add(questionId);
+        break;
       }
     });
     const questionLinks = [...selectedByTopic.values()].map(({ question, topic }) => ({
@@ -137,6 +149,17 @@ export const selectSystemPeerWorkQuestions = ({
     matchedTopicCount: selected.matchedTopicCount,
     requestedTopicCount: requestedByKey.size,
   };
+};
+
+export const selectSystemPeerWorkQuestionsWithFallback = (options = {}) => {
+  const preferred = selectSystemPeerWorkQuestions(options);
+  if (preferred) return { ...preferred, sourceSelectionMode: 'unused-paper' };
+
+  const lastResort = selectSystemPeerWorkQuestions({
+    ...options,
+    excludedPaperIds: new Set(),
+  });
+  return lastResort ? { ...lastResort, sourceSelectionMode: 'same-day-paper-last-resort' } : null;
 };
 
 export const validateSystemPeerWorkSolutions = ({ response, questionLinks = [] }) => {

@@ -18,7 +18,7 @@ import {
 } from './exerciseGenerationPaperMatching.js';
 import {
   selectReusableSystemPeerWork,
-  selectSystemPeerWorkQuestions,
+  selectSystemPeerWorkQuestionsWithFallback,
   systemPeerWorkCohortKey,
   systemPeerWorkPackId,
   systemPeerWorkTopicSignature,
@@ -177,7 +177,7 @@ const publishAssignment = async ({ db, bucket, assignmentRef, assignment, pack }
   return updated;
 };
 
-const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excludedPaperIds }) => {
+const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds }) => {
   const cohortKey = systemPeerWorkCohortKey(cohort);
   const packsRef = workCollection(db, cohortKey);
   const packSnapshot = await packsRef.where('status', 'in', ['ready', 'generating']).get();
@@ -193,11 +193,27 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
   });
 
   for (const group of topicGroups.values()) {
-    const reusable = selectReusableSystemPeerWork(packs, {
+    let reusable = selectReusableSystemPeerWork(packs, {
       subject: cohort.subject, grade: cohort.grade, topics: group.topics, excludedPaperIds,
     });
+    let reusableFromSameDayPaper = false;
+    if (!reusable) {
+      reusable = selectReusableSystemPeerWork(packs, {
+        subject: cohort.subject,
+        grade: cohort.grade,
+        topics: group.topics,
+        excludedQuestionIds,
+      });
+      reusableFromSameDayPaper = Boolean(reusable);
+    }
     if (reusable) {
       const pack = { ...reusable.pack, ref: reusable.pack.ref };
+      if (reusableFromSameDayPaper) {
+        logger.info('Reusing saved peer work from a same-day paper as a last resort', {
+          cohortKey, workId: pack.id, subject: cohort.subject, grade: cohort.grade,
+          questionCount: reusable.questionLinks.length,
+        });
+      }
       for (const reviewer of group.reviewers) {
         const assignmentRef = assignmentRefFor(reviewer);
         const assignment = buildAssignment({ reviewer, cohort, work: pack, links: reusable.questionLinks });
@@ -245,21 +261,38 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
       snapshots.flatMap((snapshot) => snapshot.docs).forEach((document) => {
         if (!papersById.has(document.id)) papersById.set(document.id, { id: document.id, ...document.data() });
       });
-      const source = selectSystemPeerWorkQuestions({
-        papers: [...papersById.values()].filter((paper) => isAnalyzedExerciseSourcePaper(paper)
+      const matchingPapers = [...papersById.values()].filter((paper) => isAnalyzedExerciseSourcePaper(paper)
           && matchesExerciseGenerationPaper(paper, { subject: cohort.subject, grade: cohort.grade })
           && normalizeExerciseGenerationSubject(paper.subject) === normalizeExerciseGenerationSubject(cohort.subject)
-          && normalizeExerciseGenerationGrade(paper.grade) === normalizeExerciseGenerationGrade(cohort.grade)),
+          && normalizeExerciseGenerationGrade(paper.grade) === normalizeExerciseGenerationGrade(cohort.grade));
+      const source = selectSystemPeerWorkQuestionsWithFallback({
+        papers: matchingPapers,
         subject: cohort.subject,
         grade: cohort.grade,
         topics: group.topics,
         excludedPaperIds,
+        excludedQuestionIds,
       });
       if (!source) {
-        logger.info('No analyzed past-paper questions matched an unassigned peer-marking task', {
-          cohortKey, subject: cohort.subject, grade: cohort.grade, requestedTopicCount: group.topics.length,
+        logger.info('No unused analyzed questions matched an unassigned peer-marking task', {
+          cohortKey,
+          subject: cohort.subject,
+          grade: cohort.grade,
+          requestedTopicCount: group.topics.length,
+          matchingAnalyzedPaperCount: matchingPapers.length,
+          sameDayPaperCount: excludedPaperIds.size,
+          sameDayQuestionCount: excludedQuestionIds.size,
         });
         continue;
+      }
+      if (source.sourceSelectionMode === 'same-day-paper-last-resort') {
+        logger.info('Using a new question from a same-day paper as a peer-work last resort', {
+          cohortKey,
+          subject: cohort.subject,
+          grade: cohort.grade,
+          paperId: source.paper.id,
+          questionCount: source.questionLinks.length,
+        });
       }
       const packId = systemPeerWorkPackId({
         subject: cohort.subject, grade: cohort.grade, topicSignature: group.signature,
@@ -275,6 +308,7 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
         paperId: source.paper.id,
         paperIds: [source.paper.id],
         questionLinks: source.questionLinks,
+        sourceSelectionMode: source.sourceSelectionMode,
         status: 'generating',
         promptVersion: 'v1',
         assignmentCount: 0,
@@ -490,9 +524,11 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
   }
 });
 
-export const assignFallbackPeerWork = async ({ db, cohort, reviewers, excludedPaperIds = new Set() }) => {
+export const assignFallbackPeerWork = async ({
+  db, cohort, reviewers, excludedPaperIds = new Set(), excludedQuestionIds = new Set(),
+}) => {
   try {
-    await queueSystemPeerWorkForReviewers({ db, cohort, reviewers, excludedPaperIds });
+    await queueSystemPeerWorkForReviewers({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds });
   } catch (error) {
     logger.error('Could not queue system-generated peer-marking fallback', {
       cohortKey: systemPeerWorkCohortKey(cohort),

@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import {
   selectReusableSystemPeerWork,
   selectSystemPeerWorkQuestions,
+  selectSystemPeerWorkQuestionsWithFallback,
   systemPeerWorkCohortKey,
   systemPeerWorkTopicSignature,
   validateSystemPeerWorkSolutions,
 } from './peerMarkingFallbackCore.js';
 import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
+import { questionIdentity } from './aiMarkingCore.js';
 
 const topics = ['Linear functions | Functions', 'Quadratic functions | Functions'];
 const paper = (id, subject, grade, questions) => ({
@@ -50,6 +52,59 @@ test('a paper already allocated to that day is excluded and missing analysis top
   assert.equal(selectSystemPeerWorkQuestions({ papers: [matching], subject: 'Mathematics', grade: 'Grade 10', topics, excludedPaperIds: new Set(['used-today']) }), null);
 });
 
+test('unused matching papers are preferred before same-day papers', () => {
+  const usedToday = paper('used-today', 'Mathematics', 'Grade 10', [
+    { questionReference: '1.1', pageNumber: 2, marks: 3, topic: topics[0] },
+    { questionReference: '1.2', pageNumber: 2, marks: 3, topic: topics[1] },
+  ]);
+  const unused = paper('unused', 'Mathematics', 'Grade 10', [
+    { questionReference: '2.1', pageNumber: 4, marks: 5, topic: topics[0] },
+  ]);
+  const selected = selectSystemPeerWorkQuestionsWithFallback({
+    papers: [usedToday, unused], subject: 'Mathematics', grade: 'Grade 10', topics,
+    excludedPaperIds: new Set(['used-today']),
+    excludedQuestionIds: new Set([questionIdentity('used-today', '1.1')]),
+  });
+  assert.equal(selected.sourceSelectionMode, 'unused-paper');
+  assert.equal(selected.paper.id, 'unused');
+});
+
+test('same-day papers are a last resort and already assigned question references stay excluded', () => {
+  const usedToday = paper('used-today', 'Mathematics', 'Grade 10', [
+    { questionReference: '1.1', pageNumber: 2, marks: 3, topic: topics[0] },
+    { questionReference: '1.2', pageNumber: 3, marks: 4, topic: topics[0] },
+  ]);
+  const selected = selectSystemPeerWorkQuestionsWithFallback({
+    papers: [usedToday], subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    excludedPaperIds: new Set(['used-today']),
+    excludedQuestionIds: new Set([questionIdentity('used-today', '1.1')]),
+  });
+  assert.equal(selected.sourceSelectionMode, 'same-day-paper-last-resort');
+  assert.deepEqual(selected.questionLinks.map((item) => item.questionReference), ['1.2']);
+});
+
+test('same-day last resort does not repeat the only question already assigned today', () => {
+  const usedToday = paper('used-today', 'Mathematics', 'Grade 10', [
+    { questionReference: '1.1', pageNumber: 2, marks: 3, topic: topics[0] },
+  ]);
+  assert.equal(selectSystemPeerWorkQuestionsWithFallback({
+    papers: [usedToday], subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    excludedPaperIds: new Set(['used-today']),
+    excludedQuestionIds: new Set([questionIdentity('used-today', '1.1')]),
+  }), null);
+});
+
+test('fallback topic selection uses the same hierarchical label matching as exercise generation', () => {
+  const selected = selectSystemPeerWorkQuestions({
+    subject: 'Life Sciences', grade: 'Grade 10',
+    topics: ['Scientific Investigation | Scientific Skills'],
+    papers: [paper('life-sciences', 'Life Sciences', 'Grade 10', [
+      { questionReference: '2.3.1', pageNumber: 10, marks: 2, topic: 'Scientific Investigation' },
+    ])],
+  });
+  assert.equal(selected.questionLinks[0].topic, 'Scientific Investigation | Scientific Skills');
+});
+
 test('one multi-topic source question is not duplicated as two separate marking questions', () => {
   const selected = selectSystemPeerWorkQuestions({
     subject: 'Mathematics', grade: 'Grade 10', topics,
@@ -68,6 +123,23 @@ test('reusable work ranks by topic coverage, then by number of prior assignments
   ];
   assert.equal(selectReusableSystemPeerWork(packs, { subject: 'Mathematics', grade: 'Grade 10', topics })?.pack.id, 'two');
   assert.equal(systemPeerWorkTopicSignature(topics), systemPeerWorkTopicSignature([...topics].reverse()));
+});
+
+test('reusable work can use a same-day paper but not a question assigned in today’s exercises', () => {
+  const pack = {
+    id: 'same-day-pack', status: 'ready', subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    paperId: 'paper-a', paperIds: ['paper-a'],
+    questionLinks: [
+      { questionId: questionIdentity('paper-a', '1.1'), paperId: 'paper-a', questionReference: '1.1', topic: topics[0] },
+      { questionId: questionIdentity('paper-a', '1.2'), paperId: 'paper-a', questionReference: '1.2', topic: topics[0] },
+    ],
+    images: [{ questionId: questionIdentity('paper-a', '1.1') }, { questionId: questionIdentity('paper-a', '1.2') }],
+  };
+  const selected = selectReusableSystemPeerWork([pack], {
+    subject: 'Mathematics', grade: 'Grade 10', topics: [topics[0]],
+    excludedQuestionIds: new Set([questionIdentity('paper-a', '1.1')]),
+  });
+  assert.deepEqual(selected.questionLinks.map((item) => item.questionReference), ['1.2']);
 });
 
 test('solution validation requires exactly one bounded answer per selected question', () => {

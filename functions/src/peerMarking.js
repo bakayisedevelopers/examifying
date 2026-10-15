@@ -5,6 +5,7 @@ import { admin, getDb } from './admin.js';
 import { buildAssignments, getExerciseQuestionLinks, getExerciseTopicKeys, getExerciseTopicNames, normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
 import { peerMarkingAllocationLockId } from './peerMarkingFallbackCore.js';
+import { questionIdentity } from './aiMarkingCore.js';
 import { assignFallbackPeerWork } from './systemPeerWork.js';
 import { sendNotificationToUsers } from './notifications.js';
 
@@ -18,6 +19,26 @@ const sameCohort = (left, right) => left.assignmentDate === right.assignmentDate
 const parseExercisePath = (document) => {
   const parts = document.ref.path.split('/');
   return { studentId: parts[1], subjectInstanceId: parts[3], exerciseId: document.id };
+};
+const getExerciseQuestionIdentities = (exercise = {}) => {
+  const identities = new Set();
+  const paperIds = Array.isArray(exercise.paperIds) ? exercise.paperIds : [];
+  const questionReferences = Array.isArray(exercise.questionReferences) ? exercise.questionReferences : [];
+  const rows = [
+    ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks : []),
+    ...(Array.isArray(exercise.questions) ? exercise.questions : []),
+  ];
+  rows.forEach((question, index) => {
+    const paperId = String(question?.paperId ?? paperIds[index] ?? paperIds[0] ?? '').trim();
+    const reference = String(question?.questionReference ?? question?.questionNumber ?? question?.number
+      ?? questionReferences[index] ?? '').trim();
+    if (paperId && reference) identities.add(questionIdentity(paperId, reference));
+  });
+  questionReferences.forEach((reference, index) => {
+    const paperId = String(paperIds[index] ?? paperIds[0] ?? '').trim();
+    if (paperId && reference) identities.add(questionIdentity(paperId, reference));
+  });
+  return identities;
 };
 
 export const assignPeerMarkingOnSubmission = onDocumentWritten(
@@ -102,7 +123,9 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
           ...(Array.isArray(exercise.questionLinks) ? exercise.questionLinks.map((link) => link.paperId) : [])]
           .map((paperId) => String(paperId ?? '').trim()).filter(Boolean);
       }));
-      await assignFallbackPeerWork({ db, cohort, reviewers: fallbackReviewers, excludedPaperIds });
+      const excludedQuestionIds = new Set(exerciseSnapshot.docs.flatMap((document) =>
+        [...getExerciseQuestionIdentities(document.data())]));
+      await assignFallbackPeerWork({ db, cohort, reviewers: fallbackReviewers, excludedPaperIds, excludedQuestionIds });
     }
     logger.info('Nested peer-marking allocation completed', { reviewerCount: reviewers.length, pairCount: pairs.length });
   },

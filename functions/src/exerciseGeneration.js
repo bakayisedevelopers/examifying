@@ -316,6 +316,16 @@ const enqueueGeneration = async (payload) => {
   }, { scheduleDelaySeconds: 5 });
 };
 
+export const enqueueExerciseGenerationAfterTopicChange = async ({ studentId, subjectInstanceId, subject, operationId }) => {
+  await enqueueGeneration({
+    studentId,
+    subjectInstanceId,
+    subject,
+    reason: 'topics_changed',
+    triggerKey: `topics-changed:${studentId}:${subjectInstanceId}:${operationId}`,
+  });
+};
+
 export const queueExerciseGenerationAfterLesson = onDocumentWritten(
   {
     document: 'users/{studentId}/subjects/{subjectInstanceId}/lessons/{lessonId}',
@@ -399,7 +409,7 @@ export const queuePendingInitialGenerationAfterPaperAnalysis = onTaskDispatched(
         === normalizeExerciseGenerationSubject(paper.subject)
       && (!String(paper.grade ?? '').trim()
         || normalizeExerciseGenerationGrade(episodeGrade) === normalizeExerciseGenerationGrade(paper.grade))
-      && ['initial', 'lesson'].includes(pendingReason);
+      && ['initial', 'lesson', 'topics_changed'].includes(pendingReason);
   });
   for (const episodeDoc of candidateDocs) {
     const parts = episodeDoc.ref.path.split('/');
@@ -443,7 +453,7 @@ export const retryPendingExerciseGenerations = onSchedule({
     if (parts.length !== 4 || parts[0] !== 'users' || parts[2] !== 'subjects') continue;
     const episode = episodeDoc.data();
     const pendingTrigger = episode.exerciseGenerationPendingTrigger;
-    if (episode.status !== 'active' || !['initial', 'lesson'].includes(pendingTrigger)
+    if (episode.status !== 'active' || !['initial', 'lesson', 'topics_changed'].includes(pendingTrigger)
       || timestampMillis(episode.updatedAt) > cutoff) continue;
 
     const generationSnapshot = pendingTrigger === 'initial'
@@ -593,10 +603,11 @@ const runAutomaticGeneration = async (requestData) => {
     const subscription = subscriptionSnapshot.exists ? subscriptionSnapshot.data() : null;
     const paid = await hasVerifiedPaidAccess({ db, studentId, subscription });
 
-    const pendingTrigger = ['initial', 'lesson'].includes(episode.exerciseGenerationPendingTrigger)
+    const pendingTrigger = ['initial', 'lesson', 'topics_changed'].includes(episode.exerciseGenerationPendingTrigger)
       ? episode.exerciseGenerationPendingTrigger
       : null;
-    const trigger = requestedReason === 'lesson' || pendingTrigger === 'lesson' ? 'lesson' : requestedReason;
+    const trigger = requestedReason === 'topics_changed' ? 'topics_changed'
+      : requestedReason === 'lesson' || pendingTrigger === 'lesson' ? 'lesson' : requestedReason;
     const generationHistory = history;
     const hasHistory = generationHistory.length > 0;
     const generationMode = hasHistory ? 'weekly' : 'initial';
@@ -615,7 +626,7 @@ const runAutomaticGeneration = async (requestData) => {
       statusWritten = true;
       return { generated: false, reason: 'Initial generation already exists.' };
     }
-    if (trigger !== 'lesson' && hasHistory) {
+    if (!['lesson', 'topics_changed'].includes(trigger) && hasHistory) {
       await requestRef.set({ status: 'skipped', reason: 'No initial generation is needed for this subject.', updatedAt: new Date() }, { merge: true });
       await statusRef.set({ status: 'completed', message: 'No new initial generation was needed.', finishedAtMs: Date.now(), expiresAtMs: Date.now(), updatedAt: new Date() }, { merge: true });
       statusWritten = true;
@@ -660,7 +671,7 @@ const runAutomaticGeneration = async (requestData) => {
       });
       await episodeRef.set({
         exerciseGenerationPending: true,
-        exerciseGenerationPendingTrigger: trigger === 'lesson' ? 'lesson' : 'initial',
+        exerciseGenerationPendingTrigger: ['lesson', 'topics_changed'].includes(trigger) ? trigger : 'initial',
         ...(lesson ? { exerciseGenerationPendingLessonId: lesson.id, exerciseGenerationPendingLessonSignature: sourceLessonSignature } : {}),
         updatedAt: new Date(),
       }, { merge: true });
@@ -688,7 +699,7 @@ const runAutomaticGeneration = async (requestData) => {
       const message = 'No completed or qualifying marked topics are available.';
       await episodeRef.set({
         exerciseGenerationPending: true,
-        exerciseGenerationPendingTrigger: trigger === 'lesson' ? 'lesson' : 'initial',
+        exerciseGenerationPendingTrigger: ['lesson', 'topics_changed'].includes(trigger) ? trigger : 'initial',
         ...(lesson ? { exerciseGenerationPendingLessonId: lesson.id, exerciseGenerationPendingLessonSignature: sourceLessonSignature } : {}),
         updatedAt: new Date(),
       }, { merge: true });
@@ -699,7 +710,7 @@ const runAutomaticGeneration = async (requestData) => {
     }
 
     const targetDayCount = getExerciseGenerationDayCount(topicSummaries.filter((item) => item.topicStatus === 'done').length);
-    const replacesWindow = trigger === 'lesson';
+    const replacesWindow = ['lesson', 'topics_changed'].includes(trigger);
     const assignmentDates = replacesWindow
       ? createExerciseDateWindow(today, targetDayCount)
       : buildAssignmentDates({ history, dayCount: targetDayCount });
@@ -750,7 +761,7 @@ const runAutomaticGeneration = async (requestData) => {
       const message = 'No analyzed question metadata matched the eligible topics. Analyze more past papers to make exercises available.';
       await episodeRef.set({
         exerciseGenerationPending: true,
-        exerciseGenerationPendingTrigger: trigger === 'lesson' ? 'lesson' : 'initial',
+        exerciseGenerationPendingTrigger: ['lesson', 'topics_changed'].includes(trigger) ? trigger : 'initial',
         ...(lesson ? { exerciseGenerationPendingLessonId: lesson.id, exerciseGenerationPendingLessonSignature: sourceLessonSignature } : {}),
         updatedAt: new Date(),
       }, { merge: true });
@@ -780,7 +791,7 @@ const runAutomaticGeneration = async (requestData) => {
       const message = 'No indexed question references are available for the selected generation dates.';
       await episodeRef.set({
         exerciseGenerationPending: true,
-        exerciseGenerationPendingTrigger: trigger === 'lesson' ? 'lesson' : 'initial',
+        exerciseGenerationPendingTrigger: ['lesson', 'topics_changed'].includes(trigger) ? trigger : 'initial',
         ...(lesson ? { exerciseGenerationPendingLessonId: lesson.id, exerciseGenerationPendingLessonSignature: sourceLessonSignature } : {}),
         updatedAt: new Date(),
       }, { merge: true });

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag } from 'lucide-react';
+import { LayoutDashboard, BookOpen, CreditCard, LogOut, Users, Menu, X, ChevronLeft, GraduationCap, Tag, ListChecks } from 'lucide-react';
 import { Logo } from './Logo';
 import { ROLES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
@@ -12,12 +12,14 @@ const navigationByRole = {
   [ROLES.STUDENT]: [
     { to: '/student', label: 'Home', icon: LayoutDashboard },
     { to: '/student/lessons', label: 'Lessons', icon: GraduationCap },
+    { to: '/student/topics', label: 'Topics', icon: ListChecks },
     { to: '/student/papers', label: 'Past papers', icon: BookOpen },
   ],
   [ROLES.TUTOR]: [
     { to: '/tutor', label: 'Home', icon: LayoutDashboard },
     { to: '/tutor/students', label: 'Students', icon: Users },
     { to: '/tutor/lessons', label: 'Lessons', icon: GraduationCap },
+    { to: '/tutor/topics', label: 'Topics', icon: ListChecks },
     { to: '/tutor/papers', label: 'Past papers', icon: BookOpen },
   ],
   [ROLES.ADMIN]: [
@@ -45,6 +47,7 @@ const getNavigationForRole = (role, isTeacher) => {
       { to: prefix, label: 'Home', icon: LayoutDashboard },
       { to: `${prefix}/students`, label: 'Students', icon: Users },
       { to: `${prefix}/lessons`, label: 'Lessons', icon: GraduationCap },
+      { to: `${prefix}/topics`, label: 'Topics', icon: ListChecks },
       { to: `${prefix}/papers`, label: 'Past papers', icon: BookOpen },
     ];
   }
@@ -71,6 +74,7 @@ export const AppShell = ({ title, subtitle, role: propRole, user, onLogout, mobi
     { to: '/parent/family-subscription', label: 'Family Subscription', icon: CreditCard },
     { to: `${childBasePath}/home`, label: 'Student Home', icon: LayoutDashboard },
     { to: `${childBasePath}/lessons`, label: 'Lessons', icon: GraduationCap },
+    { to: `${childBasePath}/topics`, label: 'Topics', icon: ListChecks },
     { to: `${childBasePath}/papers`, label: 'Past papers', icon: BookOpen },
     { to: `${childBasePath}/subscription`, label: 'Subscription', icon: CreditCard },
     { to: `${childBasePath}/profile/details`, label: 'Personal details', icon: Users },

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 import { FieldValue } from 'firebase-admin/firestore';
 import { PDFDataRangeTransport, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -194,6 +195,88 @@ export const queueStudentExerciseAiMarking = onDocumentWritten({
     images,
   });
 });
+
+export const retryStudentExerciseAiMarking = onCall({ cpu: 'gcf_gen1' }, async (request) => {
+  const uid = String(request.auth?.uid ?? '').trim();
+  const { studentId, subjectInstanceId, exerciseId } = request.data ?? {};
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in before retrying marking.');
+  if (![studentId, subjectInstanceId, exerciseId].every((value) => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.trim()))) {
+    throw new HttpsError('invalid-argument', 'Student, subject episode, and exercise are required.');
+  }
+
+  const db = getDb();
+  const [actorSnapshot, episodeSnapshot] = await Promise.all([
+    db.doc(`users/${uid}`).get(),
+    db.doc(`users/${studentId}/subjects/${subjectInstanceId}`).get(),
+  ]);
+  if (!actorSnapshot.exists || !['admin', 'tutor', 'teacher'].includes(actorSnapshot.data().role)) {
+    throw new HttpsError('permission-denied', 'Only an assigned tutor or admin can retry marking.');
+  }
+  if (!episodeSnapshot.exists || episodeSnapshot.data().status !== 'active') {
+    throw new HttpsError('failed-precondition', 'The student subject is no longer active.');
+  }
+  const episode = episodeSnapshot.data();
+  const actorRole = uid === episode.primaryTutorId ? 'co-owner' : episode.staffByUid?.[uid];
+  if (actorSnapshot.data().role !== 'admin' && !['co-owner', 'marker'].includes(actorRole)) {
+    throw new HttpsError('permission-denied', 'Your access role does not allow marking retries.');
+  }
+
+  const tutorId = String(episode.primaryTutorId || Object.entries(episode.staffByUid ?? {})
+    .find(([, role]) => role === 'co-owner' || role === 'marker')?.[0] || '').trim();
+  if (!tutorId) throw new HttpsError('failed-precondition', 'No assigned tutor can manage AI marking for this subject.');
+  const tutorSnapshot = await db.doc(`users/${tutorId}`).get();
+  if (!tutorAiMarkingEnabled(tutorSnapshot.exists ? tutorSnapshot.data() : {})) {
+    throw new HttpsError('failed-precondition', 'AI-assisted marking is disabled for this tutor.');
+  }
+
+  const ref = db.doc(`users/${studentId}/subjects/${subjectInstanceId}/exercises/${exerciseId}`);
+  let task = null;
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) throw new HttpsError('not-found', 'The exercise could not be found.');
+    const record = snapshot.data();
+    const images = normalizeImageRefs(record);
+    if (!images.length || !isExerciseSubmitted(record)) {
+      throw new HttpsError('failed-precondition', 'The student submission is no longer available.');
+    }
+    if (record.aiMarking?.status !== 'unclear_images') {
+      throw new HttpsError('failed-precondition', 'A retry is available only when marking reports unclear images.');
+    }
+    const retrySequence = Math.max(0, Number(record.aiMarking?.retrySequence) || 0) + 1;
+    const nextRecord = { ...record, aiMarking: { ...(record.aiMarking ?? {}), retrySequence } };
+    const version = currentVersionFor(nextRecord, images);
+    transaction.set(ref, {
+      aiMarking: {
+        ...record.aiMarking,
+        status: 'pending',
+        version,
+        submissionType: 'student_exercise',
+        retrySequence,
+        attemptCount: 0,
+        updatedAt: FieldValue.serverTimestamp(),
+        startedAt: FieldValue.delete(),
+        completedAt: FieldValue.delete(),
+        leaseExpiresAt: FieldValue.delete(),
+        validatedResult: FieldValue.delete(),
+        message: FieldValue.delete(),
+        errorCode: FieldValue.delete(),
+        errorMessage: FieldValue.delete(),
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    task = { ref, version, images };
+  });
+  if (task) await enqueueAiJob({
+    ref: task.ref,
+    studentId,
+    subjectInstanceId,
+    submissionType: 'student_exercise',
+    version: task.version,
+    images: task.images,
+  });
+  return { status: 'pending', version: task?.version ?? '' };
+});
+
 export const queuePeerMarkingAiReview = onDocumentWritten({
   document: 'users/{studentId}/subjects/{subjectInstanceId}/exercises/{exerciseId}/peerMarkingAssignments/{assignmentId}',
   timeoutSeconds: 90,

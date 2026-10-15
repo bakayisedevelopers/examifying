@@ -299,6 +299,13 @@ test('a later image upload always receives a different marking version', () => {
   );
 });
 
+test('a tutor retry gets a fresh marking version for the same submitted images', () => {
+  const images = [{ url: 'https://storage.test/unclear.jpg', pageNumber: 1 }];
+  const first = submissionVersionForRecord({ submittedAt: { toMillis: () => 10 }, aiMarking: { retrySequence: 0 } }, images);
+  const retry = submissionVersionForRecord({ submittedAt: { toMillis: () => 10 }, aiMarking: { retrySequence: 1 } }, images);
+  assert.notEqual(first, retry);
+});
+
 test('peer marking and student marking use distinct instructions', () => {
   assert.notEqual(PEER_MARKING_REVIEW_INSTRUCTIONS, STUDENT_EXERCISE_MARKING_INSTRUCTIONS);
   assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /marker's understanding/i);

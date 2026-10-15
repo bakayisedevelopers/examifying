@@ -15,10 +15,10 @@ const roleTitles = {
 
 const pageTitles = {
   admin: { users: 'Users', payments: 'Payments', settings: 'Settings', papers: 'Question papers' },
-  parent: { 'family-subscription': 'Family Subscription', profile: 'Profile' },
-  student: { billing: 'Subscription', exercises: 'Exercises', lessons: 'Lessons', papers: 'Question papers', 'peer-reviews': 'Peer reviews', profile: 'Profile', guide: 'Guide' },
-  teacher: { exercises: 'Exercises', guide: 'Guide', lessons: 'Lessons', papers: 'Question papers', profile: 'Profile', reports: 'Reports', students: 'Students' },
-  tutor: { exercises: 'Exercises', guide: 'Guide', lessons: 'Lessons', papers: 'Question papers', profile: 'Profile', reports: 'Reports', students: 'Students' },
+  parent: { 'family-subscription': 'Family Subscription', profile: 'Profile', topics: 'Topics' },
+  student: { billing: 'Subscription', exercises: 'Exercises', lessons: 'Lessons', papers: 'Question papers', 'peer-reviews': 'Peer reviews', profile: 'Profile', guide: 'Guide', topics: 'Topics' },
+  teacher: { exercises: 'Exercises', guide: 'Guide', lessons: 'Lessons', papers: 'Question papers', profile: 'Profile', reports: 'Reports', students: 'Students', topics: 'Topics' },
+  tutor: { exercises: 'Exercises', guide: 'Guide', lessons: 'Lessons', papers: 'Question papers', profile: 'Profile', reports: 'Reports', students: 'Students', topics: 'Topics' },
 };
 
 const getPageTitle = (pathname, role) => {
@@ -33,6 +33,7 @@ const getPageTitle = (pathname, role) => {
   }
   if (!parts.length) return 'Home';
   const [section, detail] = parts;
+  if (section === 'kids' && parts.at(-1) === 'topics') return 'Topics';
   if (section === 'profile') return 'Profile';
   if (section === 'users' && detail) return 'User details';
   if (section === 'students' && detail) return 'Student details';

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { CalendarDays, FileText, Lock } from 'lucide-react';
+import { CalendarDays, FileText, Lock, RotateCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { SubmissionUpload } from './SubmissionUpload';
 import { ExerciseStatusBadges } from './ExerciseStatusBadges';
 import { deleteExerciseSubmissionFiles, uploadPeerReviewImage, uploadSubmissionImages, uploadTutorMarkedWork } from '../../services/storageService';
-import { completePeerMarkingAssignment, getQuestionPapersByIds, saveTutorMarkedExercise } from '../../services/firestoreService';
+import { completePeerMarkingAssignment, getQuestionPapersByIds, retryStudentExerciseAiMarking, saveTutorMarkedExercise } from '../../services/firestoreService';
 import { MarkingCanvas as ImageEditor } from '../canvas/pictureEditorCanvas';
 import { ImagePageViewer } from '../common/ImagePageViewer';
 import { ExerciseTopicScoresTable } from './ExerciseTopicScoresTable';
@@ -134,6 +134,16 @@ export const ExerciseCard = ({
     return result;
   });
 
+  const handleRetryAiMarking = async () => runOperation({
+    operationName: 'Retrying unclear marking',
+    successMessage: 'Marking has been queued again.',
+    failureMessage: 'Could not retry marking.',
+  }, () => retryStudentExerciseAiMarking({
+    studentId: exercise.studentId || studentId,
+    subjectInstanceId: exercise.subjectInstanceId,
+    exerciseId: exercise.id,
+  }));
+
   const handleStudentPeerMarkingSubmit = async (files) => runOperation({
     operationName: 'Submitting peer marking',
     successMessage: 'Your marked pages were uploaded and the marking submission was saved.',
@@ -176,6 +186,9 @@ export const ExerciseCard = ({
     && hasSubmittedImages
     && assignedWorkImages.length > 0;
   const canTutorAct = viewerRole === 'tutor' && accessRole !== 'viewer' && !isHistorical;
+  const canRetryAiMarking = ['tutor', 'teacher'].includes(viewerRole)
+    && accessRole !== 'viewer' && !isHistorical
+    && hasSubmittedImages && exercise.aiMarking?.status === 'unclear_images';
   const canEditTopicScores = canTutorAct && hasSubmittedImages;
   const peerAiAssignments = completedMarkingAssignments.filter((item) =>
     item.reviewerExerciseId === exercise.id
@@ -202,6 +215,11 @@ export const ExerciseCard = ({
           record={assignment}
           viewerRole={viewerRole}
         />)}
+        {canRetryAiMarking ? <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm"
+          onClick={handleRetryAiMarking}
+        ><RotateCw className="h-4 w-4" />Retry AI marking</button> : null}
         <div className="flex flex-wrap items-center gap-3">
           <h3 className="text-2xl font-bold text-slate-950">{exercise.title}</h3>
           {exerciseQuestionCount > 0 ? <span className="rounded-full bg-lime-100 px-3 py-1 text-sm font-semibold text-lime-800">{exerciseQuestionCount} {exerciseQuestionCount === 1 ? 'question' : 'questions'}</span> : null}

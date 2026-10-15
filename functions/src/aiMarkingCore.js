@@ -20,6 +20,9 @@ export const submissionVersionForRecord = (record = {}, images = []) => submissi
   ...images.map((image) => ({ url: image.url, pageNumber: image.pageNumber })),
   { url: String(record?.submittedAt?.toMillis?.() ?? record?.completedAt?.toMillis?.() ?? ''), pageNumber: 0 },
   ...(record?.submissionVersion == null ? [] : [{ url: String(record.submissionVersion), pageNumber: -1 }]),
+  ...(Number(record?.aiMarking?.retrySequence) > 0
+    ? [{ url: `manual-retry:${Number(record.aiMarking.retrySequence)}`, pageNumber: -2 }]
+    : []),
 ]);
 
 export const aiMarkingTaskId = ({ submissionType, submissionId, version }) => `ai-mark-${createHash('sha256')

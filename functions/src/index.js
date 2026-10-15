@@ -119,9 +119,12 @@ export { servePublicSitemap, servePublicPaperSeo, servePublicPaperData, servePub
 
 export {
   queueStudentExerciseAiMarking,
+  retryStudentExerciseAiMarking,
   queuePeerMarkingAiReview,
   processAiMarkingTask,
 } from './aiMarking.js';
+
+export { deleteStudentTopics } from './topicManagement.js';
 
 export {
   getCompletedPeerMarkingWorkForTutor,

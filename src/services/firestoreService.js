@@ -1649,6 +1649,22 @@ export const removeCompletedTopicFromLesson = async ({ studentId, subjectInstanc
   return response.data;
 };
 
+export const deleteStudentTopics = async ({ studentId, subjectInstanceId, subject, topicIds = [], operationId }) => {
+  if (!studentId || !subjectInstanceId || !subject || !topicIds.length || !operationId) {
+    throw new Error('Choose at least one student topic to delete.');
+  }
+  if (!isFirebaseConfigured || !functions) throw new Error('Connect to Firebase to delete student topics.');
+  const callable = httpsCallable(functions, 'deleteStudentTopics', { timeout: 300_000 });
+  return (await callable({ studentId, subjectInstanceId, subject, topicIds, operationId })).data;
+};
+
+export const retryStudentExerciseAiMarking = async ({ studentId, subjectInstanceId, exerciseId }) => {
+  if (!studentId || !subjectInstanceId || !exerciseId) throw new Error('Student, subject, and exercise are required.');
+  if (!isFirebaseConfigured || !functions) throw new Error('Connect to Firebase to retry marking.');
+  const callable = httpsCallable(functions, 'retryStudentExerciseAiMarking');
+  return (await callable({ studentId, subjectInstanceId, exerciseId })).data;
+};
+
 export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, topicId = '', exerciseId, peerAssignmentId, peerAssignmentPath, reviewerExerciseId, questionMarks = [] }) => {
   const topicName = String(topic || '').trim();
   if (!tutorId || !studentId || !topicName || (!exerciseId && !peerAssignmentId && !peerAssignmentPath)) throw new Error('Tutor, student, topic, and exercise or marking assignment are required.');
@@ -3967,6 +3983,56 @@ export const getActiveSubjectEpisodesForStudent = async (studentId) => {
     where('status', '==', 'active'),
   ));
   return snapshot.docs.map((item) => ({ id: item.id, studentId, ...item.data() }));
+};
+
+const topicNamesFromLesson = (lesson = {}) => [
+  ...(Array.isArray(lesson.topics) ? lesson.topics : []),
+  lesson.topic,
+  ...(Array.isArray(lesson.topicUnderstandingScores) ? lesson.topicUnderstandingScores.map((item) => item?.topic) : []),
+].map((value) => String(value ?? '').trim()).filter(Boolean);
+
+export const getTopicStudentProfile = async (studentId) => {
+  if (!studentId || !isFirebaseConfigured) return null;
+  const snapshot = await getDoc(doc(db, 'users', studentId));
+  return snapshot.exists() ? { uid: snapshot.id, ...snapshot.data() } : null;
+};
+
+export const getTopicOverviewForEpisode = async ({ studentId, subjectInstanceId }) => {
+  if (!studentId || !subjectInstanceId) throw new Error('Choose a student and subject first.');
+  if (!isFirebaseConfigured) return { episode: null, topics: [] };
+  const topicCollection = collection(db, 'users', studentId, 'subjects', subjectInstanceId, 'topics');
+  const lessonCollection = collection(db, 'users', studentId, 'subjects', subjectInstanceId, 'lessons');
+  const [episodeSnapshot, topicsSnapshot, lessonsSnapshot] = await Promise.all([
+    getDoc(doc(db, 'users', studentId, 'subjects', subjectInstanceId)),
+    getDocs(topicCollection),
+    getDocs(lessonCollection),
+  ]);
+  if (!episodeSnapshot.exists() || episodeSnapshot.data().status !== 'active') {
+    throw new Error('This student subject is no longer active.');
+  }
+  const rawTopics = topicsSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const normalized = getTopicSummariesFromDocuments(rawTopics);
+  const topicByKey = new Map(rawTopics.map((item) => [normalizeCatalogTopicKey(item.id || item.topicName || ''), item]));
+  const manualTopicKeys = new Set(lessonsSnapshot.docs
+    .filter((item) => item.data().manualTopicCompletion === true || item.data().recordType === 'manual_topic_completion')
+    .flatMap((item) => topicNamesFromLesson(item.data()))
+    .map(normalizeCatalogTopicKey));
+  const topics = normalized.map((summary) => {
+    const raw = topicByKey.get(normalizeCatalogTopicKey(summary.topic)) ?? {};
+    const labels = String(raw.labels ?? raw.topicLabels ?? summary.topic).split('|').map((value) => value.trim()).filter(Boolean);
+    return {
+      id: String(raw.id ?? raw.canonicalTopicKey ?? normalizeCatalogTopicKey(summary.topic)),
+      topic: summary.topic,
+      labels,
+      attended: summary.attendanceStatus === 'attended',
+      manual: manualTopicKeys.has(normalizeCatalogTopicKey(summary.topic)),
+      marked: summary.topicStatus === 'marked',
+      understandingLevel: summary.understandingLevel,
+      topicStatus: summary.topicStatus,
+      scoreCount: summary.scoreCount,
+    };
+  });
+  return { episode: { id: episodeSnapshot.id, ...episodeSnapshot.data() }, topics };
 };
 
 export const getActiveSubjectsForStudent = async (studentId) => {

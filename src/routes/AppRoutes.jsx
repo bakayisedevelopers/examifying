@@ -20,6 +20,7 @@ const StudentLessonDetailsPage = lazyNamed(() => import('../pages/student/Studen
 const StudentExerciseDetailsPage = lazyNamed(() => import('../pages/student/StudentExerciseDetailsPage'), 'StudentExerciseDetailsPage');
 const StudentPeerReviewsPage = lazyNamed(() => import('../pages/student/StudentPeerReviewsPage'), 'StudentPeerReviewsPage');
 const StudentBillingPage = lazyNamed(() => import('../pages/student/StudentBillingPage'), 'StudentBillingPage');
+const TopicsPage = lazyNamed(() => import('../pages/TopicsPage'), 'TopicsPage');
 const StudentOnboardingPage = lazyNamed(() => import('../pages/onboarding/StudentOnboardingPage'), 'StudentOnboardingPage');
 const TutorOnboardingPage = lazyNamed(() => import('../pages/onboarding/TutorOnboardingPage'), 'TutorOnboardingPage');
 const GoogleAccountSetupPage = lazyNamed(() => import('../pages/onboarding/GoogleAccountSetupPage'), 'GoogleAccountSetupPage');
@@ -87,6 +88,7 @@ export const AppRoutes = () => {
       <Route path="/student/profile/legal" element={<ProfileLegalPage role={ROLES.STUDENT} />} />
       <Route path="/student/profile/settings" element={<ProfileSettingsPage role={ROLES.STUDENT} />} />
       <Route path="/student/profile/legacy" element={<StudentProfilePage />} />
+      <Route path="/student/topics" element={<TopicsPage />} />
       <Route path="/student/papers" element={<PastExamPapersPage />} />
       <Route path="/student/papers/:paperId" element={<PaperReaderPage />} />
       <Route element={<PaidStudentRoute />}>
@@ -116,6 +118,7 @@ export const AppRoutes = () => {
         <Route path="lessons" element={<StudentLessonsPage />} />
         <Route path="lessons/:lessonId" element={<StudentLessonDetailsPage />} />
         <Route path="peer-reviews" element={<StudentPeerReviewsPage />} />
+        <Route path="topics" element={<TopicsPage />} />
         <Route path="subscription" element={<ProfileBillingPage role={ROLES.STUDENT} />} />
         <Route path="papers" element={<PastExamPapersPage />} />
         <Route path="papers/:paperId" element={<PaperReaderPage />} />
@@ -144,6 +147,7 @@ export const AppRoutes = () => {
       <Route path="/tutor/exercises" element={<TutorExercisesPage />} />
       <Route path="/tutor/exercises/:exerciseId" element={<TutorExerciseDetailsPage />} />
       <Route path="/tutor/lessons" element={<TutorLessonsPage />} />
+      <Route path="/tutor/topics" element={<TopicsPage />} />
       <Route path="/tutor/lessons/:lessonId" element={<TutorLessonDetailsPage />} />
       <Route path="/tutor/papers" element={<PastExamPapersPage />} />
       <Route path="/tutor/papers/:paperId" element={<PaperReaderPage />} />
@@ -170,6 +174,7 @@ export const AppRoutes = () => {
       <Route path="/teacher/exercises" element={<TutorExercisesPage />} />
       <Route path="/teacher/exercises/:exerciseId" element={<TutorExerciseDetailsPage />} />
       <Route path="/teacher/lessons" element={<TutorLessonsPage />} />
+      <Route path="/teacher/topics" element={<TopicsPage />} />
       <Route path="/teacher/lessons/:lessonId" element={<TutorLessonDetailsPage />} />
       <Route path="/teacher/papers" element={<PastExamPapersPage />} />
       <Route path="/teacher/papers/:paperId" element={<PaperReaderPage />} />

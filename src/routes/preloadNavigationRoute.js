@@ -1,9 +1,11 @@
 const routeImports = {
+  '/student/topics': () => import('../pages/TopicsPage'),
   '/parent/family-subscription': () => import('../pages/parent/ParentFamilySubscriptionPage'),
   '/tutor': () => import('../pages/tutor/TutorExercisesPage'),
   '/tutor/students': () => import('../pages/tutor/TutorDashboardPage'),
   '/tutor/exercises': () => import('../pages/tutor/TutorExercisesPage'),
   '/tutor/lessons': () => import('../pages/tutor/TutorLessonsPage'),
+  '/tutor/topics': () => import('../pages/TopicsPage'),
   '/tutor/papers': () => import('../pages/PastExamPapersPage'),
   '/tutor/reports': () => import('../pages/tutor/TutorReportsPage'),
   '/tutor/guide': () => import('../pages/GuidePage'),
@@ -12,6 +14,7 @@ const routeImports = {
   '/teacher/students': () => import('../pages/tutor/TutorDashboardPage'),
   '/teacher/exercises': () => import('../pages/tutor/TutorExercisesPage'),
   '/teacher/lessons': () => import('../pages/tutor/TutorLessonsPage'),
+  '/teacher/topics': () => import('../pages/TopicsPage'),
   '/teacher/papers': () => import('../pages/PastExamPapersPage'),
   '/teacher/reports': () => import('../pages/tutor/TutorReportsPage'),
   '/teacher/guide': () => import('../pages/GuidePage'),
@@ -19,6 +22,11 @@ const routeImports = {
 };
 
 const dynamicRouteImports = [
+  {
+    matches: (path) => /^\/parent\/kids\/[^/]+\/topics$/.test(path),
+    key: 'parent-student-topics',
+    load: () => import('../pages/TopicsPage'),
+  },
   {
     matches: (path) => /^\/(tutor|teacher)\/students\/[^/]+$/.test(path),
     key: 'student-detail',

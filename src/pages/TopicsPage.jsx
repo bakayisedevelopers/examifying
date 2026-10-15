@@ -17,6 +17,11 @@ import {
 
 const formatPercent = (value) => Number.isFinite(value) ? `${Math.round(value * 100)}%` : '—';
 const newOperationId = () => globalThis.crypto?.randomUUID?.() ?? `topic-delete-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+const difficultyStyles = {
+  easy: 'bg-lime-400/15 text-lime-200',
+  medium: 'bg-amber-400/15 text-amber-200',
+  hard: 'bg-rose-400/15 text-rose-200',
+};
 
 const StatusValue = ({ value }) => (
   value
@@ -191,7 +196,7 @@ export const TopicsPage = () => {
                   <tr>
                     {canDeleteTopics ? <th scope="col" className="w-12 px-4 py-3"><input aria-label="Select all topics" type="checkbox" checked={topics.length > 0 && selectedIds.length === topics.length} onChange={toggleAll} /></th> : null}
                     <th scope="col" className="px-4 py-3 font-semibold">Topic</th>
-                    <th scope="col" className="px-4 py-3 font-semibold">Labels</th>
+                    <th scope="col" className="px-4 py-3 font-semibold">Difficulty</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Attended</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Manual</th>
                     <th scope="col" className="px-4 py-3 text-center font-semibold">Marked</th>
@@ -203,7 +208,9 @@ export const TopicsPage = () => {
                     <tr key={topic.id} className={`align-middle transition ${selectedIds.includes(topic.id) ? 'bg-lime-400/10' : 'hover:bg-slate-800/50'}`}>
                       {canDeleteTopics ? <td className="px-4 py-4"><input aria-label={`Select ${topic.topic}`} type="checkbox" checked={selectedIds.includes(topic.id)} onChange={() => toggleTopic(topic.id)} /></td> : null}
                       <th scope="row" className="px-4 py-4 text-left font-semibold text-slate-900">{topic.topic}</th>
-                      <td className="px-4 py-4"><div className="flex flex-wrap gap-1.5">{topic.labels.map((label) => <span key={`${topic.id}-${label}`} className="rounded-full bg-slate-700 px-2.5 py-1 text-xs text-slate-200">{label}</span>)}</div></td>
+                      <td className="px-4 py-4 text-center">{topic.difficulty
+                        ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${difficultyStyles[topic.difficulty] || 'bg-slate-700 text-slate-200'}`}>{topic.difficulty[0].toUpperCase()}{topic.difficulty.slice(1)}</span>
+                        : <span className="text-slate-400">Not set</span>}</td>
                       <td className="px-4 py-4 text-center"><StatusValue value={topic.attended} /></td>
                       <td className="px-4 py-4 text-center"><StatusValue value={topic.manual} /></td>
                       <td className="px-4 py-4 text-center"><StatusValue value={topic.marked} /></td>

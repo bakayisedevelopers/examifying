@@ -4010,6 +4010,18 @@ export const getTopicOverviewForEpisode = async ({ studentId, subjectInstanceId 
   if (!episodeSnapshot.exists() || episodeSnapshot.data().status !== 'active') {
     throw new Error('This student subject is no longer active.');
   }
+  const episode = episodeSnapshot.data();
+  const subject = String(episode.subjectKey ?? episode.subjectName ?? '').trim();
+  const grade = String(episode.grade ?? episode.gradeLevel ?? '').trim();
+  const topicCatalogSnapshot = subject && grade
+    ? await getDoc(doc(db, paths.globalGrade(subject, grade)))
+    : null;
+  const difficultyByTopic = new Map((topicCatalogSnapshot?.data()?.topicMetadata ?? [])
+    .map((item) => [
+      normalizeCatalogTopicKey(item?.topic ?? item?.label),
+      normalizeQuestionDifficulty(item?.difficulty),
+    ])
+    .filter(([key, difficulty]) => key && difficulty));
   const rawTopics = topicsSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
   const normalized = getTopicSummariesFromDocuments(rawTopics);
   const topicByKey = new Map(rawTopics.map((item) => [normalizeCatalogTopicKey(item.id || item.topicName || ''), item]));
@@ -4019,11 +4031,13 @@ export const getTopicOverviewForEpisode = async ({ studentId, subjectInstanceId 
     .map(normalizeCatalogTopicKey));
   const topics = normalized.map((summary) => {
     const raw = topicByKey.get(normalizeCatalogTopicKey(summary.topic)) ?? {};
-    const labels = String(raw.labels ?? raw.topicLabels ?? summary.topic).split('|').map((value) => value.trim()).filter(Boolean);
+    const difficulty = normalizeQuestionDifficulty(raw.difficulty ?? raw.difficultyLevel)
+      || difficultyByTopic.get(normalizeCatalogTopicKey(summary.topic))
+      || '';
     return {
       id: String(raw.id ?? raw.canonicalTopicKey ?? normalizeCatalogTopicKey(summary.topic)),
       topic: summary.topic,
-      labels,
+      difficulty,
       attended: summary.attendanceStatus === 'attended',
       manual: manualTopicKeys.has(normalizeCatalogTopicKey(summary.topic)),
       marked: summary.topicStatus === 'marked',

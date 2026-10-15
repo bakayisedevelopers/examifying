@@ -34,7 +34,7 @@ export const TutorExerciseDetailsPage = () => {
   const [status, setStatus] = useState('Loading exercise...');
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isRetryingPeerWork, setIsRetryingPeerWork] = useState(false);
+  const [peerWorkAction, setPeerWorkAction] = useState('');
   const [peerWorkAssignment, setPeerWorkAssignment] = useState(null);
   const [showPeerWork, setShowPeerWork] = useState(false);
   const [topicScores, setTopicScores] = useState({});
@@ -204,27 +204,31 @@ export const TutorExerciseDetailsPage = () => {
     }
   };
 
-  const retryPeerWork = async () => {
-    if (!exercise || !profile?.uid || isRetryingPeerWork) return;
-    setIsRetryingPeerWork(true);
+  const requestPeerWork = async ({ regenerate = false } = {}) => {
+    if (!exercise || !profile?.uid || peerWorkAction) return;
+    if (regenerate && !window.confirm('Replace the current system-generated marking task with newly generated work? This is only available before the student submits their marking.')) return;
+    setPeerWorkAction(regenerate ? 'regenerate' : 'retry');
     setStatus('');
     try {
       const result = await runOperation({
-        operationName: 'Retrying work generation',
-        successMessage: 'The work-generation retry has started.',
+        operationName: regenerate ? 'Regenerating assigned work' : 'Retrying work generation',
+        successMessage: regenerate ? 'New work is being generated for this student.' : 'The work-generation retry has started.',
       }, () => retryPeerMarkingFallbackForTutor({
         studentId: exercise.studentId,
         subjectInstanceId: exercise.subjectInstanceId,
         exerciseId: exercise.id,
+        regenerate,
       }));
       setExercise((current) => current ? { ...current, peerMarkingWorkStatus: result.status || 'pending' } : current);
       if (result.status === 'not_available') {
-        setStatus('No eligible practice work could be generated for this exercise yet. You can retry later.');
+        setStatus(regenerate
+          ? 'No replacement work could be generated for this exercise yet. You can retry later.'
+          : 'No eligible practice work could be generated for this exercise yet. You can retry later.');
       }
     } catch (error) {
-      setStatus(error.message || 'Could not retry work generation.');
+      setStatus(error.message || (regenerate ? 'Could not regenerate assigned work.' : 'Could not retry work generation.'));
     } finally {
-      setIsRetryingPeerWork(false);
+      setPeerWorkAction('');
     }
   };
 
@@ -253,9 +257,23 @@ export const TutorExerciseDetailsPage = () => {
               && (exercise.submissionStatus === 'submitted' || exercise.submitted === 'Yes'
                 || Boolean(exercise.submittedImageUrl) || (Array.isArray(exercise.submittedImages) && exercise.submittedImages.length > 0))
               && ['', 'pending', 'not_available', 'fallback_failed', 'failed'].includes(exercise.peerMarkingWorkStatus || '') ? (
-              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={retryPeerWork} disabled={isRetryingPeerWork}>
-                {isRetryingPeerWork ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCw className="h-4 w-4" aria-hidden="true" />}
-                {isRetryingPeerWork ? 'Retrying…' : 'Retry work generation'}
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => requestPeerWork()} disabled={Boolean(peerWorkAction)}>
+                {peerWorkAction === 'retry' ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCw className="h-4 w-4" aria-hidden="true" />}
+                {peerWorkAction === 'retry' ? 'Retrying…' : 'Retry work generation'}
+              </button>
+            ) : null}
+            {['tutor', 'teacher'].includes(role)
+              && ['co-owner', 'marker'].includes(accessRole)
+              && !isHistorical
+              && hasSubmittedExercise
+              && peerWorkAssignment?.systemGenerated === true
+              && peerWorkAssignment?.status === 'assigned'
+              && !peerWorkIsCompleted
+              && !peerWorkAssignment.reviewId
+              && !(Array.isArray(peerWorkAssignment.reviewImages) && peerWorkAssignment.reviewImages.length) ? (
+              <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => requestPeerWork({ regenerate: true })} disabled={Boolean(peerWorkAction)}>
+                {peerWorkAction === 'regenerate' ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCw className="h-4 w-4" aria-hidden="true" />}
+                {peerWorkAction === 'regenerate' ? 'Regenerating…' : 'Regenerate work'}
               </button>
             ) : null}
             {['tutor', 'teacher'].includes(role)

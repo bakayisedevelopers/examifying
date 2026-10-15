@@ -9,7 +9,7 @@ import { normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { questionIdentity } from './aiMarkingCore.js';
 import { exerciseGenerationTopicLabelsMatch } from './exerciseGenerationTopicMatching.js';
 
-export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v3';
+export const SYSTEM_PEER_WORK_PROMPT_VERSION = 'v4';
 
 const hash = (value) => createHash('sha256').update(String(value ?? '')).digest('hex').slice(0, 40);
 const uniqueTopics = (topics = []) => [...new Map(topics.map((topic) => String(topic ?? '').trim())
@@ -44,6 +44,13 @@ export const systemPeerWorkPackId = ({ subject, grade, topicSignature, paperId, 
   ...(retryNonce ? [String(retryNonce)] : []),
   ...questionLinks.map((item) => `${item.paperId}::${item.questionReference}`).sort(),
 ].join('::'));
+
+export const canRegenerateSystemPeerWork = (assignment = {}) => assignment.systemGenerated === true
+  && assignment.status === 'assigned'
+  && !assignment.reviewId
+  && !String(assignment.reviewImageUrl ?? '').trim()
+  && !(Array.isArray(assignment.reviewImages) && assignment.reviewImages.length)
+  && !(Array.isArray(assignment.peerMarkedImages) && assignment.peerMarkedImages.length);
 
 export const selectReusableSystemPeerWork = (packs = [], {
   subject,
@@ -196,7 +203,7 @@ export const selectSystemPeerWorkQuestionsWithFallback = (options = {}) => {
   };
 };
 
-const isSourceRefusal = (text) => /(?:no visible (?:text|question|content)|no (?:question|text|content) (?:is )?(?:visible|shown)|page (?:is )?(?:blank|empty)|question (?:is )?(?:not shown|not visible|missing)|cannot (?:see|read|identify) the question|unable to (?:see|read|identify) the question|image (?:is )?(?:blank|unreadable)|not enough (?:visible )?information)/i.test(text);
+const isSourceRefusal = (text) => /(?:no visible (?:text|question|content)|no (?:question|text|content) (?:is )?(?:visible|shown)|page (?:is )?(?:blank|empty)|question (?:is )?(?:not shown|not visible|missing|not present)|(?:there (?:is|was) no|no) (?:visible )?(?:question|content) (?:to (?:answer|solve)|on (?:the )?(?:supplied )?page)|cannot (?:see|read|identify) the question|unable to (?:see|read|identify) the question|image (?:is )?(?:blank|unreadable)|not enough (?:visible )?information)/i.test(text);
 
 export const validateSystemPeerWorkSolutionResponse = ({ response, questionLinks = [] }) => {
   if (!response || !['completed', 'needs_context'].includes(response.status)

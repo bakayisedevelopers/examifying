@@ -4,7 +4,7 @@ import { OPENAI_MARKING_MODEL } from './openAiMarking.js';
 import { callMarkingWithFallback } from './aiMarkingProviders.js';
 import { validateSystemPeerWorkSolutionResponse } from './peerMarkingFallbackCore.js';
 
-export const SYSTEM_PEER_WORK_INSTRUCTIONS = `You are preparing a concise worked answer sheet for a South African school peer-marking exercise. Solve only the exact examination questions requested, using the supplied original question-paper page images. First confirm that the exact question number and all information needed to solve it are visible in the supplied pages. If a requested question is not visible, the page is blank, or the reference is wrong, do not guess and do not write a refusal as an answer: return status "needs_context", put each unresolved questionId in questionIdsNeedingContext, and provide valid solutions only for questions you can solve. Otherwise return status "completed" and one correct concise solution for every requested question. Show enough working for a student to assess the answer and award the stated maximum marks. Format equations with standard LaTeX delimiters and commands, such as \\(x^2\\), \\[\\frac{a}{b}\\], subscripts, roots, vectors, Greek letters, chemical formulas, and units; the answer sheet renderer will typeset common mathematical and scientific notation. Do not invent missing question details. Do not provide chain-of-thought, commentary, marking advice, or answers to surrounding questions. Return only the required structured JSON.`;
+export const SYSTEM_PEER_WORK_INSTRUCTIONS = `You are preparing a concise worked answer sheet for a South African school peer-marking exercise. The complete original question-paper PDF is attached. Search the entire PDF for each exact requested question number; the PDF is the source of truth for the question text, diagrams, data, and instructions. The small metadata list only identifies which question numbers to solve and must not be treated as question content. Do not rely on page numbers or analyzed-paper descriptions. Solve only the exact requested questions. If an exact question cannot be found anywhere in the attached PDF, do not guess or write a refusal as an answer: return status "needs_context" and list its questionId in questionIdsNeedingContext. Otherwise return status "completed" and one correct concise solution for every requested question. Show enough working for a student to assess the answer. Format equations with standard LaTeX delimiters and commands, such as \\(x^2\\), \\[\\frac{a}{b}\\], subscripts, roots, vectors, Greek letters, chemical formulas, and units; the answer sheet renderer will typeset common mathematical and scientific notation. Do not provide chain-of-thought, commentary, marking advice, or answers to surrounding questions. Return only the required structured JSON.`;
 
 export const SYSTEM_PEER_WORK_SOLUTION_SCHEMA = Object.freeze({
   type: 'object',
@@ -29,30 +29,42 @@ export const SYSTEM_PEER_WORK_SOLUTION_SCHEMA = Object.freeze({
 });
 
 const requestPayload = ({ questions = [] }) => JSON.stringify({
-  questions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({
-    questionId, paperId, questionNumber, topic, maximumMark,
+  requestedQuestions: questions.map(({ questionId, paperId, questionNumber }) => ({
+    questionId, paperId, questionNumber,
   })),
-  instruction: 'Solve every listed question exactly once. Return concise worked answers, not explanations of your reasoning process.',
+  instruction: 'Search the attached complete question-paper PDF and solve every listed question exactly once. The PDF, not analysis metadata, determines the question content.',
 });
 
+const validateSourcePdf = (sourcePdf) => {
+  if (!sourcePdf || sourcePdf.mimeType !== 'application/pdf' || !Buffer.isBuffer(sourcePdf.buffer)
+    || sourcePdf.buffer.length < 8 || !String(sourcePdf.fileName ?? '').toLowerCase().endsWith('.pdf')) {
+    throw new Error('Peer-work generation requires the complete source question paper as a PDF.');
+  }
+  return sourcePdf;
+};
+
 export const callOpenAiPeerWorkSolution = async ({
-  questions = [], contextPages = [],
+  questions = [], sourcePdf,
   clientFactory = (options) => new OpenAI(options),
 }) => {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured for peer-work generation.');
+  const pdf = validateSourcePdf(sourcePdf);
   const client = clientFactory({ apiKey, maxRetries: 0, timeout: 240_000 });
-  const content = [];
-  [...contextPages].sort((left, right) => Number(left.pageNumber) - Number(right.pageNumber)).forEach((page) => {
-    content.push({ type: 'input_text', text: `Original question paper page ${page.pageNumber}.` });
-    content.push({ type: 'input_image', image_url: page.dataUrl, detail: 'high' });
-  });
-  content.push({ type: 'input_text', text: requestPayload({ questions, contextPages }) });
+  const content = [
+    {
+      type: 'input_file',
+      filename: pdf.fileName,
+      file_data: `data:application/pdf;base64,${pdf.buffer.toString('base64')}`,
+      detail: 'high',
+    },
+    { type: 'input_text', text: requestPayload({ questions }) },
+  ];
   const startedAt = Date.now();
   const response = await client.responses.create({
     model: OPENAI_MARKING_MODEL,
     store: false,
-    max_output_tokens: 2048,
+    max_output_tokens: 4096,
     reasoning: { effort: 'none' },
     input: [
       { role: 'system', content: [{ type: 'input_text', text: SYSTEM_PEER_WORK_INSTRUCTIONS }] },
@@ -78,20 +90,12 @@ export const callOpenAiPeerWorkSolution = async ({
   };
 };
 
-const geminiImagePart = (image) => {
-  const match = String(image?.dataUrl ?? '').match(/^data:([^;,]+);base64,([\s\S]+)$/);
-  if (!match) throw new Error('Peer-work generation received an invalid source-page image.');
-  return { inline_data: { mime_type: match[1], data: match[2] } };
-};
-
-export const callGeminiPeerWorkSolution = async ({ questions = [], contextPages = [], fetchImpl = globalThis.fetch }) => {
+export const callGeminiPeerWorkSolution = async ({ questions = [], sourcePdf, fetchImpl = globalThis.fetch }) => {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new Error('GEMINI_API_KEY is not configured for peer-work generation.');
   if (typeof fetchImpl !== 'function') throw new Error('Gemini fetch is unavailable for peer-work generation.');
+  const pdf = validateSourcePdf(sourcePdf);
   const baseUrl = process.env.GEMINI_BASE_URL?.trim() || 'https://generativelanguage.googleapis.com/v1beta';
-  const parts = [...contextPages].sort((left, right) => Number(left.pageNumber) - Number(right.pageNumber))
-    .flatMap((page) => [{ text: `Original question paper page ${page.pageNumber}.` }, geminiImagePart(page)]);
-  parts.push({ text: requestPayload({ questions, contextPages }) });
   const startedAt = Date.now();
   const response = await fetchImpl(`${baseUrl}/models/${GEMINI_MARKING_MODEL}:generateContent`, {
     method: 'POST',
@@ -99,10 +103,13 @@ export const callGeminiPeerWorkSolution = async ({ questions = [], contextPages 
     signal: AbortSignal.timeout(240_000),
     body: JSON.stringify({
       system_instruction: { parts: [{ text: SYSTEM_PEER_WORK_INSTRUCTIONS }] },
-      contents: [{ role: 'user', parts }],
+      contents: [{ role: 'user', parts: [
+        { inline_data: { mime_type: 'application/pdf', data: pdf.buffer.toString('base64') } },
+        { text: requestPayload({ questions }) },
+      ] }],
       generationConfig: {
         temperature: 0,
-        maxOutputTokens: 2048,
+        maxOutputTokens: 4096,
         thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false },
         responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema: SYSTEM_PEER_WORK_SOLUTION_SCHEMA } },
       },
@@ -127,68 +134,21 @@ export const callGeminiPeerWorkSolution = async ({ questions = [], contextPages 
   };
 };
 
-export const solveSystemPeerWork = async ({ questions, contextPages, callPrimary = callOpenAiPeerWorkSolution, callFallback = callGeminiPeerWorkSolution }) => {
+export const solveSystemPeerWork = async ({ questions, sourcePdf, callPrimary = callOpenAiPeerWorkSolution, callFallback = callGeminiPeerWorkSolution }) => {
+  const request = { questions, sourcePdf };
+  const validateCompletedResponse = (response) => {
+    const validated = validateSystemPeerWorkSolutionResponse({ response, questionLinks: questions });
+    if (validated.status !== 'completed') {
+      throw new Error('The model could not locate every selected question in the full source-paper PDF.');
+    }
+  };
   const result = await callMarkingWithFallback({
-    request: { questions, contextPages },
+    request,
     callPrimary,
     callFallback,
-    validateResponse: (response) => validateSystemPeerWorkSolutionResponse({ response, questionLinks: questions }),
+    validateResponse: validateCompletedResponse,
   });
   const validated = validateSystemPeerWorkSolutionResponse({ response: result, questionLinks: questions });
-  return {
-    ...result,
-    ...validated,
-  };
-};
-
-const tokenUsage = (results) => results.reduce((total, result) => ({
-  inputTokens: total.inputTokens + (Number(result.usage?.inputTokens) || 0),
-  outputTokens: total.outputTokens + (Number(result.usage?.outputTokens) || 0),
-  totalTokens: total.totalTokens + (Number(result.usage?.totalTokens) || 0),
-  cachedInputTokens: total.cachedInputTokens + (Number(result.usage?.cachedInputTokens) || 0),
-}), { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0 });
-
-export const solveSystemPeerWorkWithContextFallback = async ({
-  questions,
-  contextPages,
-  loadFullPaperPages,
-  solve = solveSystemPeerWork,
-}) => {
-  const initial = await solve({ questions, contextPages });
-  if (initial.status === 'completed') {
-    return { ...initial, contextFallbackUsed: false, contextFallbackQuestionCount: 0, contextFallbackPageCount: 0 };
-  }
-  if (initial.status !== 'needs_context' || typeof loadFullPaperPages !== 'function') {
-    throw new Error('More source context is required to prepare this practice work.');
-  }
-
-  const unresolvedIds = new Set(initial.questionIdsNeedingContext);
-  const unresolvedQuestions = questions.filter((question) => unresolvedIds.has(question.questionId));
-  if (!unresolvedQuestions.length) throw new Error('The additional source-context request did not match a selected question.');
-  const fullPaperPages = await loadFullPaperPages(unresolvedQuestions);
-  if (!Array.isArray(fullPaperPages) || !fullPaperPages.length) {
-    throw new Error('The full source paper could not be loaded to resolve the selected question.');
-  }
-  const resolved = await solve({ questions: unresolvedQuestions, contextPages: fullPaperPages });
-  if (resolved.status !== 'completed') {
-    throw new Error('The selected question could not be located or solved in the full source paper.');
-  }
-
-  const answers = new Map([...initial.solutions, ...resolved.solutions].map((solution) => [solution.questionId, solution]));
-  if (answers.size !== questions.length || questions.some((question) => !answers.has(question.questionId))) {
-    throw new Error('The source-context retry did not produce every selected answer.');
-  }
-  const requests = [initial, resolved];
-  return {
-    ...resolved,
-    status: 'completed',
-    solutions: questions.map((question) => answers.get(question.questionId)),
-    fallbackUsed: initial.fallbackUsed === true || resolved.fallbackUsed === true,
-    fallbackReasonCode: [initial.fallbackReasonCode, resolved.fallbackReasonCode].filter(Boolean).join(',').slice(0, 120),
-    usage: tokenUsage(requests),
-    requestDurationMs: requests.reduce((total, result) => total + (Number(result.requestDurationMs) || 0), 0),
-    contextFallbackUsed: true,
-    contextFallbackQuestionCount: unresolvedQuestions.length,
-    contextFallbackPageCount: fullPaperPages.length,
-  };
+  if (validated.status !== 'completed') throw new Error('A complete source-paper solution was not returned.');
+  return { ...result, ...validated };
 };

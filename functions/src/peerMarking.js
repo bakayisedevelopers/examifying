@@ -5,7 +5,7 @@ import { logger } from 'firebase-functions';
 import { admin, getDb } from './admin.js';
 import { buildAssignments, getExerciseQuestionLinks, getExerciseTopicKeys, getExerciseTopicNames, normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
-import { peerMarkingAllocationLockId } from './peerMarkingFallbackCore.js';
+import { canRegenerateSystemPeerWork, peerMarkingAllocationLockId } from './peerMarkingFallbackCore.js';
 import { questionIdentity } from './aiMarkingCore.js';
 import { assignFallbackPeerWork } from './systemPeerWork.js';
 import { sendNotificationToUsers } from './notifications.js';
@@ -135,7 +135,9 @@ export const assignPeerMarkingOnSubmission = onDocumentWritten(
 export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeoutSeconds: 180 }, async (request) => {
   const uid = String(request.auth?.uid ?? '').trim();
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in before retrying work generation.');
-  const { studentId, subjectInstanceId, exerciseId } = request.data ?? {};
+  const { studentId, subjectInstanceId, exerciseId, regenerate = false } = request.data ?? {};
+  if (typeof regenerate !== 'boolean') throw new HttpsError('invalid-argument', 'The regenerate option must be true or false.');
+  const forceRegenerate = regenerate === true;
   if (![studentId, subjectInstanceId, exerciseId].every((value) => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.trim()))) {
     throw new HttpsError('invalid-argument', 'Student, subject episode, and exercise are required.');
   }
@@ -170,6 +172,8 @@ export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeou
 
   const reviewerAssignments = await db.collectionGroup('peerMarkingAssignments')
     .where('reviewerId', '==', studentId).get();
+  const reviewerExerciseRef = exerciseSnapshot.ref;
+  const fallbackAssignmentRef = reviewerExerciseRef.collection('peerMarkingAssignments').doc(studentId);
   const currentAssignment = reviewerAssignments.docs.find((document) => {
     const assignment = document.data();
     return assignment.reviewerExerciseId === exerciseId
@@ -178,15 +182,18 @@ export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeou
       && assignment.subject === cohort.subject
       && String(assignment.grade) === String(cohort.grade);
   });
-  if (currentAssignment && currentAssignment.data().status !== 'fallback_failed') {
+  if (forceRegenerate && (!currentAssignment
+    || currentAssignment.ref.path !== fallbackAssignmentRef.path
+    || !canRegenerateSystemPeerWork(currentAssignment.data()))) {
+    throw new HttpsError('failed-precondition', 'Only assigned, unmarked system-generated work can be regenerated.');
+  }
+  if (!forceRegenerate && currentAssignment && currentAssignment.data().status !== 'fallback_failed') {
     return { status: currentAssignment.data().status, alreadyAllocated: true };
   }
   if (currentAssignment && currentAssignment.data().systemGenerated !== true) {
     throw new HttpsError('failed-precondition', 'Only failed system-generated work can be retried from here.');
   }
 
-  const reviewerExerciseRef = exerciseSnapshot.ref;
-  const fallbackAssignmentRef = reviewerExerciseRef.collection('peerMarkingAssignments').doc(studentId);
   const lockRef = db.collection('peerMarkingAssignmentLocks')
     .doc(peerMarkingAllocationLockId({ ...cohort, reviewerId: studentId }));
   await db.runTransaction(async (transaction) => {
@@ -194,7 +201,10 @@ export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeou
       transaction.get(fallbackAssignmentRef), transaction.get(lockRef),
     ]);
     const existing = assignmentSnapshot.exists ? assignmentSnapshot.data() : null;
-    if (existing && existing.status !== 'fallback_failed') {
+    if (forceRegenerate && (!existing || !canRegenerateSystemPeerWork(existing))) {
+      throw new HttpsError('failed-precondition', 'The system-generated work has already been marked or is no longer available to regenerate.');
+    }
+    if (!forceRegenerate && existing && existing.status !== 'fallback_failed') {
       throw new HttpsError('already-exists', 'Work is already assigned or being prepared.');
     }
     if (existing && existing.systemGenerated !== true) {
@@ -226,7 +236,15 @@ export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeou
   }));
   const excludedQuestionIds = new Set(sameDayExercises.docs.flatMap((document) => [...getExerciseQuestionIdentities(document.data())]));
   const reviewer = { ...exercise, id: exerciseId, studentId, subjectInstanceId, ref: reviewerExerciseRef };
-  await assignFallbackPeerWork({ db, cohort, reviewers: [reviewer], excludedPaperIds, excludedQuestionIds, retryNonce: randomUUID() });
+  await assignFallbackPeerWork({
+    db,
+    cohort,
+    reviewers: [reviewer],
+    excludedPaperIds,
+    excludedQuestionIds,
+    retryNonce: randomUUID(),
+    forceRegenerate,
+  });
 
   const finalAssignment = await fallbackAssignmentRef.get();
   const finalStatus = finalAssignment.exists ? finalAssignment.data()?.status : 'not_available';
@@ -241,6 +259,7 @@ export const retryPeerMarkingFallbackForTutor = onCall({ cpu: 'gcf_gen1', timeou
     exerciseId,
     assignmentDate: cohort.assignmentDate,
     status: finalStatus,
+    regenerated: forceRegenerate,
   });
   return { status: finalStatus, assignmentPath: finalAssignment.exists ? finalAssignment.ref.path : '' };
 });

@@ -5,8 +5,8 @@ import { logger } from 'firebase-functions';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { getDb, storage } from './admin.js';
 import { enqueueTaskOnce, stableTaskId } from './taskQueueUtils.js';
-import { resolvePaperPageContext, questionIdentity } from './aiMarkingCore.js';
-import { loadPageImages } from './aiMarking.js';
+import { questionIdentity } from './aiMarkingCore.js';
+import { loadSystemPeerWorkSourcePdf } from './peerMarkingFallbackPdf.js';
 import { getExerciseTopicNames, normalizeExerciseTopicKey } from './peerMarkingAllocation.js';
 import { sendNotificationToUsers } from './notifications.js';
 import {
@@ -26,7 +26,7 @@ import {
   systemPeerWorkTopicSignature,
 } from './peerMarkingFallbackCore.js';
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
-import { solveSystemPeerWorkWithContextFallback } from './peerMarkingFallbackAi.js';
+import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
 import { wrapPeerWorkText } from './peerWorkImageFormatting.js';
 import { publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
 
@@ -215,7 +215,7 @@ const publishAssignmentWithRetry = (options) => publishPeerWorkWithRetry({
   }),
 });
 
-const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds, retryNonce = '' }) => {
+const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds, retryNonce = '', forceRegenerate = false }) => {
   const cohortKey = systemPeerWorkCohortKey(cohort);
   const packsRef = workCollection(db, cohortKey);
   const packSnapshot = await packsRef.where('status', 'in', ['ready', 'generating']).get();
@@ -232,7 +232,7 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
   });
 
   for (const group of topicGroups.values()) {
-    const reusable = selectReusableSystemPeerWorkWithFallback(packs, {
+    const reusable = forceRegenerate ? null : selectReusableSystemPeerWorkWithFallback(packs, {
       subject: cohort.subject, grade: cohort.grade, topics: group.topics, excludedPaperIds,
       excludedQuestionIds,
     });
@@ -261,7 +261,7 @@ const queueSystemPeerWorkForReviewers = async ({ db, cohort, reviewers, excluded
       continue;
     }
 
-    const exactPending = packs.find((pack) => pack.topicSignature === group.signature
+    const exactPending = forceRegenerate ? null : packs.find((pack) => pack.topicSignature === group.signature
       && ['generating', 'ready'].includes(pack.status)
       && !(pack.paperIds ?? [pack.paperId]).some((paperId) => excludedPaperIds.has(String(paperId))));
     if (exactPending?.status === 'ready') {
@@ -436,9 +436,6 @@ const requestedQuestionsForPack = (links) => links.map((question) => ({
   questionId: question.questionId || questionIdentity(question.paperId, question.questionReference),
   paperId: question.paperId,
   questionNumber: question.questionReference,
-  topic: question.topic,
-  maximumMark: question.marks,
-  pageNumber: question.pageNumber,
 }));
 
 export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, async (request) => {
@@ -476,30 +473,10 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
     const paper = { id: paperSnapshot.id, ...paperSnapshot.data() };
     const requestedQuestions = requestedQuestionsForPack(pack.questionLinks ?? []);
     if (!requestedQuestions.length || requestedQuestions.length > 12) throw new Error('The generated practice task contains an invalid question count.');
-    const pageContext = resolvePaperPageContext({
-      requestedQuestions,
-      analysesByPaper: { [paper.id]: Array.isArray(paper.questions) ? paper.questions : [] },
-    });
-    const pageNumbers = new Set(pageContext.pages.map((page) => page.pageNumber));
-    pageContext.fallbackQuestionIds.forEach((questionId) => {
-      const question = requestedQuestions.find((item) => item.questionId === questionId);
-      if (question?.pageNumber > 0) pageNumbers.add(question.pageNumber);
-    });
-    if (!pageNumbers.size || pageNumbers.size > 24) throw new Error('The required source pages are unavailable or exceed the safe context limit.');
-    const loaded = await loadPageImages({ paper, pageNumbers: [...pageNumbers], bucket });
-    if (loaded.invalidPageNumbers.length || loaded.pages.length !== pageNumbers.size) {
-      throw new Error('The selected question page references could not be loaded.');
-    }
-    const generated = await solveSystemPeerWorkWithContextFallback({
+    const sourcePdf = await loadSystemPeerWorkSourcePdf({ paper, bucket });
+    const generated = await solveSystemPeerWork({
       questions: requestedQuestions,
-      contextPages: loaded.pages,
-      loadFullPaperPages: async () => {
-        const fullPaper = await loadPageImages({ paper, bucket, allPages: true, maxPageCount: 24 });
-        if (fullPaper.exceedsPageLimit) {
-          throw new Error('The selected question page did not contain the question, and this source paper exceeds the 24-page context fallback limit.');
-        }
-        return fullPaper.pages;
-      },
+      sourcePdf,
     });
     const imageRows = [];
     for (const question of requestedQuestions) {
@@ -516,10 +493,9 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
     await packRef.set({
       status: 'ready',
       images: imageRows,
-      sourcePageCount: loaded.pages.length + (Number(generated.contextFallbackPageCount) || 0),
-      contextFallbackUsed: generated.contextFallbackUsed === true,
-      contextFallbackQuestionCount: Number(generated.contextFallbackQuestionCount) || 0,
-      contextFallbackPageCount: Number(generated.contextFallbackPageCount) || 0,
+      sourceMaterialType: 'pdf',
+      sourcePdfFileName: sourcePdf.fileName,
+      sourcePdfSizeBytes: sourcePdf.sizeBytes,
       model: String(generated.model || ''),
       provider: String(generated.provider || ''),
       fallbackUsed: generated.fallbackUsed === true,
@@ -534,10 +510,8 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
       subject: pack.subject,
       grade: pack.grade,
       questionCount: requestedQuestions.length,
-      sourcePageCount: loaded.pages.length + (Number(generated.contextFallbackPageCount) || 0),
-      contextFallbackUsed: generated.contextFallbackUsed === true,
-      contextFallbackQuestionCount: Number(generated.contextFallbackQuestionCount) || 0,
-      contextFallbackPageCount: Number(generated.contextFallbackPageCount) || 0,
+      sourceMaterialType: 'pdf',
+      sourcePdfSizeBytes: sourcePdf.sizeBytes,
       model: String(generated.model || ''),
       provider: String(generated.provider || ''),
       fallbackUsed: generated.fallbackUsed === true,
@@ -571,10 +545,10 @@ export const generateSystemPeerWorkTask = onTaskDispatched(GENERATION_OPTIONS, a
 });
 
 export const assignFallbackPeerWork = async ({
-  db, cohort, reviewers, excludedPaperIds = new Set(), excludedQuestionIds = new Set(), retryNonce = '',
+  db, cohort, reviewers, excludedPaperIds = new Set(), excludedQuestionIds = new Set(), retryNonce = '', forceRegenerate = false,
 }) => {
   try {
-    await queueSystemPeerWorkForReviewers({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds, retryNonce });
+    await queueSystemPeerWorkForReviewers({ db, cohort, reviewers, excludedPaperIds, excludedQuestionIds, retryNonce, forceRegenerate });
   } catch (error) {
     logger.error('Could not queue system-generated peer-marking fallback', {
       cohortKey: systemPeerWorkCohortKey(cohort),

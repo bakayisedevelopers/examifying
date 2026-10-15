@@ -1666,11 +1666,11 @@ export const retryStudentExerciseAiMarking = async ({ studentId, subjectInstance
   return (await callable({ studentId, subjectInstanceId, exerciseId })).data;
 };
 
-export const retryPeerMarkingFallbackForTutor = async ({ studentId, subjectInstanceId, exerciseId }) => {
+export const retryPeerMarkingFallbackForTutor = async ({ studentId, subjectInstanceId, exerciseId, regenerate = false }) => {
   if (!studentId || !subjectInstanceId || !exerciseId) throw new Error('Student, subject, and exercise are required.');
   if (!isFirebaseConfigured || !functions) throw new Error('Connect to Firebase to retry work generation.');
   const callable = httpsCallable(functions, 'retryPeerMarkingFallbackForTutor');
-  return (await callable({ studentId, subjectInstanceId, exerciseId })).data;
+  return (await callable({ studentId, subjectInstanceId, exerciseId, regenerate })).data;
 };
 
 export const updateStudentTopicScoreForTutor = async ({ tutorId, studentId, subject = DEFAULT_SUBJECT, topic, topicId = '', exerciseId, peerAssignmentId, peerAssignmentPath, reviewerExerciseId, questionMarks = [] }) => {

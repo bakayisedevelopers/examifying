@@ -11,6 +11,15 @@ export const normalizeQuestionReference = (value) => String(value ?? '')
   .toLocaleLowerCase()
   .replace(/\s+/g, '');
 
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export const questionReferenceAppearsInText = (text, questionReference) => {
+  const reference = String(questionReference ?? '').trim().replace(/\s+/g, '');
+  if (!reference) return false;
+  const expression = new RegExp(`(^|[^\\p{L}\\p{N}.])${escapeRegExp(reference)}(?![\\p{L}\\p{N}.])`, 'u');
+  return expression.test(String(text ?? ''));
+};
+
 export const questionIdentity = (paperId, questionNumber) => `${String(paperId ?? '').trim()}::${normalizeQuestionReference(questionNumber)}`;
 
 export const submissionVersion = (items = []) => createHash('sha256')

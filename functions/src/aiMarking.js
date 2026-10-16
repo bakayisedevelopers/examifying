@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
@@ -21,6 +22,7 @@ import {
   isRetryableAiMarkingStatus,
   mergeAiMarkingAnnotations,
   mergeAiMarkingResults,
+  questionReferenceAppearsInText,
   resolvePaperPageContext,
   submissionVersionForRecord,
   tutorAiMarkingEnabled,
@@ -36,6 +38,7 @@ const LEASE_MS = 12 * 60 * 1000;
 const MAX_IMAGE_SIDE = 2200;
 const PAGE_RENDER_SCALE = 1.55;
 const MAX_FALLBACK_SOURCE_PAGES = 80;
+const pdfWasmUrl = fileURLToPath(new URL('../node_modules/pdfjs-dist/wasm/', import.meta.url));
 const TASK_OPTIONS = {
   retryConfig: { maxAttempts: MAX_ATTEMPTS, minBackoffSeconds: 30, maxBackoffSeconds: 180, maxDoublings: 2 },
   rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 1 },
@@ -333,7 +336,7 @@ class StorageRangeTransport extends PDFDataRangeTransport {
   }
 }
 
-export const loadPageImages = async ({ paper, pageNumbers = [], bucket, documentType = 'paper', allPages = false, maxPageCount = 0 }) => {
+export const loadPageImages = async ({ paper, pageNumbers = [], questionNumbers = [], bucket, documentType = 'paper', allPages = false, maxPageCount = 0 }) => {
   const sourceUrl = documentType === 'memo' ? paper.memoUrl : paper.paperUrl;
   const parsed = parseStorageUrl(sourceUrl);
   if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith('questionPapers/')) {
@@ -352,7 +355,14 @@ export const loadPageImages = async ({ paper, pageNumbers = [], bucket, document
   const firstRangeEnd = Math.min(size, 65536);
   const [firstRange] = await file.download({ start: 0, end: firstRangeEnd - 1 });
   const range = new StorageRangeTransport(file, size, new Uint8Array(firstRange));
-  const loading = getDocument({ range, disableStream: true, disableAutoFetch: true, rangeChunkSize: 65536 });
+  const loading = getDocument({
+    range,
+    disableWorker: true,
+    disableStream: true,
+    disableAutoFetch: true,
+    rangeChunkSize: 65536,
+    wasmUrl: pdfWasmUrl,
+  });
   const pdf = await loading.promise;
   try {
     if (allPages && Number(maxPageCount) > 0 && pdf.numPages > Number(maxPageCount)) {
@@ -360,9 +370,26 @@ export const loadPageImages = async ({ paper, pageNumbers = [], bucket, document
     }
     const output = [];
     if (pdf.numPages > MAX_FALLBACK_SOURCE_PAGES) throw new Error(`Source ${documentType} ${paper.id} exceeds the safe page limit.`);
-    const requestedPageNumbers = allPages
+    let requestedPageNumbers = allPages
       ? Array.from({ length: pdf.numPages }, (_, index) => index + 1)
       : [...new Set(pageNumbers)].sort((left, right) => left - right);
+    const matchedQuestionNumbersByPage = new Map();
+    if (documentType === 'memo' && questionNumbers.length && !allPages) {
+      requestedPageNumbers = [];
+      const uniqueQuestionNumbers = [...new Set(questionNumbers.map((value) => String(value ?? '').trim()).filter(Boolean))];
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        const text = textContent.items.map((item) => item.str || '').join(' ');
+        const matchedQuestionNumbers = uniqueQuestionNumbers.filter((questionNumber) =>
+          questionReferenceAppearsInText(text, questionNumber));
+        if (matchedQuestionNumbers.length) {
+          requestedPageNumbers.push(pageNumber);
+          matchedQuestionNumbersByPage.set(pageNumber, matchedQuestionNumbers);
+        }
+        page.cleanup?.();
+      }
+    }
     const invalidPageNumbers = requestedPageNumbers.filter((pageNumber) =>
       !Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdf.numPages);
     for (const pageNumber of requestedPageNumbers.filter((page) => !invalidPageNumbers.includes(page))) {
@@ -374,6 +401,8 @@ export const loadPageImages = async ({ paper, pageNumbers = [], bucket, document
         paperId: paper.id,
         pageNumber,
         documentType,
+        ...(matchedQuestionNumbersByPage.has(pageNumber)
+          ? { questionNumbers: matchedQuestionNumbersByPage.get(pageNumber) } : {}),
         dataUrl: `data:image/jpeg;base64,${canvas.toBuffer('image/jpeg', 0.82).toString('base64')}`,
       });
       page.cleanup?.();
@@ -414,7 +443,7 @@ const getTutorContext = async ({ db, studentId, subjectInstanceId }) => {
   return { episode, tutorId, enabled: tutorAiMarkingEnabled(tutorSnapshot.exists ? tutorSnapshot.data() : {}) };
 };
 
-const buildSubmissionContext = async ({ db, sourceRecord, bucket, requestedQuestions = null }) => {
+const buildSubmissionContext = async ({ db, sourceRecord, bucket, requestedQuestions = null, includeMemoPages = false }) => {
   const questions = requestedQuestions ?? getRequestedMarkingQuestions(sourceRecord);
   const paperIds = [...new Set(questions.map((question) => question.paperId))];
   const paperSnapshots = await Promise.all(paperIds.map((paperId) => db.doc(`questionPapers/${paperId}`).get()));
@@ -467,6 +496,45 @@ const buildSubmissionContext = async ({ db, sourceRecord, bucket, requestedQuest
   }));
   const contextPages = [...renderedPagesByPaper.values()].flat()
     .filter((page) => requiredPageKeys.has(`${page.paperId}::${page.pageNumber}`));
+  const memoQuestionIds = new Set();
+  if (includeMemoPages) {
+    const initialQuestionsByPaper = new Map();
+    for (const question of initialQuestions) {
+      const rows = initialQuestionsByPaper.get(question.paperId) ?? [];
+      rows.push(question);
+      initialQuestionsByPaper.set(question.paperId, rows);
+    }
+    await Promise.all([...initialQuestionsByPaper].map(async ([paperId, paperQuestions]) => {
+      const paper = paperDocuments.get(paperId);
+      if (!paper?.memoUrl) return;
+      try {
+        const loaded = await loadPageImages({
+          paper,
+          bucket,
+          documentType: 'memo',
+          questionNumbers: paperQuestions.map((question) => question.questionNumber),
+        });
+        const pagesWithReferences = loaded.pages.filter((page) => page.questionNumbers?.length);
+        if (!pagesWithReferences.length) {
+          logger.info('AI marking found no text-matched memo page for requested questions', {
+            paperIdHash: hash(paperId), questionCount: paperQuestions.length,
+          });
+          return;
+        }
+        contextPages.push(...pagesWithReferences);
+        for (const page of pagesWithReferences) {
+          const pageQuestionNumbers = new Set(page.questionNumbers.map((value) => value.toLocaleLowerCase()));
+          for (const question of paperQuestions) {
+            if (pageQuestionNumbers.has(question.questionNumber.toLocaleLowerCase())) memoQuestionIds.add(question.questionId);
+          }
+        }
+      } catch (error) {
+        logger.warn('AI marking could not load a question-matched official memo page', {
+          paperIdHash: hash(paperId), code: safeErrorCode(error),
+        });
+      }
+    }));
+  }
   const questionContextPages = new Map();
   for (const question of questions) {
     if (!initialIds.has(question.questionId)) continue;
@@ -479,6 +547,7 @@ const buildSubmissionContext = async ({ db, sourceRecord, bucket, requestedQuest
     questions,
     initialQuestions,
     contextPages,
+    memoQuestionIds,
     questionContextPages,
     contextRequests: [...fallbackQuestionIds].map((questionId) => ({ questionId, material: 'full_paper' })),
     paperDocuments,
@@ -531,7 +600,20 @@ const buildRequestedSourceContext = async ({
       return;
     }
     try {
-      const loaded = await loadPageImages({ paper, bucket, documentType: plan.material === 'memo' ? 'memo' : 'paper', allPages: true });
+      const requestedQuestionNumbers = plan.material === 'memo'
+        ? [...plan.questionIds].map((questionId) => pendingById.get(questionId)?.questionNumber).filter(Boolean)
+        : [];
+      const loaded = await loadPageImages({
+        paper,
+        bucket,
+        documentType: plan.material === 'memo' ? 'memo' : 'paper',
+        questionNumbers: requestedQuestionNumbers,
+        allPages: plan.material === 'full_paper',
+      });
+      if (!loaded.pages.length) {
+        plan.questionIds.forEach((questionId) => unavailableQuestionIds.add(questionId));
+        return;
+      }
       contextPages.push(...loaded.pages);
       plan.questionIds.forEach((questionId) => {
         const materials = loadedMaterialsByQuestion.get(questionId) ?? new Set();
@@ -1052,7 +1134,13 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         return;
       }
     }
-    const sourceContext = await buildSubmissionContext({ db, sourceRecord, bucket, requestedQuestions });
+    const sourceContext = await buildSubmissionContext({
+      db,
+      sourceRecord,
+      bucket,
+      requestedQuestions,
+      includeMemoPages: task.submissionType === 'student_exercise',
+    });
     const { questions, initialQuestions } = sourceContext;
     contextPages = sourceContext.contextPages;
 
@@ -1246,7 +1334,10 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
           requestedQuestions: initialQuestions,
           pages: sourceContext.contextPages,
           contextPass: 'analysis_pages',
-          suppliedMaterialsByQuestion: Object.fromEntries(initialQuestions.map((question) => [question.questionId, ['analysis_pages']])),
+          suppliedMaterialsByQuestion: Object.fromEntries(initialQuestions.map((question) => [
+            question.questionId,
+            ['analysis_pages', ...(sourceContext.memoQuestionIds.has(question.questionId) ? ['memo'] : [])],
+          ])),
         });
         if (['incorrect_submission', 'unclear_images'].includes(initialValidated.status)) {
           await handleRejectedSubmission(initialValidated);
@@ -1258,7 +1349,10 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       const forcedFallbackRequests = sourceContext.contextRequests
         .filter((item) => !resolvedIds.has(item.questionId));
       const contextRequests = mergeContextRequests(initialValidated.contextRequests, forcedFallbackRequests);
-      const initialSuppliedMaterials = Object.fromEntries(initialQuestions.map((question) => [question.questionId, ['analysis_pages']]));
+      const initialSuppliedMaterials = Object.fromEntries(initialQuestions.map((question) => [
+        question.questionId,
+        ['analysis_pages', ...(sourceContext.memoQuestionIds.has(question.questionId) ? ['memo'] : [])],
+      ]));
       progress = {
         pipelineVersion: 1,
         status: contextRequests.length ? (initialValidated.status === 'memo_search' ? 'memo_search' : 'full_paper_search')

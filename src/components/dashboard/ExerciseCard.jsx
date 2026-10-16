@@ -11,6 +11,7 @@ import { ExerciseTopicScoresTable } from './ExerciseTopicScoresTable';
 import { OperationStatusOverlay } from '../common/OperationStatusOverlay';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getQuestionPaperPath } from '../../utils/exerciseTopicRows';
+import { excludeDuplicateImageReferences } from '../../utils/imageReferences';
 
 const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) && images.length
   ? images
@@ -59,7 +60,7 @@ export const ExerciseCard = ({
       : Array.isArray(exercise?.questionReferences) ? exercise.questionReferences.length : 0;
   const [openingPapers, setOpeningPapers] = useState(false);
   const [markedImages, setMarkedImages] = useState(() => imagePages(exercise.tutorMarkedImages, exercise.tutorMarkedImageUrl, exercise.tutorMarkedFileName));
-  const peerMarkedImages = imagePages(exercise.peerMarkedImages, exercise.peerMarkedImageUrl ?? exercise.submittedReviewImageUrl ?? exercise.reviewImageUrl, exercise.peerMarkedFileName ?? exercise.submittedReviewFileName);
+  const peerMarkedImageRefs = imagePages(exercise.peerMarkedImages, exercise.peerMarkedImageUrl ?? exercise.submittedReviewImageUrl ?? exercise.reviewImageUrl, exercise.peerMarkedFileName ?? exercise.submittedReviewFileName);
   const peerMarkingImages = imagePages(exercise.peerMarkingImages, exercise.peerMarkingImageUrl, exercise.peerMarkingFileName);
   const [studentSubmissionImages, setStudentSubmissionImages] = useState(() => imagePages(exercise.submittedImages, exercise.submittedImageUrl, exercise.submittedFileName));
   const [studentSubmissionUrl, setStudentSubmissionUrl] = useState(exercise.submittedImageUrl ?? '');
@@ -203,6 +204,7 @@ export const ExerciseCard = ({
   const peerMarkingDisplayImages = peerAiAnnotationAssignments.length
     ? peerAiAnnotationAssignments.flatMap((assignment) => imagePages(assignment.aiMarking.annotatedImages, ''))
     : peerMarkingImages;
+  const peerMarkedImages = excludeDuplicateImageReferences(peerMarkingDisplayImages, peerMarkedImageRefs);
   const hasMarkingImages = peerMarkingDisplayImages.length || peerMarkedImages.length || markedImages.length;
 
   return (

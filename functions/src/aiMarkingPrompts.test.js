@@ -17,6 +17,7 @@ test('student exercise marking requires evidence-based correctness scoring and r
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Award each allocated mark only when the corresponding answer or required reasoning is correct/i);
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Do not award full marks just because an answer is present or the method looks plausible/i);
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Before returning a result, check that every awarded mark has evidence/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /official memo page is supplied.*authoritative rubric/i);
 });
 
 test('peer annotation coordinates must sit beside existing marks with a visible gap', () => {

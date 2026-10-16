@@ -9,6 +9,7 @@ import {
   isRetryableAiMarkingStatus,
   mergeAiMarkingResults,
   mergeAiMarkingAnnotations,
+  questionReferenceAppearsInText,
   resolvePaperPageContext,
   runAiMarkingOnce,
   shouldPreserveAuthoritativeMark,
@@ -29,6 +30,16 @@ test('resolves one requested question from its own paper and page', () => {
   assert.deepEqual(resolvePaperPageContext({ requestedQuestions: questions, analysesByPaper: {
     'paper-a': [analysis('1.1', '1', 3), analysis('2.1', '2', 4)],
   } }).pages, [{ paperId: 'paper-a', pageNumber: 3 }]);
+});
+
+test('matches a memo page to the exact requested question number', () => {
+  const text = 'QUESTION 3 3.5 prior answer 3.6 total area 3.6(a) extension 13.6 other question 3.60';
+  assert.equal(questionReferenceAppearsInText(text, '3.6'), true);
+  assert.equal(questionReferenceAppearsInText(text, '3.6(a)'), true);
+  assert.equal(questionReferenceAppearsInText(text, '3.60'), true);
+  assert.equal(questionReferenceAppearsInText(text, '13.6'), true);
+  assert.equal(questionReferenceAppearsInText(text, '3.7'), false);
+  assert.equal(questionReferenceAppearsInText(text, ''), false);
 });
 
 test('supports seven requested questions from seven papers in one context result', () => {

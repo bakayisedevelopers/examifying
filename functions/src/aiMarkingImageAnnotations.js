@@ -14,10 +14,51 @@ const isValidAnnotation = (annotation) => annotation
 
 const urlForStoredImage = (bucket, path, token) => `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(path)}?alt=media&token=${encodeURIComponent(token)}`;
 
-const drawSymbol = (context, annotation, width, height) => {
+const sampleInkRatio = (context, centerX, centerY, radius, width, height) => {
+  const sampleRadius = Math.max(6, Math.round(radius * 0.58));
+  const left = Math.max(0, Math.floor(centerX - sampleRadius));
+  const top = Math.max(0, Math.floor(centerY - sampleRadius));
+  const right = Math.min(width, Math.ceil(centerX + sampleRadius));
+  const bottom = Math.min(height, Math.ceil(centerY + sampleRadius));
+  const pixels = context.getImageData(left, top, Math.max(1, right - left), Math.max(1, bottom - top)).data;
+  let ink = 0;
+  let sampled = 0;
+  for (let index = 0; index < pixels.length; index += 4 * 4) {
+    const red = pixels[index];
+    const green = pixels[index + 1];
+    const blue = pixels[index + 2];
+    if (Math.min(red, green, blue) < 190 || Math.max(red, green, blue) - Math.min(red, green, blue) > 55) ink += 1;
+    sampled += 1;
+  }
+  return sampled ? ink / sampled : 1;
+};
+
+const peerMarkPosition = (context, anchorX, y, radius, width, height) => {
+  const offset = radius + 9;
+  const minimumX = radius + 3;
+  const maximumX = width - radius - 3;
+  const candidates = [
+    clamp(anchorX - offset, minimumX, maximumX),
+    clamp(anchorX + offset, minimumX, maximumX),
+  ].filter((candidate, index, rows) => rows.indexOf(candidate) === index);
+  if (candidates.length === 1) return candidates[0];
+  const scored = candidates.map((candidate) => ({
+    x: candidate,
+    ink: sampleInkRatio(context, candidate, y, radius, width, height),
+  })).sort((a, b) => a.ink - b.ink);
+  if (Math.abs(scored[0].ink - scored[1].ink) < 0.002) {
+    return anchorX <= width / 2 ? scored.find((item) => item.x > anchorX)?.x ?? scored[0].x : scored.find((item) => item.x < anchorX)?.x ?? scored[0].x;
+  }
+  return scored[0].x;
+};
+
+const drawSymbol = (context, annotation, width, height, markingMode) => {
   const radius = clamp(Math.round(Math.min(width, height) * 0.051), 16, 48);
-  const x = clamp(annotation.x * width, radius + 3, width - radius - 3);
+  const anchorX = clamp(annotation.x * width, radius + 3, width - radius - 3);
   const y = clamp(annotation.y * height, radius + 3, height - radius - 3);
+  const x = markingMode === 'peer_marking'
+    ? peerMarkPosition(context, anchorX, y, radius, width, height)
+    : anchorX;
   const strokeWidth = clamp(radius * 0.2, 3, 8);
   const paths = annotation.type === 'tick'
     ? [[[-0.58, 0.02], [-0.16, 0.43], [0.61, -0.51]]]
@@ -45,7 +86,7 @@ const drawSymbol = (context, annotation, width, height) => {
   }
 };
 
-export const renderAnnotatedImage = async ({ buffer, annotations = [] }) => {
+export const renderAnnotatedImage = async ({ buffer, annotations = [], markingMode = 'student_exercise' }) => {
   const image = await loadImage(buffer);
   const width = Number(image.width);
   const height = Number(image.height);
@@ -57,7 +98,7 @@ export const renderAnnotatedImage = async ({ buffer, annotations = [] }) => {
   context.drawImage(image, 0, 0, width, height);
   context.lineCap = 'round';
   context.lineJoin = 'round';
-  annotations.filter(isValidAnnotation).forEach((annotation) => drawSymbol(context, annotation, width, height));
+  annotations.filter(isValidAnnotation).forEach((annotation) => drawSymbol(context, annotation, width, height, markingMode));
   return { buffer: canvas.toBuffer('image/png'), width, height };
 };
 
@@ -92,6 +133,72 @@ export const annotateMarkedImages = async ({
     if (!image?.file || !String(image.storagePath ?? '').startsWith('users/')) {
       throw new Error('An AI annotation source image is missing its validated Storage reference.');
     }
+    if (markingMode === 'peer_marking') {
+      const [metadata] = await image.file.getMetadata();
+      const customMetadata = metadata.metadata ?? {};
+      const existingVersion = String(customMetadata.aiAnnotationVersion ?? '');
+      if (existingVersion && existingVersion !== safeVersion) {
+        throw new Error('This peer-marking image already contains annotations from a different AI marking version.');
+      }
+      const existingTokens = String(customMetadata.firebaseStorageDownloadTokens ?? '').split(',').filter(Boolean);
+      const token = String(customMetadata.aiAnnotationDownloadToken ?? '')
+        || (() => {
+          try { return new URL(image.url).searchParams.get('token') || ''; } catch { return ''; }
+        })()
+        || existingTokens[0]
+        || randomUUID();
+      let width = Number(customMetadata.aiAnnotationWidth) || 0;
+      let height = Number(customMetadata.aiAnnotationHeight) || 0;
+      if (!existingVersion) {
+        const [sourceBuffer] = await image.file.download();
+        const rendered = await renderAnnotatedImage({ buffer: sourceBuffer, annotations: imageAnnotations, markingMode });
+        width = rendered.width;
+        height = rendered.height;
+        const refreshedToken = randomUUID();
+        await image.file.save(rendered.buffer, {
+          resumable: false,
+          metadata: {
+            contentType: 'image/png',
+            cacheControl: 'private,max-age=60',
+            ...(metadata.contentDisposition ? { contentDisposition: metadata.contentDisposition } : {}),
+            metadata: {
+              ...customMetadata,
+              firebaseStorageDownloadTokens: [...new Set([...existingTokens, token, refreshedToken])].join(','),
+              aiAnnotationDownloadToken: refreshedToken,
+              aiAnnotationVersion: safeVersion,
+              aiAnnotationMode: markingMode,
+              aiAnnotationCount: String(imageAnnotations.length),
+              aiAnnotationWidth: String(width),
+              aiAnnotationHeight: String(height),
+            },
+          },
+        });
+        output.push({
+          imageIndex,
+          pageNumber: Number(image.pageNumber) || imageIndex + 1,
+          url: urlForStoredImage(bucket, image.storagePath, refreshedToken),
+          storagePath: image.storagePath,
+          width,
+          height,
+          annotationCount: imageAnnotations.length,
+          markingMode,
+          version: safeVersion,
+        });
+        continue;
+      }
+      output.push({
+        imageIndex,
+        pageNumber: Number(image.pageNumber) || imageIndex + 1,
+        url: urlForStoredImage(bucket, image.storagePath, token),
+        storagePath: image.storagePath,
+        width,
+        height,
+        annotationCount: imageAnnotations.length,
+        markingMode,
+        version: safeVersion,
+      });
+      continue;
+    }
     const destinationPath = `${normalizedPrefix}/${safeVersion}-r2-image-${imageIndex + 1}.png`;
     const destination = bucket.file(destinationPath);
     const [exists] = await destination.exists();
@@ -105,7 +212,7 @@ export const annotateMarkedImages = async ({
       height = Number(metadata.metadata?.aiAnnotationHeight) || 0;
     } else {
       const [sourceBuffer] = await image.file.download();
-      const rendered = await renderAnnotatedImage({ buffer: sourceBuffer, annotations: imageAnnotations });
+      const rendered = await renderAnnotatedImage({ buffer: sourceBuffer, annotations: imageAnnotations, markingMode });
       token = randomUUID();
       width = rendered.width;
       height = rendered.height;

@@ -949,7 +949,9 @@ export const processAiMarkingImageAnnotationsTask = onTaskDispatched(TASK_OPTION
       return true;
     });
     if (!stored) {
-      await Promise.all(savedImages.map((image) => bucket.file(image.storagePath).delete({ ignoreNotFound: true }).catch(() => {})));
+      if (task.submissionType === 'student_exercise') {
+        await Promise.all(savedImages.map((image) => bucket.file(image.storagePath).delete({ ignoreNotFound: true }).catch(() => {})));
+      }
       logger.info('AI image annotation result skipped as stale', {
         operation: task.submissionType,
         requestId: hash(`${task.documentPath}:${task.version}:annotations`),

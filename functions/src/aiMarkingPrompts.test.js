@@ -13,8 +13,15 @@ test('student annotation coordinates are explicitly directed to clear space besi
 });
 
 test('peer annotation coordinates must sit beside existing marks with a visible gap', () => {
-  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /clear whitespace immediately beside the peer's existing tick\/cross/i);
-  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /never place the AI symbol on top of, touching, replacing, erasing, or imitating the peer's original mark/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /x\/y coordinate identifies the CENTER of the peer marker's existing tick\/cross/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /renderer will place the AI symbol in nearby whitespace/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /The AI symbol must be distinct from and beside the peer's original decision/i);
+});
+
+test('peer score instructions award the marker for marking accuracy rather than the source answer score', () => {
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /PEER MARKER'S MARKING-ACCURACY SCORE, never the original learner's earned mark/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /source answer earns 3\/3 but the peer marker correctly awards credit for only one of three separate one-mark decisions.*return awardedMark 1.*not 3/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /The source learner's correct answer is evidence used to judge the peer marker; it is not itself the peer marker's score/i);
 });
 
 test('existing compact response schema and fields are unchanged', () => {

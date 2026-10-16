@@ -200,7 +200,10 @@ export const ExerciseCard = ({
   const peerAiAnnotationAssignments = peerAiAssignments.filter((item) =>
     ['completed', 'partially_completed'].includes(item.aiMarking?.status)
     && item.aiMarking?.annotatedImages?.length);
-  const hasMarkingImages = peerMarkingImages.length || peerMarkedImages.length || markedImages.length || peerAiAnnotationAssignments.length;
+  const peerMarkingDisplayImages = peerAiAnnotationAssignments.length
+    ? peerAiAnnotationAssignments.flatMap((assignment) => imagePages(assignment.aiMarking.annotatedImages, ''))
+    : peerMarkingImages;
+  const hasMarkingImages = peerMarkingDisplayImages.length || peerMarkedImages.length || markedImages.length;
 
   return (
     <div className="w-full space-y-5">
@@ -216,12 +219,12 @@ export const ExerciseCard = ({
           <span className="inline-flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1 font-semibold text-brand-700"><CalendarDays className="h-4 w-4" />{exercise.assignmentDate}</span>
           <ExerciseStatusBadges exercise={exercise} />
         </div>
-        <AiMarkingNotice record={exercise} viewerRole={viewerRole} />
-        {peerAiAssignments.map((assignment) => <AiMarkingNotice
+        {viewerRole !== 'student' ? <AiMarkingNotice record={exercise} viewerRole={viewerRole} /> : null}
+        {viewerRole !== 'student' ? peerAiAssignments.map((assignment) => <AiMarkingNotice
           key={assignment.assignmentPath || assignment.id}
           record={assignment}
           viewerRole={viewerRole}
-        />)}
+        />) : null}
         {canRetryAiMarking ? <button
           type="button"
           className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm"
@@ -265,6 +268,14 @@ export const ExerciseCard = ({
             ) : !hasSubmittedImages ? (
               <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-500"><Lock className="h-4 w-4" />Submission unavailable</span>
             ) : null}
+            <div className="space-y-2">
+              <AiMarkingNotice record={exercise} viewerRole={viewerRole} />
+              {peerAiAssignments.map((assignment) => <AiMarkingNotice
+                key={assignment.assignmentPath || assignment.id}
+                record={assignment}
+                viewerRole={viewerRole}
+              />)}
+            </div>
             {hasSubmittedImages ? <div className="flex flex-wrap items-center gap-3">
               {studentSubmissionUrl ? <span className="text-sm font-semibold text-lime-800">Work submitted ✓</span> : null}
               <button type="button" className="btn-secondary px-3 py-2 text-sm" onClick={() => setOpenViewer((current) => current === 'submission' ? '' : 'submission')}>
@@ -312,13 +323,11 @@ export const ExerciseCard = ({
             alt="Student's submitted work with marking annotations beside their handwritten steps"
           /> : null}
           {openViewer === 'marking' ? <div className="grid gap-5 lg:grid-cols-2">
-            {peerMarkingImages.length ? <ImagePageViewer images={peerMarkingImages} title="Student's marking of another learner's work" alt="Peer marking submitted by this student" /> : null}
-            {peerAiAnnotationAssignments.map((assignment) => <ImagePageViewer
-              key={`${assignment.assignmentPath || assignment.id}-ai-annotations`}
-              images={assignment.aiMarking.annotatedImages}
-              title="Reviewed peer marking"
-              alt="Reviewed marks beside the student's peer-marking decisions"
-            />)}
+            {peerMarkingDisplayImages.length ? <ImagePageViewer
+              images={peerMarkingDisplayImages}
+              title={peerAiAnnotationAssignments.length ? 'AI-reviewed peer marking' : "Student's marking of another learner's work"}
+              alt="Peer marking with AI review marks beside the student's decisions"
+            /> : null}
             {peerMarkedImages.length ? <ImagePageViewer images={peerMarkedImages} title="Peer-marked version of this exercise" alt="Peer markings on this student's work" /> : null}
             {markedImages.length ? <ImagePageViewer images={markedImages} title="Tutor-marked work" alt="Tutor annotations on the student's exercise work" /> : null}
           </div> : null}
@@ -356,13 +365,11 @@ export const ExerciseCard = ({
               {openViewer === 'marking' ? 'Close completed work' : 'View completed marking'}
             </button>
             {openViewer === 'marking' ? <div className="grid gap-5 lg:grid-cols-2">
-            {peerMarkingImages.length ? <ImagePageViewer images={peerMarkingImages} title="Your marking of another learner's work" alt="Peer marking you submitted" /> : null}
-            {peerAiAnnotationAssignments.map((assignment) => <ImagePageViewer
-              key={`${assignment.assignmentPath || assignment.id}-ai-annotations`}
-              images={assignment.aiMarking.annotatedImages}
-              title="Reviewed peer marking"
-              alt="Reviewed marks beside your peer-marking decisions"
-            />)}
+            {peerMarkingDisplayImages.length ? <ImagePageViewer
+              images={peerMarkingDisplayImages}
+              title={peerAiAnnotationAssignments.length ? 'Your marking with AI review' : "Your marking of another learner's work"}
+              alt="Your peer-marking decisions with AI review marks beside them"
+            /> : null}
             {markedImages.length ? <ImagePageViewer images={markedImages} title="Tutor-marked work" alt="Tutor-marked version of your exercise work" /> : null}
             {peerMarkedImages.length ? <ImagePageViewer images={peerMarkedImages} title="Peer-marked work on your submission" alt="Peer-marked version of your exercise work" /> : null}
           </div> : null}

@@ -112,35 +112,87 @@ test('stores a separate versioned annotated copy and reuses it on retry', async 
   assert.equal(objects.get(sourcePath).buffer, sourceBuffer);
 });
 
-test('uses the same annotation utility for peer-marking images and stores a distinct AI copy', async () => {
+test('places peer-review marks beside the reviewed mark rather than on top of it', async () => {
+  const source = createWhitePng(1200, 900);
+  const sourceCanvas = createCanvas(1200, 900);
+  const sourceContext = sourceCanvas.getContext('2d');
+  const sourceImage = await loadImage(source);
+  sourceContext.drawImage(sourceImage, 0, 0);
+  sourceContext.strokeStyle = '#111111';
+  sourceContext.lineWidth = 12;
+  sourceContext.beginPath();
+  sourceContext.moveTo(578, 450);
+  sourceContext.lineTo(600, 472);
+  sourceContext.lineTo(628, 420);
+  sourceContext.stroke();
+  const { buffer } = await renderAnnotatedImage({
+    buffer: sourceCanvas.toBuffer('image/png'),
+    annotations: [sampleAnnotation({ x: 0.5, y: 0.5 })],
+    markingMode: 'peer_marking',
+  });
+  const rendered = await loadImage(buffer);
+  const outputCanvas = createCanvas(rendered.width, rendered.height);
+  const outputContext = outputCanvas.getContext('2d');
+  outputContext.drawImage(rendered, 0, 0);
+  const pixels = outputContext.getImageData(0, 0, rendered.width, rendered.height).data;
+  const redX = [];
+  for (let y = 360; y < 540; y += 1) {
+    for (let x = 500; x < 700; x += 1) {
+      const index = (y * rendered.width + x) * 4;
+      if (pixels[index] > 200 && pixels[index + 1] >= 70 && pixels[index + 1] <= 160
+        && pixels[index + 2] >= 70 && pixels[index + 2] <= 160) redX.push(x);
+    }
+  }
+  assert.ok(redX.length > 0, 'expected an AI annotation next to the peer decision');
+  const annotationCenterX = (Math.min(...redX) + Math.max(...redX)) / 2;
+  assert.ok(Math.abs(annotationCenterX - 600) >= 35, 'expected the AI annotation to be separated from the peer mark anchor');
+  assert.ok(Math.abs(annotationCenterX - 600) <= 115, 'expected the AI annotation to remain adjacent to the peer mark');
+  const peerMarkPixel = outputContext.getImageData(589, 461, 1, 1).data;
+  assert.ok(peerMarkPixel[0] < 100 && peerMarkPixel[1] < 100 && peerMarkPixel[2] < 100, 'expected the original peer mark to remain visible');
+});
+
+test('updates peer-marking images in place and reuses the annotated source on retry', async () => {
   const objects = new Map();
+  let sourceWrites = 0;
+  let sourceDownloads = 0;
   const bucket = {
     name: 'examifying-test.appspot.com',
     file(path) {
       return {
-        async download() { return [objects.get(path).buffer]; },
+        async download() { sourceDownloads += 1; return [objects.get(path).buffer]; },
         async exists() { return [objects.has(path)]; },
         async getMetadata() { return [objects.get(path).metadata]; },
-        async save(buffer, options) { objects.set(path, { buffer: Buffer.from(buffer), metadata: options.metadata }); },
+        async save(buffer, options) {
+          sourceWrites += 1;
+          objects.set(path, { buffer: Buffer.from(buffer), metadata: options.metadata });
+        },
         async setMetadata(options) { objects.get(path).metadata.metadata = { ...objects.get(path).metadata.metadata, ...options.metadata }; },
       };
     },
   };
   const sourcePath = 'users/reviewer/subjects/physics/exercises/review-day/peer-reviews/page-1.png';
-  objects.set(sourcePath, { buffer: createWhitePng(), metadata: {} });
+  const original = createWhitePng();
+  objects.set(sourcePath, { buffer: original, metadata: { metadata: { firebaseStorageDownloadTokens: 'source-token' } } });
   const destinationPrefix = 'users/reviewer/subjects/physics/exercises/review-day/ai-marking-annotations';
-  const images = await annotateMarkedImages({
-    images: [{ file: bucket.file(sourcePath), storagePath: sourcePath, pageNumber: 1 }],
+  const args = {
+    images: [{ file: bucket.file(sourcePath), storagePath: sourcePath, url: `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(sourcePath)}?alt=media&token=source-token`, pageNumber: 1 }],
     annotations: [sampleAnnotation({ type: 'cross' })],
     markingMode: 'peer_marking',
     bucket,
     destinationPrefix,
     version: 'c'.repeat(40),
-  });
+  };
+  const images = await annotateMarkedImages(args);
+  const retryImages = await annotateMarkedImages(args);
   assert.equal(images.length, 1);
+  assert.deepEqual(images, retryImages);
+  assert.equal(sourceWrites, 1, 'expected an idempotent retry not to write a duplicate image');
+  assert.equal(sourceDownloads, 1, 'expected an idempotent retry not to download an already annotated image');
   assert.equal(images[0].markingMode, 'peer_marking');
-  assert.equal(images[0].storagePath, `${destinationPrefix}/${'c'.repeat(40)}-r2-image-1.png`);
+  assert.equal(images[0].storagePath, sourcePath);
   assert.match(images[0].url, /token=/);
+  assert.notDeepEqual(objects.get(sourcePath).buffer, original, 'expected the peer-marking image itself to be updated');
+  assert.equal(objects.size, 1, 'expected no separate duplicate image to be created');
 });
 
 test('ignores annotations outside the supplied image set and produces no copies', async () => {

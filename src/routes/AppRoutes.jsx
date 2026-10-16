@@ -55,6 +55,7 @@ const ProfileLegalPage = lazyNamed(() => import('../pages/profile/ProfileLegalPa
 const ProfileSettingsPage = lazyNamed(() => import('../pages/profile/ProfileSettingsPage'), 'ProfileSettingsPage');
 const TutorAgreementPage = lazyNamed(() => import('../pages/profile/TutorAgreementPage'), 'TutorAgreementPage');
 const PaperReaderPage = lazyNamed(() => import('../pages/PaperReaderPage'), 'PaperReaderPage');
+const PublicPaperReaderPage = lazyNamed(() => import('../pages/PublicPaperReaderPage'), 'PublicPaperReaderPage');
 
 export const AppRoutes = () => {
   const location = useLocation();
@@ -76,7 +77,7 @@ export const AppRoutes = () => {
       <Route path="/policies" element={<PoliciesPage />} />
     </Route>
     <Route path="/papers" element={<PastExamPapersPage />} />
-    <Route path="/papers/:paperId" element={<PaperReaderPage />} />
+    <Route path="/papers/:paperId" element={<PublicPaperReaderPage />} />
 
     <Route element={<ProtectedRoute allowedRoles={[ROLES.STUDENT]} />}>
       <Route path="/student/account-setup" element={<GoogleAccountSetupPage role={ROLES.STUDENT} />} />

@@ -1,4 +1,5 @@
 import { getPortalSiteUrl } from '../utils/portal.js';
+import { getPublicPaperSlug } from '../utils/publicPaperSlug.js';
 
 export const PORTAL_SEO = {
   student: {
@@ -81,7 +82,8 @@ export const getPublicPaperSeo = (paper, paperId, portal = 'student') => {
     title,
     description,
     memoAvailable,
-    url: `${origin}/papers/${encodeURIComponent(paperId)}`,
+    slug: getPublicPaperSlug(paper, paperId),
+    url: `${origin}/papers/${getPublicPaperSlug(paper, paperId)}`,
     robots: 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
     indexable: true,
   };

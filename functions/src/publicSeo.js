@@ -11,6 +11,7 @@ import {
   buildPublicSitemapXml,
   getPublicPaperPayload,
   getPublicPaperSeo,
+  getPublicPaperIdFromPathSegment,
   getPublicSeoOriginForHost,
   isPublicQuestionPaperRecord,
   renderPublicPaperCatalogContent,
@@ -172,13 +173,17 @@ export const servePublicPaperData = onRequest(PUBLIC_FUNCTION_OPTIONS, async (re
     return;
   }
   const path = String(request.path ?? '').replace(/\/+$/, '');
-  const match = path.match(/^\/public-paper-data\/([A-Za-z0-9_-]{1,150})$/);
+  const match = path.match(/^\/public-paper-data\/([A-Za-z0-9_-]{1,260})$/);
   if (!match) {
     response.status(404).json({ error: 'Public paper not found.' });
     return;
   }
   try {
-    const paperId = match[1];
+    const paperId = getPublicPaperIdFromPathSegment(match[1]);
+    if (!paperId) {
+      response.status(404).json({ error: 'Public paper not found.' });
+      return;
+    }
     const snapshot = await getDb().collection('questionPapers')
       .where(FieldPath.documentId(), '==', paperId)
       .select(...PUBLIC_PAPER_FIELDS)
@@ -291,7 +296,7 @@ export const servePublicPaperSeo = onRequest(PUBLIC_FUNCTION_OPTIONS, async (req
       return;
     }
 
-    const match = path.match(/^\/papers\/([A-Za-z0-9_-]{1,150})$/);
+    const match = path.match(/^\/papers\/([A-Za-z0-9_-]{1,260})$/);
     if (!match) {
       response.set('X-Robots-Tag', 'noindex,follow');
       response.status(404).type('text/html').send(seoErrorHtml({
@@ -301,7 +306,16 @@ export const servePublicPaperSeo = onRequest(PUBLIC_FUNCTION_OPTIONS, async (req
       }));
       return;
     }
-    const paperId = match[1];
+    const paperId = getPublicPaperIdFromPathSegment(match[1]);
+    if (!paperId) {
+      response.set('X-Robots-Tag', 'noindex,follow');
+      response.status(404).type('text/html').send(seoErrorHtml({
+        title: 'Past paper not found | Examifying',
+        description: 'This public past-paper page is not available.',
+        origin,
+      }));
+      return;
+    }
     const snapshot = await getDb().collection('questionPapers')
       .where(FieldPath.documentId(), '==', paperId)
       .select(...PUBLIC_PAPER_FIELDS)

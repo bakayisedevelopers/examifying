@@ -121,7 +121,7 @@ export const RouteDocumentTitle = () => {
 
     applySeo(routeSeo, pageTitle, buildStructuredData(portal, pathname));
 
-    const paperMatch = pathname.match(/^\/papers\/([A-Za-z0-9_-]{1,150})\/?$/);
+    const paperMatch = pathname.match(/^\/papers\/([A-Za-z0-9_-]{1,260})\/?$/);
     if (paperMatch && portal !== 'admin') {
       getPublicQuestionPaperById(paperMatch[1]).then((paper) => {
         if (!active) return;

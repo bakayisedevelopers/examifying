@@ -14,6 +14,7 @@ import { uploadQuestionPaperDocuments } from '../services/storageService';
 import { getApprovedTutorSubjects, getUserSubjects } from '../utils/tutorSubjects';
 import { buildTopicResolverRows } from '../services/topicResolver';
 import { detectUploaderPaperMonth } from '../utils/paperMonth';
+import { getPublicPaperSlug } from '../utils/publicPaperSlug';
 import { getPublicQuestionPapers } from '../services/publicQuestionPaperService';
 
 const paperStatusStyles = {
@@ -401,11 +402,11 @@ export const PastExamPapersPage = () => {
 
   const role = useMemo(() => isPublicCatalog ? ROLES.STUDENT : profile?.role ?? ROLES.STUDENT, [isPublicCatalog, profile]);
   const routeRole = location.pathname.startsWith('/teacher') ? 'teacher' : role;
-  const paperPath = (paperId) => isPublicCatalog
-    ? `/papers/${paperId}`
+  const paperPath = (paper) => isPublicCatalog
+    ? `/papers/${paper.slug || getPublicPaperSlug(paper)}`
     : isParentWorkspace
-      ? toStudentPath(`/student/papers/${paperId}`)
-      : `/${routeRole}/papers/${paperId}`;
+      ? toStudentPath(`/student/papers/${paper.id}`)
+      : `/${routeRole}/papers/${paper.id}`;
   const memoAccess = useStudentExercisePaperAccess(profile?.uid ?? user?.uid, role === ROLES.STUDENT && !isPublicCatalog);
   useEffect(() => {
     if (role !== ROLES.ADMIN) return undefined;
@@ -1363,7 +1364,7 @@ export const PastExamPapersPage = () => {
           : 'Submit today’s work to unlock memo';
       return <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600" role="status">{message}</span>;
     }
-    return <Link className="btn-secondary" to={`${paperPath(paper.id)}?document=memo&page=1`}>{label}</Link>;
+    return <Link className="btn-secondary" to={`${paperPath(paper)}?document=memo&page=1`}>{label}</Link>;
   };
 
   const getCatalogDocumentTitle = (paper, type) => {
@@ -1420,7 +1421,7 @@ export const PastExamPapersPage = () => {
       <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2">
         <Link
           className="inline-flex px-1 py-1 text-xs font-bold text-lime-300 transition hover:text-lime-200 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-300 sm:text-sm"
-          to={`${paperPath(paper.id)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
+          to={`${paperPath(paper)}?${type === 'memo' ? 'document=memo&' : ''}page=1`}
           aria-label={`Open ${getCatalogDocumentTitle(paper, type)}`}
         >
           Open
@@ -1476,7 +1477,7 @@ export const PastExamPapersPage = () => {
         </div>
         {role !== ROLES.STUDENT ? <PaperAnalysisStatus paper={paper} /> : null}
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
-          <Link className="btn-secondary" to={`${paperPath(paper.id)}?page=1`}>Open paper</Link>
+          <Link className="btn-secondary" to={`${paperPath(paper)}?page=1`}>Open paper</Link>
           {renderMemoAction(paper, 'Open memo')}
           {canManagePaperAnalysis(role) ? <button type="button" className="btn-secondary" onClick={() => startEditPaper(paper)}>Edit</button> : null}
           {canManagePaperAnalysis(role) && canQueuePaperAnalysis(paper) ? <button type="button" className="btn-primary" onClick={() => queuePaperReanalysis(paper)}>{reanalysisButtonLabel(paper)}</button> : null}

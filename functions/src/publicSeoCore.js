@@ -82,17 +82,40 @@ const paperFields = (paper = {}) => {
 const paperDisplayParts = (fields) => [fields.subject, fields.grade, fields.month, fields.year, fields.region, fields.paperNumber]
   .filter(Boolean);
 
+export const slugifyPublicPaperName = (value) => String(value ?? '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 90)
+  .replace(/-+$/g, '') || 'past-paper';
+
+export const getPublicPaperSlug = (paper = {}, paperId = '') => {
+  const displayName = clean(paper.displayName || paper.paperTitle || paperDisplayParts(paperFields(paper)).join(' '));
+  return `${slugifyPublicPaperName(displayName)}--id--${paperId}`;
+};
+
+export const getPublicPaperIdFromPathSegment = (segment = '') => {
+  const value = String(segment ?? '');
+  const slugMatch = value.match(/--id--([A-Za-z0-9_-]{1,150})$/);
+  if (slugMatch) return slugMatch[1];
+  return /^[A-Za-z0-9_-]{1,150}$/.test(value) ? value : '';
+};
+
 export const getPublicPaperSeo = (paper, paperId, origin = PUBLIC_SEARCH_ORIGIN, expectedBucket = '') => {
   if (!paperId || !isPublicQuestionPaperRecord(paper, expectedBucket)) return null;
   const fields = paperFields(paper);
   const title = `${paperDisplayParts(fields).join(' · ')} Past Paper | Examifying`;
   const memoAvailable = isPublicMemoUrl(paper.memoUrl, expectedBucket);
+  const slug = getPublicPaperSlug(paper, paperId);
   const description = `${fields.subject}${fields.grade ? ` ${fields.grade}` : ''}${fields.year ? ` ${fields.year}` : ''}${fields.month ? ` ${fields.month}` : ''}${fields.region ? ` · ${fields.region}` : ''}${fields.paperNumber ? ` · ${fields.paperNumber}` : ''} South African past exam paper. ${memoAvailable ? 'A memorandum is available.' : 'No memorandum is currently listed.'}`;
-  const url = `${origin.replace(/\/$/, '')}/papers/${encodeURIComponent(paperId)}`;
+  const url = `${origin.replace(/\/$/, '')}/papers/${slug}`;
   return {
     ...fields,
     title,
     description,
+    slug,
     url,
     memoAvailable,
     robots: 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1',
@@ -105,6 +128,7 @@ export const getPublicPaperPayload = (paper, paperId, expectedBucket = '') => {
   if (!seo) return null;
   return {
     id: paperId,
+    slug: seo.slug,
     displayName: clean(paper.displayName || paper.paperTitle || seo.title.replace(/\s*\|\s*Examifying$/, '')),
     subject: seo.subject,
     grade: seo.grade,
@@ -178,9 +202,8 @@ export const buildPublicPaperCatalogStructuredData = (papers = [], origin = PUBL
 });
 
 const sitemapUrl = (loc, lastmod) => `  <url>\n    <loc>${escapeXml(loc)}</loc>${lastmod ? `\n    <lastmod>${escapeXml(lastmod)}</lastmod>` : ''}\n  </url>`;
-const getSitemapPaperUrl = (paper, origin) => paper.id
-  ? `${origin}/papers/${encodeURIComponent(paper.id)}`
-  : paper.seo.url;
+const getSitemapPaperUrl = (paper, origin) => paper.seo?.url
+  || (paper.id ? `${origin}/papers/${encodeURIComponent(paper.id)}` : '');
 
 export const buildPublicSitemapXml = (papers = [], now = new Date(), origin = PUBLIC_SEARCH_ORIGIN) => {
   const lastmod = now.toISOString().slice(0, 10);

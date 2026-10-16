@@ -7,6 +7,8 @@ import {
   buildPublicSitemapIndexXml,
   buildPublicSitemapXml,
   getPublicPaperPayload,
+  getPublicPaperIdFromPathSegment,
+  getPublicPaperSlug,
   getPublicPaperSeo,
   getPublicSeoOriginForHost,
   getStorageObjectDetails,
@@ -61,13 +63,19 @@ test('public SEO accepts the four portal hosts and rejects admin or unrecognized
 });
 
 test('public paper SEO uses arbitrary region text and exposes only display metadata', () => {
-  const seo = getPublicPaperSeo(examplePaper, 'paper-1', PUBLIC_SEARCH_ORIGIN, bucket);
+  const namedPaper = { ...examplePaper, displayName: 'Life Sciences Grade 10 June 2025 Paper 1' };
+  const seo = getPublicPaperSeo(namedPaper, 'paper-1', PUBLIC_SEARCH_ORIGIN, bucket);
   assert.match(seo.title, /Cape Learning Centre/);
   assert.match(seo.description, /A memorandum is available/);
-  assert.equal(seo.url, `${PUBLIC_SEARCH_ORIGIN}/papers/paper-1`);
-  const payload = getPublicPaperPayload(examplePaper, 'paper-1', bucket);
+  assert.equal(seo.slug, 'life-sciences-grade-10-june-2025-paper-1--id--paper-1');
+  assert.equal(seo.url, `${PUBLIC_SEARCH_ORIGIN}/papers/${seo.slug}`);
+  assert.equal(getPublicPaperIdFromPathSegment(seo.slug), 'paper-1');
+  assert.equal(getPublicPaperIdFromPathSegment('paper-1'), 'paper-1');
+  assert.equal(getPublicPaperIdFromPathSegment('not a paper'), '');
+  assert.equal(getPublicPaperSlug(namedPaper, 'paper-1'), seo.slug);
+  const payload = getPublicPaperPayload(namedPaper, 'paper-1', bucket);
   assert.deepEqual(Object.keys(payload).sort(), [
-    'displayName', 'grade', 'id', 'memoAvailable', 'memoUrl', 'month', 'paperNumber', 'paperUrl', 'region', 'subject', 'year',
+    'displayName', 'grade', 'id', 'memoAvailable', 'memoUrl', 'month', 'paperNumber', 'paperUrl', 'region', 'slug', 'subject', 'year',
   ].sort());
   assert.equal('analysisStatus' in payload, false);
   assert.equal('sourceFolder' in payload, false);
@@ -82,7 +90,7 @@ test('public page HTML contains canonical metadata, escaped content, and valid s
     structuredData,
     content: renderPublicPaperContent(seo),
   });
-  assert.match(html, /<link rel="canonical" href="https:\/\/examifying\.bakayise\.com\/papers\/paper-2"/);
+  assert.match(html, new RegExp(`<link rel="canonical" href="${PUBLIC_SEARCH_ORIGIN.replaceAll('.', '\\.')}/papers/${seo.slug}"`));
   assert.match(html, /<meta name="robots" content="index,follow/);
   assert.match(html, /application\/ld\+json/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
@@ -96,11 +104,11 @@ test('public page HTML contains canonical metadata, escaped content, and valid s
 test('catalog has crawlable paper links and dynamic sitemap outputs include only provided public pages', () => {
   const seo = getPublicPaperSeo(examplePaper, 'paper-3', PUBLIC_SEARCH_ORIGIN, bucket);
   const catalog = renderPublicPaperCatalogContent([{ id: 'paper-3', seo }]);
-  assert.match(catalog, /href="https:\/\/examifying\.bakayise\.com\/papers\/paper-3"/);
+  assert.match(catalog, new RegExp(`href="${PUBLIC_SEARCH_ORIGIN.replaceAll('.', '\\.')}/papers/${seo.slug}"`));
   const sitemapIndex = buildPublicSitemapIndexXml(20_001, 20_000);
   assert.match(sitemapIndex, /sitemap-papers-2\.xml/);
   const sitemap = buildPublicSitemapXml([{ id: 'paper-3', seo }], new Date('2026-10-14T00:00:00Z'));
-  assert.match(sitemap, /<loc>https:\/\/examifying\.bakayise\.com\/papers\/paper-3<\/loc>/);
+  assert.match(sitemap, new RegExp(`<loc>${PUBLIC_SEARCH_ORIGIN.replaceAll('.', '\\.')}/papers/${seo.slug}<\\/loc>`));
   assert.doesNotMatch(sitemap, /private-analysis-metadata|public-token/);
   const shard = buildPublicPaperSitemapXml([{ id: 'paper-3', seo }]);
   assert.match(shard, /<url>/);
@@ -111,10 +119,10 @@ test('portal paper URLs, schema and sitemap entries use the requested public hos
   const parentOrigin = 'https://parents.examifying.bakayise.com';
   const seo = getPublicPaperSeo(examplePaper, 'paper-parent', parentOrigin, bucket);
   const schema = buildPublicPaperStructuredData(seo, parentOrigin);
-  assert.equal(seo.url, `${parentOrigin}/papers/paper-parent`);
+  assert.equal(seo.url, `${parentOrigin}/papers/${seo.slug}`);
   assert.equal(schema['@graph'][0].url, `${parentOrigin}/`);
   assert.equal(schema['@graph'][2].itemListElement[1].item, `${parentOrigin}/papers`);
   const sitemap = buildPublicSitemapXml([{ id: 'paper-parent', seo }], new Date('2026-10-14T00:00:00Z'), parentOrigin);
-  assert.match(sitemap, /https:\/\/parents\.examifying\.bakayise\.com\/papers\/paper-parent/);
+  assert.match(sitemap, new RegExp(`${parentOrigin.replaceAll('.', '\\.')}/papers/${seo.slug}`));
   assert.match(buildPublicSitemapIndexXml(1, 20_000, parentOrigin), /https:\/\/parents\.examifying\.bakayise\.com\/sitemap-core\.xml/);
 });

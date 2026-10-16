@@ -15,6 +15,7 @@ import { extractDocumentText } from './documentExtractionService';
 import { collections } from '../firebase/schema';
 import { SUBJECTS } from '../lib/constants';
 import { extractTutorSubjectMarks, getApprovedTutorSubjects, getNewEligibleTutorSubjects, mergeBestTutorSubjectMarks, normalizeEligibleSubject } from '../utils/tutorSubjects';
+import { requireSubmissionActor } from './submissionActor';
 
 const uploadFile = async ({ file, path }) => {
   const contentType = getImageContentType(file);
@@ -99,9 +100,7 @@ export const uploadSubmissionImages = async ({ files, studentId, exerciseId, sub
 
   const uploadedFiles = [];
   try {
-    if (!auth?.currentUser || auth.currentUser.uid !== studentId) {
-      throw new Error('Sign in with the student account that owns this exercise before uploading answers.');
-    }
+    requireSubmissionActor({ currentUser: auth?.currentUser, studentId });
     const exerciseRef = doc(db, 'users', studentId, 'subjects', subjectInstanceId, 'exercises', exerciseId);
     const exerciseSnapshot = await getDoc(exerciseRef);
     if (!exerciseSnapshot.exists()) throw new Error('This exercise could not be found.');

@@ -19,7 +19,7 @@ const createWhitePng = (width = 240, height = 180) => {
   return canvas.toBuffer('image/png');
 };
 
-test('renders larger red tick and cross overlays without changing pixels away from the target', async () => {
+test('renders lighter, thinner red tick and cross overlays without labels or changes away from the target', async () => {
   const source = createWhitePng(1200, 900);
   const { buffer, width, height } = await renderAnnotatedImage({
     buffer: source,
@@ -32,9 +32,7 @@ test('renders larger red tick and cross overlays without changing pixels away fr
   const canvas = createCanvas(rendered.width, rendered.height);
   const context = canvas.getContext('2d');
   context.drawImage(rendered, 0, 0);
-  const targetPixel = context.getImageData(600, 450, 1, 1).data;
   const untouchedPixel = context.getImageData(100, 20, 1, 1).data;
-  assert.notDeepEqual([...targetPixel], [255, 255, 255, 255]);
   assert.deepEqual([...untouchedPixel], [255, 255, 255, 255]);
   const pixels = context.getImageData(0, 0, rendered.width, rendered.height).data;
   let redPixels = 0;
@@ -42,7 +40,8 @@ test('renders larger red tick and cross overlays without changing pixels away fr
   for (let y = 350; y < 550; y += 1) {
     for (let x = 500; x < 700; x += 1) {
       const index = (y * width + x) * 4;
-      if (pixels[index] > 150 && pixels[index + 1] < 100 && pixels[index + 2] < 100) {
+      if (pixels[index] > 200 && pixels[index + 1] >= 70 && pixels[index + 1] <= 160
+        && pixels[index + 2] >= 70 && pixels[index + 2] <= 160) {
         redPixels += 1;
         redBounds.left = Math.min(redBounds.left, x);
         redBounds.right = Math.max(redBounds.right, x);
@@ -51,9 +50,18 @@ test('renders larger red tick and cross overlays without changing pixels away fr
       }
     }
   }
-  assert.ok(redPixels > 0, 'expected red AI tick/cross strokes and label');
+  assert.ok(redPixels > 0, 'expected the lighter red tick/cross strokes');
   assert.ok(redBounds.right - redBounds.left >= 50, 'expected the enlarged AI mark to span at least 50 pixels');
   assert.ok(redBounds.bottom - redBounds.top >= 45, 'expected the enlarged AI mark to span at least 45 pixels');
+  let formerLabelPixels = 0;
+  for (let y = 395; y < 430; y += 1) {
+    for (let x = 638; x < 675; x += 1) {
+      const index = (y * width + x) * 4;
+      if (pixels[index] > 200 && pixels[index + 1] >= 70 && pixels[index + 1] <= 160
+        && pixels[index + 2] >= 70 && pixels[index + 2] <= 160) formerLabelPixels += 1;
+    }
+  }
+  assert.equal(formerLabelPixels, 0, 'expected no separate AI label next to the symbol');
   assert.deepEqual([...context.getImageData(20, 20, 1, 1).data], [17, 17, 17, 255]);
 });
 

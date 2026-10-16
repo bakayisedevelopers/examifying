@@ -18,7 +18,7 @@ const drawSymbol = (context, annotation, width, height) => {
   const radius = clamp(Math.round(Math.min(width, height) * 0.051), 16, 48);
   const x = clamp(annotation.x * width, radius + 3, width - radius - 3);
   const y = clamp(annotation.y * height, radius + 3, height - radius - 3);
-  const strokeWidth = clamp(radius * 0.28, 4, 11);
+  const strokeWidth = clamp(radius * 0.2, 3, 8);
   const paths = annotation.type === 'tick'
     ? [[[-0.58, 0.02], [-0.16, 0.43], [0.61, -0.51]]]
     : [
@@ -35,27 +35,14 @@ const drawSymbol = (context, annotation, width, height) => {
       else context.lineTo(pointX, pointY);
     });
     context.strokeStyle = '#ffffff';
-    context.lineWidth = strokeWidth + 6;
+    context.lineWidth = strokeWidth + 3.5;
     context.stroke();
-    context.strokeStyle = '#dc2626';
+    context.strokeStyle = '#f87171';
+    context.globalAlpha = 0.9;
     context.lineWidth = strokeWidth;
     context.stroke();
+    context.globalAlpha = 1;
   }
-
-  const label = 'AI';
-  const fontSize = clamp(Math.round(radius * 0.62), 10, 20);
-  context.font = `800 ${fontSize}px sans-serif`;
-  const labelWidth = context.measureText(label).width + 9;
-  const labelHeight = fontSize + 5;
-  const labelX = clamp(x + radius * 0.48, 2, width - labelWidth - 2);
-  const labelY = clamp(y - radius * 0.92, labelHeight + 2, height - 2);
-  context.fillStyle = '#dc2626';
-  context.beginPath();
-  context.roundRect(labelX, labelY - labelHeight, labelWidth, labelHeight, 3);
-  context.fill();
-  context.fillStyle = '#ffffff';
-  context.textBaseline = 'middle';
-  context.fillText(label, labelX + 3.5, labelY - labelHeight / 2);
 };
 
 export const renderAnnotatedImage = async ({ buffer, annotations = [] }) => {

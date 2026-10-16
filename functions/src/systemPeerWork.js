@@ -29,7 +29,7 @@ import {
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
 import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
 import { wrapPeerWorkText } from './peerWorkImageFormatting.js';
-import { publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
+import { loadReadyPeerWorkPack, publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
 import { safePeerWorkErrorMessage } from './peerWorkErrorDetails.js';
 
 const GENERATION_TASK = 'generateSystemPeerWorkTask';
@@ -156,13 +156,14 @@ const markAssignmentFailed = async (assignmentRef, reasonCode) => assignmentRef.
 const publishAssignment = async ({ db, bucket, assignmentRef, assignment, pack }) => {
   const current = await assignmentRef.get();
   if (!current.exists || current.data()?.status !== 'preparing') return false;
+  const readyPack = await loadReadyPeerWorkPack(pack);
   const reviewer = {
     studentId: assignment.reviewerId,
     subjectInstanceId: assignment.reviewerSubjectInstanceId,
     id: assignment.reviewerExerciseId,
   };
   const images = await copyPackImagesToReviewer({
-    bucket, pack, links: assignment.questionLinks ?? [], reviewer,
+    bucket, pack: readyPack, links: assignment.questionLinks ?? [], reviewer,
   });
   const firstImage = images[0];
   const updated = await db.runTransaction(async (transaction) => {

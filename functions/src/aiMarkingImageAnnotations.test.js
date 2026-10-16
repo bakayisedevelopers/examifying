@@ -19,29 +19,41 @@ const createWhitePng = (width = 240, height = 180) => {
   return canvas.toBuffer('image/png');
 };
 
-test('renders visible tick and cross overlays without changing pixels away from the target', async () => {
-  const source = createWhitePng();
+test('renders larger red tick and cross overlays without changing pixels away from the target', async () => {
+  const source = createWhitePng(1200, 900);
   const { buffer, width, height } = await renderAnnotatedImage({
     buffer: source,
     annotations: [sampleAnnotation(), sampleAnnotation({ type: 'cross', x: 0, y: 1, stepId: 'step_2' })],
   });
-  assert.equal(width, 240);
-  assert.equal(height, 180);
+  assert.equal(width, 1200);
+  assert.equal(height, 900);
   assert.notDeepEqual(buffer, source);
   const rendered = await loadImage(buffer);
   const canvas = createCanvas(rendered.width, rendered.height);
   const context = canvas.getContext('2d');
   context.drawImage(rendered, 0, 0);
-  const targetPixel = context.getImageData(120, 90, 1, 1).data;
+  const targetPixel = context.getImageData(600, 450, 1, 1).data;
   const untouchedPixel = context.getImageData(100, 20, 1, 1).data;
   assert.notDeepEqual([...targetPixel], [255, 255, 255, 255]);
   assert.deepEqual([...untouchedPixel], [255, 255, 255, 255]);
   const pixels = context.getImageData(0, 0, rendered.width, rendered.height).data;
-  let purplePixels = 0;
-  for (let index = 0; index < pixels.length; index += 4) {
-    if (pixels[index] < 170 && pixels[index + 2] > 120 && pixels[index + 2] > pixels[index]) purplePixels += 1;
+  let redPixels = 0;
+  const redBounds = { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity };
+  for (let y = 350; y < 550; y += 1) {
+    for (let x = 500; x < 700; x += 1) {
+      const index = (y * width + x) * 4;
+      if (pixels[index] > 150 && pixels[index + 1] < 100 && pixels[index + 2] < 100) {
+        redPixels += 1;
+        redBounds.left = Math.min(redBounds.left, x);
+        redBounds.right = Math.max(redBounds.right, x);
+        redBounds.top = Math.min(redBounds.top, y);
+        redBounds.bottom = Math.max(redBounds.bottom, y);
+      }
+    }
   }
-  assert.ok(purplePixels > 0, 'expected the AI purple tick/cross strokes and label');
+  assert.ok(redPixels > 0, 'expected red AI tick/cross strokes and label');
+  assert.ok(redBounds.right - redBounds.left >= 50, 'expected the enlarged AI mark to span at least 50 pixels');
+  assert.ok(redBounds.bottom - redBounds.top >= 45, 'expected the enlarged AI mark to span at least 45 pixels');
   assert.deepEqual([...context.getImageData(20, 20, 1, 1).data], [17, 17, 17, 255]);
 });
 
@@ -86,7 +98,7 @@ test('stores a separate versioned annotated copy and reuses it on retry', async 
   assert.deepEqual(first, second);
   assert.equal(first.length, 1);
   assert.equal(first[0].pageNumber, 1);
-  assert.equal(first[0].storagePath, `${args.destinationPrefix}/${args.version}-image-1.png`);
+  assert.equal(first[0].storagePath, `${args.destinationPrefix}/${args.version}-r2-image-1.png`);
   assert.equal(first[0].markingMode, 'student_exercise');
   assert.notEqual(objects.get(first[0].storagePath).buffer, sourceBuffer);
   assert.equal(objects.get(sourcePath).buffer, sourceBuffer);
@@ -119,7 +131,7 @@ test('uses the same annotation utility for peer-marking images and stores a dist
   });
   assert.equal(images.length, 1);
   assert.equal(images[0].markingMode, 'peer_marking');
-  assert.equal(images[0].storagePath, `${destinationPrefix}/${'c'.repeat(40)}-image-1.png`);
+  assert.equal(images[0].storagePath, `${destinationPrefix}/${'c'.repeat(40)}-r2-image-1.png`);
   assert.match(images[0].url, /token=/);
 });
 

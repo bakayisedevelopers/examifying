@@ -1,6 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
+import { loadReadyPeerWorkPack, publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
+
+test('publication reloads generated images instead of using a stale pre-generation pack snapshot', async () => {
+  const savedImages = [{ questionId: 'paper-a::1.1', storagePath: 'pack/question-1.png' }];
+  const stalePack = {
+    id: 'pack-a',
+    status: 'generating',
+    ref: { get: async () => ({ exists: true, data: () => ({ status: 'ready', images: savedImages }) }) },
+  };
+
+  const readyPack = await loadReadyPeerWorkPack(stalePack);
+
+  assert.equal(readyPack.status, 'ready');
+  assert.deepEqual(readyPack.images, savedImages);
+});
+
+test('publication refuses to publish a missing or incomplete generated pack', async () => {
+  await assert.rejects(() => loadReadyPeerWorkPack({
+    ref: { get: async () => ({ exists: false }) },
+  }), /unavailable for publication/);
+  await assert.rejects(() => loadReadyPeerWorkPack({
+    ref: { get: async () => ({ exists: true, data: () => ({ status: 'generating', images: [] }) }) },
+  }), /not ready for publication/);
+});
 
 test('peer-work publishing retries a transient failure and returns the successful result', async () => {
   let calls = 0;

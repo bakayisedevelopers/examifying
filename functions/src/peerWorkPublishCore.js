@@ -1,5 +1,18 @@
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+export const loadReadyPeerWorkPack = async (pack) => {
+  if (!pack?.ref || typeof pack.ref.get !== 'function') {
+    throw new Error('The generated peer-work record could not be reloaded before publication.');
+  }
+  const snapshot = await pack.ref.get();
+  if (!snapshot.exists) throw new Error('The saved practice work is unavailable for publication.');
+  const latestPack = { ...pack, ...snapshot.data() };
+  if (latestPack.status !== 'ready' || !Array.isArray(latestPack.images)) {
+    throw new Error('The saved practice work is not ready for publication.');
+  }
+  return latestPack;
+};
+
 export const publishPeerWorkWithRetry = async ({
   publish,
   maxAttempts = 3,

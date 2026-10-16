@@ -15,10 +15,10 @@ const isValidAnnotation = (annotation) => annotation
 const urlForStoredImage = (bucket, path, token) => `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(path)}?alt=media&token=${encodeURIComponent(token)}`;
 
 const drawSymbol = (context, annotation, width, height) => {
-  const radius = clamp(Math.round(Math.min(width, height) * 0.034), 10, 30);
+  const radius = clamp(Math.round(Math.min(width, height) * 0.051), 16, 48);
   const x = clamp(annotation.x * width, radius + 3, width - radius - 3);
   const y = clamp(annotation.y * height, radius + 3, height - radius - 3);
-  const strokeWidth = clamp(radius * 0.24, 3, 7);
+  const strokeWidth = clamp(radius * 0.28, 4, 11);
   const paths = annotation.type === 'tick'
     ? [[[-0.58, 0.02], [-0.16, 0.43], [0.61, -0.51]]]
     : [
@@ -35,21 +35,21 @@ const drawSymbol = (context, annotation, width, height) => {
       else context.lineTo(pointX, pointY);
     });
     context.strokeStyle = '#ffffff';
-    context.lineWidth = strokeWidth + 5;
+    context.lineWidth = strokeWidth + 6;
     context.stroke();
-    context.strokeStyle = '#6d28d9';
+    context.strokeStyle = '#dc2626';
     context.lineWidth = strokeWidth;
     context.stroke();
   }
 
   const label = 'AI';
-  const fontSize = clamp(Math.round(radius * 0.58), 8, 14);
-  context.font = `700 ${fontSize}px sans-serif`;
-  const labelWidth = context.measureText(label).width + 7;
-  const labelHeight = fontSize + 4;
+  const fontSize = clamp(Math.round(radius * 0.62), 10, 20);
+  context.font = `800 ${fontSize}px sans-serif`;
+  const labelWidth = context.measureText(label).width + 9;
+  const labelHeight = fontSize + 5;
   const labelX = clamp(x + radius * 0.48, 2, width - labelWidth - 2);
   const labelY = clamp(y - radius * 0.92, labelHeight + 2, height - 2);
-  context.fillStyle = '#6d28d9';
+  context.fillStyle = '#dc2626';
   context.beginPath();
   context.roundRect(labelX, labelY - labelHeight, labelWidth, labelHeight, 3);
   context.fill();
@@ -105,7 +105,7 @@ export const annotateMarkedImages = async ({
     if (!image?.file || !String(image.storagePath ?? '').startsWith('users/')) {
       throw new Error('An AI annotation source image is missing its validated Storage reference.');
     }
-    const destinationPath = `${normalizedPrefix}/${safeVersion}-image-${imageIndex + 1}.png`;
+    const destinationPath = `${normalizedPrefix}/${safeVersion}-r2-image-${imageIndex + 1}.png`;
     const destination = bucket.file(destinationPath);
     const [exists] = await destination.exists();
     let token = '';

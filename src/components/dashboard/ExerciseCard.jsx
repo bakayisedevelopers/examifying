@@ -12,6 +12,7 @@ import { OperationStatusOverlay } from '../common/OperationStatusOverlay';
 import { useOperationStatus } from '../../hooks/useOperationStatus';
 import { getQuestionPaperPath } from '../../utils/exerciseTopicRows';
 import { excludeDuplicateImageReferences } from '../../utils/imageReferences';
+import { useStudentWorkspaceProfile } from '../../hooks/useStudentWorkspaceProfile';
 
 const imagePages = (images, fallbackUrl, fallbackName) => Array.isArray(images) && images.length
   ? images
@@ -53,6 +54,7 @@ export const ExerciseCard = ({
   isHistorical = false,
 }) => {
   const navigate = useNavigate();
+  const { toStudentPath } = useStudentWorkspaceProfile();
   const exerciseQuestionCount = Array.isArray(exercise?.questions) && exercise.questions.length
     ? exercise.questions.length
     : Array.isArray(exercise?.questionLinks) && exercise.questionLinks.length
@@ -80,7 +82,7 @@ export const ExerciseCard = ({
 
   const handleOpenPapers = async (targetExercise = exercise) => {
     const firstLink = Array.isArray(targetExercise?.questionLinks) ? targetExercise.questionLinks[0] : null;
-    const questionPath = getQuestionPaperPath(firstLink, viewerRole);
+    const questionPath = getQuestionPaperPath(firstLink, viewerRole, toStudentPath);
     if (questionPath) {
       navigate(questionPath);
       return;
@@ -91,7 +93,7 @@ export const ExerciseCard = ({
     try {
       const papers = await getQuestionPapersByIds(targetExercise.paperIds);
       const firstPaper = papers[0];
-      if (firstPaper?.id) navigate(`/${viewerRole}/papers/${firstPaper.id}?page=1`);
+      if (firstPaper?.id) navigate(toStudentPath(`/${viewerRole}/papers/${firstPaper.id}?page=1`));
     } catch {
       // Opening the linked papers is best-effort; preserve the exercise card state.
     } finally {
@@ -246,7 +248,7 @@ export const ExerciseCard = ({
             <div className="mt-3 flex flex-wrap gap-2">
               {exercise.questionLinks.map((link, index) => {
                 const page = Math.max(1, Number(link.pageNumber ?? 1) || 1);
-                const questionPath = getQuestionPaperPath(link, viewerRole);
+                const questionPath = getQuestionPaperPath(link, viewerRole, toStudentPath);
                 return <button key={`${link.paperId}-${link.questionReference}-${index}`} type="button" onClick={() => questionPath && navigate(questionPath)} disabled={!questionPath} className="btn-secondary px-3 py-2 text-sm">
                   {link.questionReference || `Question ${index + 1}`} • page {page}{Number(link.marks) > 0 ? ` • ${link.marks} marks` : ''}
                 </button>;
@@ -383,6 +385,7 @@ export const ExerciseCard = ({
       <ExerciseTopicScoresTable
         exercise={exercise}
         viewerRole={viewerRole}
+        resolvePath={toStudentPath}
         tutorId={tutorId}
         studentId={exercise.studentId || studentId}
         topicScores={topicScores}

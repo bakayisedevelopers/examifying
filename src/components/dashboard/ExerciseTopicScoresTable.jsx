@@ -54,6 +54,7 @@ const ReadOnlyQuestionScore = ({ row, scoreEntries }) => {
 export const ExerciseTopicScoresTable = ({
   exercise,
   viewerRole = 'student',
+  resolvePath = (path) => path,
   tutorId,
   studentId,
   topicScores = {},
@@ -143,7 +144,7 @@ export const ExerciseTopicScoresTable = ({
             <tbody className="divide-y divide-slate-200">
               {rows.map((row) => {
                 const canEdit = row.activity === 'Exercise' ? canTutorEditExercise : canTutorEditMarking;
-                const questionPath = getQuestionPaperPath(row.question, viewerRole);
+                const questionPath = getQuestionPaperPath(row.question, viewerRole, resolvePath);
                 return (
                   <tr key={row.key} className="align-top">
                     <th scope="row" className="whitespace-nowrap px-4 py-4 text-left font-semibold text-slate-900">

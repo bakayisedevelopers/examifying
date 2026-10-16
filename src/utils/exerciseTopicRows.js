@@ -100,13 +100,13 @@ export const getLatestQuestionScore = (entries = [], row, question) => entries
     return timestamp(right.createdAt) - timestamp(left.createdAt);
   })[0] ?? null;
 
-export const getQuestionPaperPath = (question, role = 'student') => {
+export const getQuestionPaperPath = (question, role = 'student', resolvePath = (path) => path) => {
   if (!question?.paperId) return '';
   const page = Math.max(1, Number(question.pageNumber ?? 1) || 1);
   const params = new URLSearchParams({ page: String(page) });
   const reference = String(question.questionReference || question.reference || '').trim();
   if (reference) params.set('question', reference);
-  return `/${role}/papers/${question.paperId}?${params.toString()}`;
+  return resolvePath(`/${role}/papers/${question.paperId}?${params.toString()}`);
 };
 
 const structuredTopicNames = (questionLinks, topicBreakdown, questions = []) => {

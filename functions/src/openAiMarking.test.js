@@ -23,7 +23,7 @@ const call = async ({ contextPages, questions, answerText }) => {
     clientFactory: () => ({ responses: { create: async (payload) => {
       request = payload;
       return {
-        output_text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}',
+        output_text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[],"annotations":[]}',
         model: 'gpt-6-luna',
         usage: {
           input_tokens: 2000,
@@ -51,10 +51,15 @@ test('Luna caches only the shared exam-page prefix and leaves answer images unca
     assert.equal(request.input[1].role, 'user');
     assert.equal(request.input[1].content.at(-1).prompt_cache_breakpoint.mode, 'explicit');
     assert.equal(request.reasoning.effort, 'xhigh');
+    assert.ok(request.text.format.schema.properties.annotations);
+    assert.deepEqual(request.text.format.schema.properties.annotations.items.required, [
+      'questionId', 'questionNumber', 'imageIndex', 'type', 'x', 'y', 'stepId', 'confidence',
+    ]);
     assert.equal(request.max_output_tokens, 2048);
     assert.equal(request.input.flatMap((item) => item.content ?? []).filter((item) => item.type === 'input_image')
       .every((item) => item.detail === 'high'), true);
     assert.match(request.input[1].content[0].text, /paper-a, page 3/);
+    assert.match(JSON.stringify(request.input[2]), /Learner answer image 1, imageIndex=0/);
     assert.doesNotMatch(JSON.stringify(request.input[1]), /c3R1ZGVudC1hbnN3ZXI=/);
     assert.match(JSON.stringify(request.input[2]), /c3R1ZGVudC1hbnN3ZXI=/);
     assert.equal(result.usage.cachedInputTokens, 1200);

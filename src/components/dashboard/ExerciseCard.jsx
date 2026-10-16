@@ -177,7 +177,6 @@ export const ExerciseCard = ({
     return reviewImages;
   });
 
-  const hasMarkingImages = peerMarkingImages.length || peerMarkedImages.length || markedImages.length;
   const hasSubmittedImages = studentSubmissionImages.length > 0;
   const assignedWorkImages = assignedMarkingAssignment?.submittedImages?.length
     ? assignedMarkingAssignment.submittedImages
@@ -194,6 +193,10 @@ export const ExerciseCard = ({
     item.reviewerExerciseId === exercise.id
     && item.reviewerSubjectInstanceId === exercise.subjectInstanceId
     && item.aiMarking?.status);
+  const aiAnnotatedImages = imagePages(exercise.aiMarking?.annotatedImages, '');
+  const peerAiAnnotationAssignments = peerAiAssignments.filter((item) => item.aiMarking?.annotatedImages?.length);
+  const hasMarkingImages = peerMarkingImages.length || peerMarkedImages.length || markedImages.length
+    || aiAnnotatedImages.length || peerAiAnnotationAssignments.length;
 
   return (
     <div className="w-full space-y-5">
@@ -220,6 +223,14 @@ export const ExerciseCard = ({
           className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm"
           onClick={handleRetryAiMarking}
         ><RotateCw className="h-4 w-4" />Retry AI marking</button> : null}
+        {aiAnnotatedImages.length ? <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm"
+          onClick={() => setOpenViewer((current) => current === 'ai-annotations' ? '' : 'ai-annotations')}
+        >{openViewer === 'ai-annotations' ? 'Close AI annotations' : 'View AI-marked steps'}</button> : null}
+        {openViewer === 'ai-annotations' && aiAnnotatedImages.length
+          ? <ImagePageViewer images={aiAnnotatedImages} title="AI marks on the submitted work" alt="AI tick and cross annotations beside the student's handwritten work" />
+          : null}
         <div className="flex flex-wrap items-center gap-3">
           <h3 className="text-2xl font-bold text-slate-950">{exercise.title}</h3>
           {exerciseQuestionCount > 0 ? <span className="rounded-full bg-lime-100 px-3 py-1 text-sm font-semibold text-lime-800">{exerciseQuestionCount} {exerciseQuestionCount === 1 ? 'question' : 'questions'}</span> : null}
@@ -292,6 +303,12 @@ export const ExerciseCard = ({
             {peerMarkingImages.length ? <ImagePageViewer images={peerMarkingImages} title="Student's marking of another learner's work" alt="Peer marking submitted by this student" /> : null}
             {peerMarkedImages.length ? <ImagePageViewer images={peerMarkedImages} title="Peer-marked version of this exercise" alt="Peer markings on this student's work" /> : null}
             {markedImages.length ? <ImagePageViewer images={markedImages} title="Tutor-marked work" alt="Tutor annotations on the student's exercise work" /> : null}
+            {peerAiAnnotationAssignments.map((assignment) => <ImagePageViewer
+              key={`${assignment.assignmentPath || assignment.id}-ai-annotations`}
+              images={assignment.aiMarking.annotatedImages}
+              title="AI review of the peer-marking decisions"
+              alt="AI tick and cross review marks beside the student's peer-marking decisions"
+            />)}
           </div> : null}
           {canEditTopicScores && isTutorMarking ? <ImageEditor imageUrls={studentSubmissionImages} onSave={handleSaveTutorMark} onCancel={() => setIsTutorMarking(false)} saveLabel="Save marked work" /> : null}
           {markStatus ? <p role="status" className="text-sm text-slate-600">{markStatus}</p> : null}
@@ -330,6 +347,12 @@ export const ExerciseCard = ({
             {peerMarkingImages.length ? <ImagePageViewer images={peerMarkingImages} title="Your marking of another learner's work" alt="Peer marking you submitted" /> : null}
             {markedImages.length ? <ImagePageViewer images={markedImages} title="Tutor-marked work" alt="Tutor-marked version of your exercise work" /> : null}
             {peerMarkedImages.length ? <ImagePageViewer images={peerMarkedImages} title="Peer-marked work on your submission" alt="Peer-marked version of your exercise work" /> : null}
+            {peerAiAnnotationAssignments.map((assignment) => <ImagePageViewer
+              key={`${assignment.assignmentPath || assignment.id}-ai-annotations`}
+              images={assignment.aiMarking.annotatedImages}
+              title="AI review of your peer-marking decisions"
+              alt="AI tick and cross review marks beside your peer-marking decisions"
+            />)}
           </div> : null}
           </> : null}
           </div>

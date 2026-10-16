@@ -56,16 +56,16 @@ export const callOpenAiMarkingOnce = async ({
 
   if (submissionType === 'peer_marking') {
     originalAnswerImages.forEach((image, index) => {
-      userContent.push({ type: 'input_text', text: `Original learner answer image ${image.pageNumber || index + 1}.` });
+      userContent.push({ type: 'input_text', text: `Original learner answer image ${image.pageNumber || index + 1} (context only; do not annotate).` });
       userContent.push({ type: 'input_image', image_url: image.dataUrl, detail: 'high' });
     });
     answerImages.forEach((image, index) => {
-      userContent.push({ type: 'input_text', text: `Peer marker's submitted marking image ${image.pageNumber || index + 1}.` });
+      userContent.push({ type: 'input_text', text: `Peer marker's submitted marking image ${image.pageNumber || index + 1}, imageIndex=${index}.` });
       userContent.push({ type: 'input_image', image_url: image.dataUrl, detail: 'high' });
     });
   } else {
     answerImages.forEach((image, index) => {
-      userContent.push({ type: 'input_text', text: `Learner answer image ${image.pageNumber || index + 1}.` });
+      userContent.push({ type: 'input_text', text: `Learner answer image ${image.pageNumber || index + 1}, imageIndex=${index}.` });
       userContent.push({ type: 'input_image', image_url: image.dataUrl, detail: 'high' });
     });
   }

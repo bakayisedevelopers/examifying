@@ -145,7 +145,7 @@ export const buildCompactQuestionContext = (questions = []) => questions.map(({ 
   questionId, paperId, questionNumber, topic, maximumMark,
 }));
 
-export const validateAiMarkingResponse = ({ response, requestedQuestions = [], suppliedMaterialsByQuestion = {} }) => {
+export const validateAiMarkingResponse = ({ response, requestedQuestions = [], suppliedMaterialsByQuestion = {}, answerImageCount }) => {
   const supportedStatuses = ['completed', 'partially_completed', 'incorrect_submission', 'unclear_images', 'full_paper_search', 'memo_search'];
   if (!response || typeof response !== 'object' || !supportedStatuses.includes(response.status)) {
     throw new Error('The AI marking response used an unsupported status.');
@@ -154,14 +154,16 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [], s
   if (!Array.isArray(results)) throw new Error('The AI marking response did not include a results list.');
   const contextRequests = Array.isArray(response.contextRequests) ? response.contextRequests : [];
   const unansweredQuestionIds = Array.isArray(response.unansweredQuestionIds) ? response.unansweredQuestionIds : [];
+  const rawAnnotations = Array.isArray(response.annotations) ? response.annotations : [];
   if (response.status !== 'completed') {
     if (['incorrect_submission', 'unclear_images'].includes(response.status)) {
-      if (results.length || contextRequests.length || unansweredQuestionIds.length) throw new Error('A non-completed AI response contained question results.');
+      if (results.length || contextRequests.length || unansweredQuestionIds.length || rawAnnotations.length) throw new Error('A non-completed AI response contained question results.');
       return {
         status: response.status,
         results: [],
         contextRequests: [],
         unansweredQuestionIds: [],
+        annotations: [],
         message: response.status === 'incorrect_submission'
           ? 'The uploaded images do not appear to match this exercise.'
           : 'We could not read the uploaded work clearly. Please upload clear images and submit again.',
@@ -193,6 +195,33 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [], s
       totalMarks: requested.maximumMark,
     };
   });
+  const resultQuestionIds = new Set(normalizedResults.map((result) => result.questionId));
+  const normalizedAnnotations = [];
+  const annotationKeys = new Set();
+  for (const annotation of rawAnnotations) {
+    const questionId = String(annotation?.questionId ?? '').trim();
+    const requested = allowed.get(questionId);
+    const questionNumber = String(annotation?.questionNumber ?? '').trim();
+    const imageIndex = annotation?.imageIndex;
+    const x = annotation?.x;
+    const y = annotation?.y;
+    const confidence = annotation?.confidence;
+    const type = String(annotation?.type ?? '').trim();
+    const stepId = String(annotation?.stepId ?? '').trim().slice(0, 80);
+    if (!requested || !resultQuestionIds.has(questionId)
+      || normalizeQuestionReference(questionNumber) !== normalizeQuestionReference(requested.questionNumber)
+      || !Number.isSafeInteger(imageIndex) || imageIndex < 0
+      || (Number.isSafeInteger(answerImageCount) && imageIndex >= answerImageCount)
+      || !['tick', 'cross'].includes(type)
+      || !Number.isFinite(x) || x < 0 || x > 1
+      || !Number.isFinite(y) || y < 0 || y > 1
+      || !stepId
+      || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) continue;
+    const key = `${questionId}::${imageIndex}::${stepId}`;
+    if (annotationKeys.has(key)) continue;
+    annotationKeys.add(key);
+    normalizedAnnotations.push({ questionId, questionNumber: requested.questionNumber, imageIndex, type, x, y, stepId, confidence });
+  }
 
   const normalizedRequests = [];
   const requestKeys = new Set();
@@ -229,7 +258,7 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [], s
     if (normalizedResults.length !== allowed.size || normalizedRequests.length || unanswered.size) {
       throw new Error('The AI marking response did not score every requested question.');
     }
-    return { status: 'completed', results: normalizedResults, contextRequests: [], unansweredQuestionIds: [], message: '' };
+    return { status: 'completed', results: normalizedResults, contextRequests: [], unansweredQuestionIds: [], annotations: normalizedAnnotations, message: '' };
   }
 
   if (response.status === 'partially_completed') {
@@ -238,7 +267,7 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [], s
     }
     const resolvedIds = new Set([...seen, ...unanswered]);
     if (resolvedIds.size !== allowed.size) throw new Error('The AI marking response did not account for every requested question.');
-    return { status: 'partially_completed', results: normalizedResults, contextRequests: [], unansweredQuestionIds: [...unanswered], message: '' };
+    return { status: 'partially_completed', results: normalizedResults, contextRequests: [], unansweredQuestionIds: [...unanswered], annotations: normalizedAnnotations, message: '' };
   }
 
   if (!normalizedRequests.length) throw new Error('The AI marking response requested more context without identifying any questions.');
@@ -255,8 +284,19 @@ export const validateAiMarkingResponse = ({ response, requestedQuestions = [], s
     results: normalizedResults,
     contextRequests: normalizedRequests,
     unansweredQuestionIds: [...unanswered],
+    annotations: normalizedAnnotations,
     message: '',
   };
+};
+
+export const mergeAiMarkingAnnotations = (priorAnnotations = [], nextAnnotations = []) => {
+  const byStep = new Map();
+  for (const annotation of [...priorAnnotations, ...nextAnnotations]) {
+    if (!annotation?.questionId || !Number.isSafeInteger(annotation.imageIndex) || !annotation.stepId) continue;
+    const key = `${annotation.questionId}::${annotation.imageIndex}::${annotation.stepId}`;
+    if (!byStep.has(key)) byStep.set(key, annotation);
+  }
+  return [...byStep.values()];
 };
 
 export const mergeAiMarkingResults = (priorResults = [], newResults = []) => {

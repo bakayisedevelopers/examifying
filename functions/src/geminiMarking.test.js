@@ -34,7 +34,7 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
         return {
           ok: true,
           json: async () => ({
-            candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }],
+            candidates: [{ content: { parts: [{ text: '{"status":"completed","results":[{"questionId":"paper-a::1.1","awardedMark":1}],"contextRequests":[],"unansweredQuestionIds":[],"annotations":[]}' }] } }],
             usageMetadata: { promptTokenCount: 80, candidatesTokenCount: 12, totalTokenCount: 92 },
           }),
         };
@@ -47,8 +47,11 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
     assert.equal(call.body.generationConfig.maxOutputTokens, 2048);
     assert.equal(call.body.generationConfig.thinkingConfig.thinkingLevel, 'HIGH');
     assert.equal(call.body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
-    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties), ['status', 'results', 'contextRequests', 'unansweredQuestionIds']);
+    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties), ['status', 'results', 'contextRequests', 'unansweredQuestionIds', 'annotations']);
     assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties.results.items.properties), ['questionId', 'awardedMark']);
+    assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties.annotations.items.properties), [
+      'questionId', 'questionNumber', 'imageIndex', 'type', 'x', 'y', 'stepId', 'confidence',
+    ]);
     assert.equal(call.body.contents[0].parts.filter((part) => part.inline_data).length, 2);
     assert.deepEqual(call.body.contents[0].parts.filter((part) => part.inline_data)
       .map((part) => part.media_resolution.level), ['MEDIA_RESOLUTION_ULTRA_HIGH', 'MEDIA_RESOLUTION_ULTRA_HIGH']);
@@ -70,14 +73,39 @@ test('peer-marking request carries both original work and marker images', async 
       answerImages: [{ pageNumber: 1, dataUrl: 'data:image/jpeg;base64,AQ==' }],
       fetchImpl: async (_url, options) => {
         requestBody = JSON.parse(options.body);
-        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[]}' }] } }] }) };
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"status":"unclear_images","results":[],"contextRequests":[],"unansweredQuestionIds":[],"annotations":[]}' }] } }] }) };
       },
     });
     const parts = requestBody.contents[0].parts;
+    assert.match(parts[0].text, /return one AI annotation beside each visible decision/i);
+    assert.match(parts[0].text, /Use imageIndex 0 for the first peer marker image/i);
     assert.match(requestBody.system_instruction.parts[0].text, /reviewing a learner's marking/i);
+    assert.match(requestBody.system_instruction.parts[0].text, /VISUAL PEER-MARKING REVIEW ANNOTATIONS/i);
     assert.equal(parts.filter((part) => part.inline_data).length, 2);
     assert.match(parts[1].text, /Original learner answer image 2/);
     assert.match(parts[3].text, /Peer marker's submitted marking image 1/);
+    assert.match(parts[3].text, /imageIndex=0/);
+  });
+});
+
+test('repairs fenced or lightly malformed Gemini JSON before authoritative response validation', async () => {
+  resetGeminiContextCacheForTests();
+  await withGeminiEnv(async () => {
+    const result = await callGeminiMarkingOnce({
+      submissionType: 'peer_marking',
+      questions: [],
+      contextPages: [],
+      originalAnswerImages: [],
+      answerImages: [],
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ candidates: [{ content: { parts: [{
+          text: '```json\n{"status":"completed","results":[],"contextRequests":[],"unansweredQuestionIds":[],"annotations":[],}\n```',
+        }] } }] }),
+      }),
+    });
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(result.annotations, []);
   });
 });
 

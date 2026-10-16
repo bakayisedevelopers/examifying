@@ -12,7 +12,9 @@ If a supplied source-page image is blank, does not show the referenced question,
 
 Only after the complete question paper has been supplied for a question, if it still does not provide enough information to mark reliably and an official marking memo is genuinely needed, return status memo_search and add a contextRequests entry with material memo for that question. Before the full question paper has been supplied, request full_paper first. Request memos only when required. Never request a memo just to confirm an answer you can already assess.
 
-For a completed result, return one result for every requested question and no context requests or unansweredQuestionIds. For partial work, return status partially_completed and put every unattempted questionId in unansweredQuestionIds. For full_paper_search or memo_search, return a result for each question you can mark, a context request for each question that needs more source context, and unansweredQuestionIds only for requested questions with no answer shown. Every requested question must appear exactly once across results, contextRequests, and unansweredQuestionIds. Each result must contain only its exact questionId and awardedMark. Each context request must contain only questionId and material. Return only status, results, contextRequests, and unansweredQuestionIds; do not include explanations, question metadata, maximum marks, or any other fields.`;
+For a completed result, return one result for every requested question and no context requests or unansweredQuestionIds. For partial work, return status partially_completed and put every unattempted questionId in unansweredQuestionIds. For full_paper_search or memo_search, return a result for each question you can mark, a context request for each question that needs more source context, and unansweredQuestionIds only for requested questions with no answer shown. Every requested question must appear exactly once across results, contextRequests, and unansweredQuestionIds. Each result must contain only its exact questionId and awardedMark. Each context request must contain only questionId and material.
+
+VISUAL ANNOTATIONS (additive only; do not change marks or results): Return an annotations array with one entry for each relevant mathematical step you can confidently classify. Use type "tick" beside a correct step and "cross" beside an incorrect step. Put the marker beside, not over, the handwriting. Set imageIndex to the zero-based index of the learner answer image in the submitted-image order (the images labeled "Learner answer image"), never a source-paper page. Set x and y to normalized coordinates from 0 to 1 relative to that original image, with (0,0) at its top-left and (1,1) at its bottom-right. Preserve the image's displayed orientation. Include the exact requested questionId and questionNumber, a short stepId unique within that question (for example "step_1"), and confidence from 0 to 1. Do not invent or guess coordinates; omit a step when its position or correctness is unclear. If no reliable annotations can be placed, return an empty array. For incorrect_submission or unclear_images return an empty array. Return only status, results, contextRequests, unansweredQuestionIds, and annotations; do not include explanations, question metadata, maximum marks, or any other fields.`;
 
 export const PEER_MARKING_REVIEW_INSTRUCTIONS = `You are reviewing a learner's marking of assigned answer work. The source answer may be a learner submission or a clearly labeled system-generated practice solution.
 
@@ -28,7 +30,9 @@ If a supplied source-page image is blank, does not show the referenced question,
 
 Only after the complete question paper has been supplied for a question, if it still lacks information needed to evaluate the marker's decisions and an official marking memo is genuinely required, return status memo_search and add a contextRequests entry with material memo. Before the full question paper has been supplied, request full_paper first. Request memos only when necessary.
 
-For a completed result, return one result for every requested question and no context requests or unansweredQuestionIds. For partial work, return status partially_completed and put every unattempted questionId in unansweredQuestionIds. For full_paper_search or memo_search, return a result for each question you can review, a context request for each question that needs more source context, and unansweredQuestionIds only for requested questions with no peer marking shown. Every requested question must appear exactly once across results, contextRequests, and unansweredQuestionIds. Each result must contain only its exact questionId and awardedMark. Each context request must contain only questionId and material. Return only status, results, contextRequests, and unansweredQuestionIds; do not include explanations, question metadata, maximum marks, or any other fields.`;
+For a completed result, return one result for every requested question and no context requests or unansweredQuestionIds. For partial work, return status partially_completed and put every unattempted questionId in unansweredQuestionIds. For full_paper_search or memo_search, return a result for each question you can review, a context request for each question that needs more source context, and unansweredQuestionIds only for requested questions with no peer marking shown. Every requested question must appear exactly once across results, contextRequests, and unansweredQuestionIds. Each result must contain only its exact questionId and awardedMark. Each context request must contain only questionId and material.
+
+VISUAL PEER-MARKING REVIEW ANNOTATIONS (additive only; do not change peer scores or results): Return an annotations array with one entry for each peer-marking decision you can confidently evaluate. Annotate only the peer marker's submitted marking images labeled "Peer marker's submitted marking image"; never annotate the separate original learner answer images or source-paper pages. Set imageIndex to the zero-based index within the peer marker's submitted-image order. Place the AI symbol beside the existing peer tick/cross or the handwritten decision it evaluates; never cover, replace, erase, or imitate the peer's original mark. Use type "tick" when the peer's decision is correct and type "cross" when the peer's decision is incorrect. Include the exact requested questionId and questionNumber, a short stepId unique within that question (for example "decision_1"), normalized x and y coordinates between 0 and 1 relative to that original image's displayed orientation, and confidence from 0 to 1. Do not guess positions or decisions; omit unclear decisions. If a peer marking image contains clearly visible ticks, crosses, or other marking decisions, do not return an empty annotations array just because the peer's decisions are correct; annotate every clearly readable decision. Return an empty array only if no peer marking decision is visible or none can be located reliably. For incorrect_submission or unclear_images return an empty array. Return only status, results, contextRequests, unansweredQuestionIds, and annotations; do not include explanations, question metadata, maximum marks, or any other fields.`;
 
 export const AI_MARKING_RESULT_SCHEMA = Object.freeze({
   type: 'object',
@@ -60,6 +64,24 @@ export const AI_MARKING_RESULT_SCHEMA = Object.freeze({
       },
     },
     unansweredQuestionIds: { type: 'array', items: { type: 'string' } },
+    annotations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          questionId: { type: 'string' },
+          questionNumber: { type: 'string' },
+          imageIndex: { type: 'integer', minimum: 0 },
+          type: { type: 'string', enum: ['tick', 'cross'] },
+          x: { type: 'number', minimum: 0, maximum: 1 },
+          y: { type: 'number', minimum: 0, maximum: 1 },
+          stepId: { type: 'string' },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+        },
+        required: ['questionId', 'questionNumber', 'imageIndex', 'type', 'x', 'y', 'stepId', 'confidence'],
+      },
+    },
   },
-  required: ['status', 'results', 'contextRequests', 'unansweredQuestionIds'],
+  required: ['status', 'results', 'contextRequests', 'unansweredQuestionIds', 'annotations'],
 });

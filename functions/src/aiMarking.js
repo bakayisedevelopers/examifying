@@ -19,6 +19,7 @@ import {
   getRequestedMarkingQuestions,
   groupAiContextRequestsByPaper,
   isRetryableAiMarkingStatus,
+  mergeAiMarkingAnnotations,
   mergeAiMarkingResults,
   resolvePaperPageContext,
   submissionVersionForRecord,
@@ -26,8 +27,10 @@ import {
   validateAiMarkingResponse,
 } from './aiMarkingCore.js';
 import { applyAiTutorExerciseScores, applyAiTutorPeerMarkingScores } from './tutorMarking.js';
+import { annotateMarkedImages } from './aiMarkingImageAnnotations.js';
 
 const MAX_ATTEMPTS = 3;
+const MAX_ANNOTATION_ATTEMPTS = 3;
 const MAX_CONTEXT_FALLBACK_PASSES = 2;
 const LEASE_MS = 12 * 60 * 1000;
 const MAX_IMAGE_SIDE = 2200;
@@ -154,6 +157,11 @@ const enqueueAiJob = async ({ ref, studentId, subjectInstanceId, submissionType,
         model: FieldValue.delete(), usage: FieldValue.delete(), message: FieldValue.delete(),
         contextCacheStatus: FieldValue.delete(), contextCacheUsed: FieldValue.delete(),
         unansweredQuestionIds: FieldValue.delete(),
+        annotationStatus: FieldValue.delete(), annotationVersion: FieldValue.delete(),
+        annotationAttemptCount: FieldValue.delete(), annotationStartedAt: FieldValue.delete(),
+        annotationLeaseExpiresAt: FieldValue.delete(), annotationCompletedAt: FieldValue.delete(),
+        annotationErrorCode: FieldValue.delete(), annotationErrorMessage: FieldValue.delete(),
+        annotationRequest: FieldValue.delete(), annotatedImages: FieldValue.delete(),
       },
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -262,6 +270,11 @@ export const retryStudentExerciseAiMarking = onCall({ cpu: 'gcf_gen1' }, async (
         message: FieldValue.delete(),
         errorCode: FieldValue.delete(),
         errorMessage: FieldValue.delete(),
+        annotationStatus: FieldValue.delete(), annotationVersion: FieldValue.delete(),
+        annotationAttemptCount: FieldValue.delete(), annotationStartedAt: FieldValue.delete(),
+        annotationLeaseExpiresAt: FieldValue.delete(), annotationCompletedAt: FieldValue.delete(),
+        annotationErrorCode: FieldValue.delete(), annotationErrorMessage: FieldValue.delete(),
+        annotationRequest: FieldValue.delete(), annotatedImages: FieldValue.delete(),
       },
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -823,6 +836,163 @@ const logMarkingStats = ({ operation, task, model, provider, fallbackUsed, fallb
   });
 };
 
+export const processAiMarkingImageAnnotationsTask = onTaskDispatched(TASK_OPTIONS, async (request) => {
+  const task = request.data ?? {};
+  if (!['student_exercise', 'peer_marking'].includes(task.submissionType)
+    || !String(task.documentPath || '').startsWith('users/') || !task.studentId || !task.subjectInstanceId || !task.version) {
+    throw new Error('The AI image annotation task payload is invalid.');
+  }
+  const db = getDb();
+  const bucket = storage.bucket();
+  const sourceRef = db.doc(task.documentPath);
+  const claim = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(sourceRef);
+    if (!snapshot.exists) return { run: false, reason: 'missing' };
+    const record = snapshot.data();
+    const ai = record.aiMarking ?? {};
+    const images = normalizeImageRefs(record, { preferReview: task.submissionType === 'peer_marking' });
+    if (ai.version !== task.version || ai.annotationVersion !== task.version
+      || currentVersionFor(record, images) !== task.version) return { run: false, reason: 'stale' };
+    if (ai.annotationStatus === 'completed' || ai.annotationStatus === 'skipped' || ai.annotationStatus === 'failed') {
+      return { run: false, reason: 'terminal' };
+    }
+    if (ai.annotationStatus === 'processing' && timestampMillis(ai.annotationLeaseExpiresAt) > Date.now()) {
+      return { run: false, reason: 'already_processing' };
+    }
+    const attemptCount = Math.max(0, Number(ai.annotationAttemptCount) || 0) + 1;
+    if (attemptCount > MAX_ANNOTATION_ATTEMPTS) {
+      transaction.set(sourceRef, { aiMarking: {
+        annotationStatus: 'failed', annotationErrorCode: 'annotation_attempt_limit',
+        annotationErrorMessage: 'Image annotation could not be completed after several attempts.',
+        annotationCompletedAt: FieldValue.serverTimestamp(), annotationLeaseExpiresAt: FieldValue.delete(),
+      }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      return { run: false, reason: 'attempt_limit' };
+    }
+    transaction.set(sourceRef, { aiMarking: {
+      annotationStatus: 'processing', annotationAttemptCount: attemptCount,
+      annotationStartedAt: ai.annotationStartedAt || FieldValue.serverTimestamp(),
+      annotationLeaseExpiresAt: new Date(Date.now() + LEASE_MS),
+      annotationErrorCode: FieldValue.delete(), annotationErrorMessage: FieldValue.delete(),
+      annotationUpdatedAt: FieldValue.serverTimestamp(),
+    }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    return { run: true, attemptCount, annotations: Array.isArray(ai.annotationRequest) ? ai.annotationRequest : [], record };
+  });
+  if (!claim.run) {
+    logger.info('AI image annotation task skipped', {
+      operation: task.submissionType,
+      requestId: hash(`${task.documentPath}:${task.version}:annotations`),
+      reason: claim.reason,
+    });
+    return;
+  }
+
+  let savedImages = [];
+  try {
+    if (!claim.annotations.length) throw new Error('The annotation request contained no valid coordinates.');
+    let destinationExerciseRef;
+    let allowedPrefix;
+    let sourceImages;
+    if (task.submissionType === 'student_exercise') {
+      destinationExerciseRef = sourceRef;
+      allowedPrefix = `${sourceRef.path}/submissions/`;
+      sourceImages = normalizeImageRefs(claim.record);
+    } else {
+      const reviewerExerciseId = String(claim.record.reviewerExerciseId ?? '').trim();
+      const reviewerId = String(claim.record.reviewerId ?? '').trim();
+      const reviewerSubjectInstanceId = String(claim.record.reviewerSubjectInstanceId ?? '').trim();
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(reviewerExerciseId)
+        || reviewerId !== task.studentId || reviewerSubjectInstanceId !== task.subjectInstanceId) {
+        throw new Error('The peer marking image owner could not be validated.');
+      }
+      const reviewerExercisePath = `users/${reviewerId}/subjects/${reviewerSubjectInstanceId}/exercises/${reviewerExerciseId}`;
+      if (String(claim.record.reviewerExercisePath ?? '') !== reviewerExercisePath) {
+        throw new Error('The peer marking exercise path failed ownership validation.');
+      }
+      destinationExerciseRef = db.doc(reviewerExercisePath);
+      allowedPrefix = `${reviewerExercisePath}/peer-reviews/`;
+      sourceImages = normalizeImageRefs(claim.record, { preferReview: true });
+    }
+    if (!sourceImages.length) throw new Error('The submitted marking images are no longer available.');
+    const files = sourceImages.map((image) => {
+      const parsed = parseStorageUrl(image.url);
+      if (!parsed || parsed.bucketName !== bucket.name || !parsed.path.startsWith(allowedPrefix)) {
+        throw new Error('An AI annotation source image failed ownership validation.');
+      }
+      return { ...image, storagePath: parsed.path, file: bucket.file(parsed.path) };
+    });
+    const destinationPrefix = `${destinationExerciseRef.path}/ai-marking-annotations`;
+    savedImages = await annotateMarkedImages({
+      images: files,
+      annotations: claim.annotations,
+      markingMode: task.submissionType,
+      bucket,
+      destinationPrefix,
+      version: task.version,
+    });
+    if (!savedImages.length) throw new Error('No submitted image had a valid AI annotation.');
+
+    const stored = await db.runTransaction(async (transaction) => {
+      const currentSnapshot = await transaction.get(sourceRef);
+      if (!currentSnapshot.exists) return false;
+      const current = currentSnapshot.data();
+      const currentImages = normalizeImageRefs(current, { preferReview: task.submissionType === 'peer_marking' });
+      if (current.aiMarking?.version !== task.version || current.aiMarking?.annotationVersion !== task.version
+        || current.aiMarking?.annotationStatus !== 'processing'
+        || currentVersionFor(current, currentImages) !== task.version) return false;
+      transaction.set(sourceRef, { aiMarking: {
+        annotationStatus: 'completed', annotatedImages: savedImages,
+        annotationCount: claim.annotations.length,
+        annotationCompletedAt: FieldValue.serverTimestamp(), annotationUpdatedAt: FieldValue.serverTimestamp(),
+        annotationLeaseExpiresAt: FieldValue.delete(), annotationRequest: FieldValue.delete(),
+        annotationErrorCode: FieldValue.delete(), annotationErrorMessage: FieldValue.delete(),
+      }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      return true;
+    });
+    if (!stored) {
+      await Promise.all(savedImages.map((image) => bucket.file(image.storagePath).delete({ ignoreNotFound: true }).catch(() => {})));
+      logger.info('AI image annotation result skipped as stale', {
+        operation: task.submissionType,
+        requestId: hash(`${task.documentPath}:${task.version}:annotations`),
+      });
+      return;
+    }
+    logger.info('AI image annotations saved', {
+      operation: task.submissionType,
+      requestId: hash(`${task.documentPath}:${task.version}:annotations`),
+      imageCount: savedImages.length,
+      annotationCount: claim.annotations.length,
+      markingMode: task.submissionType,
+    });
+  } catch (error) {
+    const message = safeErrorMessage(error);
+    let shouldRetry = false;
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(sourceRef);
+      if (!snapshot.exists) return;
+      const current = snapshot.data();
+      const images = normalizeImageRefs(current, { preferReview: task.submissionType === 'peer_marking' });
+      if (current.aiMarking?.version !== task.version || current.aiMarking?.annotationVersion !== task.version
+        || current.aiMarking?.annotationStatus !== 'processing'
+        || currentVersionFor(current, images) !== task.version) return;
+      shouldRetry = claim.attemptCount < MAX_ANNOTATION_ATTEMPTS;
+      transaction.set(sourceRef, { aiMarking: {
+        annotationStatus: shouldRetry ? 'pending' : 'failed',
+        annotationErrorCode: safeErrorCode(error), annotationErrorMessage: message,
+        annotationLeaseExpiresAt: FieldValue.delete(), annotationUpdatedAt: FieldValue.serverTimestamp(),
+        ...(!shouldRetry ? { annotationCompletedAt: FieldValue.serverTimestamp() } : {}),
+      }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    });
+    await Promise.all(savedImages.map((image) => bucket.file(image.storagePath).delete({ ignoreNotFound: true }).catch(() => {})));
+    logger.warn('AI image annotation failed independently of score persistence', {
+      operation: task.submissionType,
+      requestId: hash(`${task.documentPath}:${task.version}:annotations`),
+      attemptCount: claim.attemptCount,
+      code: safeErrorCode(error),
+    });
+    if (shouldRetry) throw error;
+  }
+});
+
 export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (request) => {
   const task = request.data ?? {};
   if (!['student_exercise', 'peer_marking'].includes(task.submissionType)
@@ -918,11 +1088,13 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       await applyMarks({ task, sourceRecord: { ...sourceRecord, ...exercise }, questions, results, tutorId, assignmentRef });
     };
     const finalize = async ({ status, message = '', errorCode = '' }) => {
-      await db.runTransaction(async (transaction) => {
+      const annotations = Array.isArray(progress?.annotations) ? progress.annotations : [];
+      const shouldAnnotate = annotations.length > 0 && !['incorrect_submission', 'unclear_images', 'skipped'].includes(status);
+      const finalized = await db.runTransaction(async (transaction) => {
         const current = await transaction.get(sourceRef);
         if (!current.exists || current.data().aiMarking?.version !== task.version
           || current.data().aiMarking?.status !== 'processing'
-          || currentVersionFor(current.data(), normalizeImageRefs(current.data(), { preferReview: task.submissionType === 'peer_marking' })) !== task.version) return;
+          || currentVersionFor(current.data(), normalizeImageRefs(current.data(), { preferReview: task.submissionType === 'peer_marking' })) !== task.version) return false;
         transaction.set(sourceRef, { aiMarking: {
           status, version: task.version, attemptCount,
           completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
@@ -934,9 +1106,46 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
           contextRequestCount: progress?.contextRequestCount ?? 0,
           unansweredQuestionIds: progress?.unansweredQuestionIds ?? [],
           ...(status === 'failed' ? { errorCode, errorMessage: message } : { errorCode: FieldValue.delete(), errorMessage: FieldValue.delete() }),
+          annotationStatus: shouldAnnotate ? 'pending' : 'not_available',
+          annotationVersion: task.version,
+          annotationAttemptCount: 0,
+          ...(shouldAnnotate ? { annotationRequest: annotations } : { annotationRequest: FieldValue.delete() }),
+          annotatedImages: FieldValue.delete(),
+          annotationStartedAt: FieldValue.delete(), annotationLeaseExpiresAt: FieldValue.delete(),
+          annotationCompletedAt: FieldValue.delete(), annotationErrorCode: FieldValue.delete(),
+          annotationErrorMessage: FieldValue.delete(),
           validatedResult: FieldValue.delete(), leaseExpiresAt: FieldValue.delete(), message,
         }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+        return true;
       });
+      if (finalized && shouldAnnotate) {
+        const annotationTaskId = stableTaskId('ai-annotate', `${task.submissionType}:${task.documentPath}:${task.version}`);
+        try {
+          await enqueueTaskOnce('processAiMarkingImageAnnotationsTask', {
+            submissionType: task.submissionType,
+            documentPath: task.documentPath,
+            studentId: task.studentId,
+            subjectInstanceId: task.subjectInstanceId,
+            version: task.version,
+          }, { id: annotationTaskId });
+        } catch (error) {
+          await db.runTransaction(async (transaction) => {
+            const current = await transaction.get(sourceRef);
+            if (!current.exists || current.data().aiMarking?.version !== task.version
+              || current.data().aiMarking?.annotationVersion !== task.version) return;
+            transaction.set(sourceRef, { aiMarking: {
+              annotationStatus: 'failed', annotationErrorCode: 'annotation_enqueue_failed',
+              annotationErrorMessage: safeErrorMessage(error),
+              annotationCompletedAt: FieldValue.serverTimestamp(),
+            }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+          }).catch(() => {});
+          logger.warn('AI image annotation task could not be queued; marking scores remain saved', {
+            operation: task.submissionType,
+            requestId: hash(`${task.documentPath}:${task.version}:annotations`),
+            code: safeErrorCode(error),
+          });
+        }
+      }
       logMarkingStats({
         operation: task.submissionType, task, ...metadata, status, attemptCount,
         contextFallbackPasses: progress?.fallbackPasses ?? 0,
@@ -978,7 +1187,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         callPrimary: callOpenAiMarkingOnce,
         callFallback: callGeminiMarkingOnce,
         validateResponse: (result) => validateAiMarkingResponse({
-          response: result, requestedQuestions, suppliedMaterialsByQuestion,
+          response: result, requestedQuestions, suppliedMaterialsByQuestion, answerImageCount: answerImages.length,
         }),
         onPrimaryFailure: (error) => logger.warn('OpenAI marking failed; trying Gemini fallback', {
           operation: task.submissionType,
@@ -987,7 +1196,18 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
           status: Number(error?.status) || null,
         }),
       });
-      const validated = validateAiMarkingResponse({ response, requestedQuestions, suppliedMaterialsByQuestion });
+      const validated = validateAiMarkingResponse({
+        response, requestedQuestions, suppliedMaterialsByQuestion, answerImageCount: answerImages.length,
+      });
+      validated.annotations = validated.annotations.filter((annotation) => annotation.imageIndex < answerImages.length);
+      logger.info('AI marking response validated', {
+        operation: task.submissionType,
+        requestId: hash(`${task.documentPath}:${task.version}:${contextPass}:validated`),
+        resultCount: validated.results.length,
+        rawAnnotationCount: Array.isArray(response.annotations) ? response.annotations.length : 0,
+        annotationCount: validated.annotations.length,
+        contextRequestCount: validated.contextRequests.length,
+      });
       metadata = mergeModelMetadata(metadata, response, {
         pageCount: pages.length,
         answerImageCount: answerImages.length + originalAnswerImages.length,
@@ -1018,7 +1238,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
     }
 
     if (!progress) {
-      let initialValidated = { status: 'full_paper_search', results: [], contextRequests: [], unansweredQuestionIds: [] };
+      let initialValidated = { status: 'full_paper_search', results: [], contextRequests: [], unansweredQuestionIds: [], annotations: [] };
       if (initialQuestions.length) {
         initialValidated = await callModelForQuestions({
           requestedQuestions: initialQuestions,
@@ -1042,6 +1262,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         status: contextRequests.length ? (initialValidated.status === 'memo_search' ? 'memo_search' : 'full_paper_search')
           : initialValidated.unansweredQuestionIds?.length ? 'partially_completed' : 'completed',
         results: initialValidated.results,
+        annotations: initialValidated.annotations ?? [],
         contextRequests,
         unansweredQuestionIds: initialValidated.unansweredQuestionIds ?? [],
         suppliedMaterialsByQuestion: initialSuppliedMaterials,
@@ -1111,6 +1332,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
       }
 
       const results = mergeAiMarkingResults(progress.results ?? [], validated.results);
+      const annotations = mergeAiMarkingAnnotations(progress.annotations ?? [], validated.annotations ?? []);
       const remainingIds = new Set(getPendingMarkingQuestions(questions, results).map((question) => question.questionId));
       const unansweredQuestionIds = [...new Set([
         ...(progress.unansweredQuestionIds ?? []).filter((questionId) => !availableIds.has(questionId)),
@@ -1123,6 +1345,7 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         ...progress,
         status: nextRequests.length ? validated.status : unansweredQuestionIds.length ? 'partially_completed' : 'completed',
         results,
+        annotations,
         contextRequests: nextRequests,
         unansweredQuestionIds,
         suppliedMaterialsByQuestion: suppliedForPass,

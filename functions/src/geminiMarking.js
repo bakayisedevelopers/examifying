@@ -1,3 +1,4 @@
+import { jsonrepair } from 'jsonrepair';
 import { AI_MARKING_RESULT_SCHEMA, PEER_MARKING_REVIEW_INSTRUCTIONS, STUDENT_EXERCISE_MARKING_INSTRUCTIONS } from './aiMarkingPrompts.js';
 import { getGeminiSourceContextCache, invalidateGeminiSourceContextCache } from './geminiContextCache.js';
 
@@ -14,13 +15,6 @@ const imagePart = (image) => {
     inline_data: { mime_type: match[1], data: match[2] },
     media_resolution: { level: 'MEDIA_RESOLUTION_ULTRA_HIGH' },
   };
-};
-
-const addImages = (parts, images = [], label) => {
-  images.forEach((image, index) => {
-    parts.push({ text: `${label} ${image.pageNumber || index + 1}.` });
-    parts.push(imagePart(image));
-  });
 };
 
 const getUsage = (usage = {}) => ({
@@ -63,6 +57,9 @@ export const callGeminiMarkingOnce = async ({
     sourceParts.push({ text: `${documentLabel} ${page.paperId}, page ${page.pageNumber}.` });
     sourceParts.push(imagePart(page));
   });
+  const annotationInstruction = submissionType === 'peer_marking'
+    ? 'For visual review, the peer marker image is the image explicitly labeled Peer marker. If it contains clearly visible ticks or crosses, return one AI annotation beside each visible decision; do not return annotations:[] just because all peer decisions are correct. A correct peer decision gets an AI tick; an incorrect peer decision gets an AI cross. Use imageIndex 0 for the first peer marker image, regardless of the separate original-answer image.'
+    : 'For visual review, annotate each clearly readable learner solution step beside the handwriting; use the corresponding learner-answer imageIndex.';
   const dynamicParts = [{ text: JSON.stringify({
     operation: submissionType,
     sourceType,
@@ -71,13 +68,22 @@ export const callGeminiMarkingOnce = async ({
     requestedQuestions: questions.map(({ questionId, paperId, questionNumber, topic, maximumMark }) => ({
       questionId, paperId, questionNumber, topic, maximumMark,
     })),
-    instruction: 'Use the supplied source images and assess only the requested questions. If analysis pages are blank, incorrect, or insufficient, request full_paper_search for the affected question IDs first. Request memo_search only if the full question paper has already been supplied for that question and an official memo is still genuinely required. Do not request material already listed in suppliedMaterialsByQuestion.',
+    instruction: `Use the supplied source images and assess only the requested questions. If analysis pages are blank, incorrect, or insufficient, request full_paper_search for the affected question IDs first. Request memo_search only if the full question paper has already been supplied for that question and an official memo is still genuinely required. Do not request material already listed in suppliedMaterialsByQuestion. ${annotationInstruction}`,
   }) }];
   if (submissionType === 'peer_marking') {
-    addImages(dynamicParts, originalAnswerImages, 'Original learner answer image');
-    addImages(dynamicParts, answerImages, "Peer marker's submitted marking image");
+    originalAnswerImages.forEach((image, index) => {
+      dynamicParts.push({ text: `Original learner answer image ${image.pageNumber || index + 1} (context only; do not annotate).` });
+      dynamicParts.push(imagePart(image));
+    });
+    answerImages.forEach((image, index) => {
+      dynamicParts.push({ text: `Peer marker's submitted marking image ${image.pageNumber || index + 1}, imageIndex=${index}.` });
+      dynamicParts.push(imagePart(image));
+    });
   } else {
-    addImages(dynamicParts, answerImages, 'Learner answer image');
+    answerImages.forEach((image, index) => {
+      dynamicParts.push({ text: `Learner answer image ${image.pageNumber || index + 1}, imageIndex=${index}.` });
+      dynamicParts.push(imagePart(image));
+    });
   }
 
   const sourceCache = await getGeminiSourceContextCache({
@@ -174,9 +180,25 @@ export const callGeminiMarkingOnce = async ({
   if (!text) throw providerError('Gemini returned no structured marking result.', { code: 'gemini_empty_response' });
 
   let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
+  const fencedText = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const objectStart = fencedText.indexOf('{');
+  const objectEnd = fencedText.lastIndexOf('}');
+  const candidates = [fencedText];
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(fencedText.slice(objectStart, objectEnd + 1));
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      parsed = JSON.parse(candidate);
+      break;
+    } catch {
+      try {
+        parsed = JSON.parse(jsonrepair(candidate));
+        break;
+      } catch {
+        // Keep trying only bounded JSON-shaped candidates; downstream validation remains authoritative.
+      }
+    }
+  }
+  if (!parsed) {
     throw providerError('Gemini returned a response that was not valid structured JSON.', { code: 'gemini_invalid_json' });
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

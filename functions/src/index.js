@@ -123,6 +123,7 @@ export {
   retryStudentExerciseAiMarking,
   queuePeerMarkingAiReview,
   processAiMarkingTask,
+  processAiMarkingImageAnnotationsTask,
 } from './aiMarking.js';
 
 export { deleteStudentTopics } from './topicManagement.js';

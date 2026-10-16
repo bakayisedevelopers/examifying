@@ -8,6 +8,7 @@ import {
   groupAiContextRequestsByPaper,
   isRetryableAiMarkingStatus,
   mergeAiMarkingResults,
+  mergeAiMarkingAnnotations,
   resolvePaperPageContext,
   runAiMarkingOnce,
   shouldPreserveAuthoritativeMark,
@@ -118,6 +119,55 @@ test('validates all questions and uses the authoritative maximum mark', () => {
   }] };
   const result = validateAiMarkingResponse({ response, requestedQuestions: questions });
   assert.equal(result.results[0].totalMarks, 2);
+});
+
+test('validates annotation coordinates independently and remains compatible with older responses', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1')] });
+  const result = validateAiMarkingResponse({
+    response: {
+      status: 'completed',
+      results: [{ questionId: questions[0].questionId, awardedMark: 1 }],
+      annotations: [
+        { questionId: questions[0].questionId, questionNumber: '1.1', imageIndex: 0, type: 'tick', x: 0.82, y: 0.35, stepId: 'step_1', confidence: 0.96 },
+        { questionId: questions[0].questionId, questionNumber: '1.1', imageIndex: 2, type: 'cross', x: 1.2, y: 0.5, stepId: 'invalid_position', confidence: 0.9 },
+        { questionId: 'unknown::1', questionNumber: '1', imageIndex: 0, type: 'cross', x: 0.2, y: 0.2, stepId: 'unknown', confidence: 1 },
+      ],
+    },
+    requestedQuestions: questions,
+    answerImageCount: 1,
+  });
+  assert.equal(result.results[0].earnedMarks, 1);
+  assert.deepEqual(result.annotations, [{
+    questionId: questions[0].questionId, questionNumber: '1.1', imageIndex: 0,
+    type: 'tick', x: 0.82, y: 0.35, stepId: 'step_1', confidence: 0.96,
+  }]);
+
+  const legacy = validateAiMarkingResponse({
+    response: { status: 'completed', results: [{ questionId: questions[0].questionId, awardedMark: 1 }] },
+    requestedQuestions: questions,
+  });
+  assert.deepEqual(legacy.annotations, []);
+  assert.equal(legacy.results[0].earnedMarks, 1);
+});
+
+test('ignores malformed annotation coordinates without changing valid scores', () => {
+  const questions = getRequestedMarkingQuestions({ questionLinks: [link('paper-a', '1.1')] });
+  const result = validateAiMarkingResponse({
+    response: {
+      status: 'completed',
+      results: [{ questionId: questions[0].questionId, awardedMark: 0 }],
+      annotations: [{ questionId: questions[0].questionId, questionNumber: '1.1', imageIndex: 'bad', type: 'tick', x: 0, y: 0.4, stepId: 'step_1', confidence: 0.7 }],
+    },
+    requestedQuestions: questions,
+  });
+  assert.equal(result.results[0].earnedMarks, 0);
+  assert.deepEqual(result.annotations, []);
+});
+
+test('merges annotations by question, image, and step without duplicating fallback results', () => {
+  const first = { questionId: 'paper-a::1.1', imageIndex: 0, stepId: 'step_1', type: 'tick', x: 0.2, y: 0.3 };
+  const second = { questionId: 'paper-a::1.1', imageIndex: 0, stepId: 'step_2', type: 'cross', x: 0.4, y: 0.5 };
+  assert.deepEqual(mergeAiMarkingAnnotations([first], [first, second]), [first, second]);
 });
 
 test('accepts partial marks with a full-paper request for only unresolved questions', () => {
@@ -318,6 +368,10 @@ test('peer marking and student marking use distinct instructions', () => {
   assert.notEqual(PEER_MARKING_REVIEW_INSTRUCTIONS, STUDENT_EXERCISE_MARKING_INSTRUCTIONS);
   assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /marker's understanding/i);
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /learner's work/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /only the peer marker's submitted marking images/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /never annotate the separate original learner answer images/i);
+  assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /do not return an empty annotations array just because the peer's decisions are correct/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /normalized coordinates from 0 to 1/i);
 });
 
 test('OpenAI failure propagates without applying marks', async () => {

@@ -12,6 +12,13 @@ test('student annotation coordinates are explicitly directed to clear space besi
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /never place the symbol on top of, across, or between the learner's writing/i);
 });
 
+test('student exercise annotations are required for visible assessed work without changing peer instructions', () => {
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /For every requested question with visible, assessable learner work, annotations are REQUIRED/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /cross for each clearly incorrect step, including when a question earns zero/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /An empty annotations array is allowed only when no learner answer work is visible/i);
+  assert.doesNotMatch(PEER_MARKING_REVIEW_INSTRUCTIONS, /Student exercise visual annotations are required/i);
+});
+
 test('student exercise marking requires evidence-based correctness scoring and rejects attempt-based full marks', () => {
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /This is an assessment of whether the learner's submitted work is academically correct/i);
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Award each allocated mark only when the corresponding answer or required reasoning is correct/i);

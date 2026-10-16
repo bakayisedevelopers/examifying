@@ -52,6 +52,9 @@ test('sends a compact structured marking request to Gemini Flash-Lite', async ()
     assert.deepEqual(Object.keys(call.body.generationConfig.responseFormat.text.schema.properties.annotations.items.properties), [
       'questionId', 'questionNumber', 'imageIndex', 'type', 'x', 'y', 'stepId', 'confidence',
     ]);
+    const dynamicInstruction = call.body.contents[0].parts.find((part) => part.text?.includes('"instruction"'))?.text ?? '';
+    assert.match(dynamicInstruction, /Student exercise visual annotations are required whenever any learner answer work is visible and assessable/i);
+    assert.match(dynamicInstruction, /use crosses for incorrect steps even when the awarded mark is zero/i);
     assert.equal(call.body.contents[0].parts.filter((part) => part.inline_data).length, 2);
     assert.deepEqual(call.body.contents[0].parts.filter((part) => part.inline_data)
       .map((part) => part.media_resolution.level), ['MEDIA_RESOLUTION_ULTRA_HIGH', 'MEDIA_RESOLUTION_ULTRA_HIGH']);

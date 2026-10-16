@@ -59,7 +59,7 @@ export const callGeminiMarkingOnce = async ({
   });
   const annotationInstruction = submissionType === 'peer_marking'
     ? 'For visual review, the peer marker image is the image explicitly labeled Peer marker. If it contains clearly visible ticks or crosses, return one AI annotation beside each visible decision; do not return annotations:[] just because all peer decisions are correct. A correct peer decision gets an AI tick; an incorrect peer decision gets an AI cross. Use imageIndex 0 for the first peer marker image, regardless of the separate original-answer image.'
-    : 'For visual review, annotate each clearly readable learner solution step beside the handwriting; use the corresponding learner-answer imageIndex.';
+    : 'Student exercise visual annotations are required whenever any learner answer work is visible and assessable. Return at least one annotation beside every requested question’s visible assessable work; use crosses for incorrect steps even when the awarded mark is zero, and ticks only for correct steps. Do not return annotations:[] just because the work is wrong or placing a symbol is difficult. Use the nearest whitespace or page margin beside the relevant work, never over the handwriting. If multiple lines form one inseparable decision, one annotation beside that decision is enough. Use the corresponding learner-answer imageIndex, counting only images labeled Learner answer image, never source-paper or memo pages. An empty array is allowed only when no learner answer work is visible or reliably readable; do not report completed marks for unseen work.';
   const dynamicParts = [{ text: JSON.stringify({
     operation: submissionType,
     sourceType,

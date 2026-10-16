@@ -1290,14 +1290,28 @@ export const processAiMarkingTask = onTaskDispatched(TASK_OPTIONS, async (reques
         response, requestedQuestions, suppliedMaterialsByQuestion, answerImageCount: answerImages.length,
       });
       validated.annotations = validated.annotations.filter((annotation) => annotation.imageIndex < answerImages.length);
+      const rawAnnotationCount = Array.isArray(response.annotations) ? response.annotations.length : 0;
+      const annotationFieldPresent = Object.prototype.hasOwnProperty.call(response, 'annotations');
       logger.info('AI marking response validated', {
         operation: task.submissionType,
         requestId: hash(`${task.documentPath}:${task.version}:${contextPass}:validated`),
         resultCount: validated.results.length,
-        rawAnnotationCount: Array.isArray(response.annotations) ? response.annotations.length : 0,
+        rawAnnotationCount,
+        annotationFieldPresent,
         annotationCount: validated.annotations.length,
         contextRequestCount: validated.contextRequests.length,
       });
+      if (validated.results.length && answerImages.length && !validated.annotations.length) {
+        logger.warn('AI marking returned scored work without image annotations', {
+          operation: task.submissionType,
+          requestId: hash(`${task.documentPath}:${task.version}:${contextPass}:missing-annotations`),
+          status: validated.status,
+          resultCount: validated.results.length,
+          answerImageCount: answerImages.length,
+          annotationFieldPresent,
+          rawAnnotationCount,
+        });
+      }
       metadata = mergeModelMetadata(metadata, response, {
         pageCount: pages.length,
         answerImageCount: answerImages.length + originalAnswerImages.length,

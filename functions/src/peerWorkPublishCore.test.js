@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadReadyPeerWorkPack, publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
+import { loadReadyPeerWorkPack, publishPeerWorkWithRetry, selectSystemPeerWorkImages } from './peerWorkPublishCore.js';
 
 test('publication reloads generated images instead of using a stale pre-generation pack snapshot', async () => {
   const savedImages = [{ questionId: 'paper-a::1.1', storagePath: 'pack/question-1.png' }];
@@ -23,6 +23,32 @@ test('publication refuses to publish a missing or incomplete generated pack', as
   await assert.rejects(() => loadReadyPeerWorkPack({
     ref: { get: async () => ({ exists: true, data: () => ({ status: 'generating', images: [] }) }) },
   }), /not ready for publication/);
+});
+
+test('legacy reusable packs match question images when questionId is absent', () => {
+  const image = { questionReference: '4.2', storagePath: 'pack/question-1.png' };
+  const selected = selectSystemPeerWorkImages({
+    pack: { paperId: 'paper-a', images: [image] },
+    questionLinks: [{ paperId: 'paper-a', questionReference: '4.2' }],
+  });
+  assert.deepEqual(selected, [image]);
+});
+
+test('reusable pack image selection returns images in question order and rejects missing questions', () => {
+  const first = { questionId: 'paper-a::1.1', storagePath: 'pack/question-1.png' };
+  const second = { questionId: 'paper-a::1.2', storagePath: 'pack/question-2.png' };
+  const pack = { images: [first, second] };
+  assert.deepEqual(selectSystemPeerWorkImages({
+    pack,
+    questionLinks: [
+      { questionId: 'paper-a::1.2' },
+      { questionId: 'paper-a::1.1' },
+    ],
+  }), [second, first]);
+  assert.throws(() => selectSystemPeerWorkImages({
+    pack,
+    questionLinks: [{ paperId: 'paper-a', questionReference: '1.3' }],
+  }), /missing a question image/);
 });
 
 test('peer-work publishing retries a transient failure and returns the successful result', async () => {

@@ -12,6 +12,13 @@ test('student annotation coordinates are explicitly directed to clear space besi
   assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /never place the symbol on top of, across, or between the learner's writing/i);
 });
 
+test('student exercise marking requires evidence-based correctness scoring and rejects attempt-based full marks', () => {
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /This is an assessment of whether the learner's submitted work is academically correct/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Award each allocated mark only when the corresponding answer or required reasoning is correct/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Do not award full marks just because an answer is present or the method looks plausible/i);
+  assert.match(STUDENT_EXERCISE_MARKING_INSTRUCTIONS, /Before returning a result, check that every awarded mark has evidence/i);
+});
+
 test('peer annotation coordinates must sit beside existing marks with a visible gap', () => {
   assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /x\/y coordinate identifies the CENTER of the peer marker's existing tick\/cross/i);
   assert.match(PEER_MARKING_REVIEW_INSTRUCTIONS, /renderer will place the AI symbol in nearby whitespace/i);

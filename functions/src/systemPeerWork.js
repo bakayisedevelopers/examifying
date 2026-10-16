@@ -29,7 +29,7 @@ import {
 import { claimPeerMarkingAssignmentSlot } from './peerMarkingAssignmentStore.js';
 import { solveSystemPeerWork } from './peerMarkingFallbackAi.js';
 import { wrapPeerWorkText } from './peerWorkImageFormatting.js';
-import { loadReadyPeerWorkPack, publishPeerWorkWithRetry } from './peerWorkPublishCore.js';
+import { loadReadyPeerWorkPack, publishPeerWorkWithRetry, selectSystemPeerWorkImages } from './peerWorkPublishCore.js';
 import { safePeerWorkErrorMessage } from './peerWorkErrorDetails.js';
 
 const GENERATION_TASK = 'generateSystemPeerWorkTask';
@@ -95,9 +95,7 @@ const urlForStoredImage = (bucket, path, token) => `https://firebasestorage.goog
 const copyPackImagesToReviewer = async ({ bucket, pack, links, reviewer }) => {
   const cohortKey = systemPeerWorkCohortKey({ subject: pack.subject, grade: pack.grade });
   const prefix = `${packPath(cohortKey, pack.id)}/`;
-  const selectedQuestionIds = new Set(links.map((item) => item.questionId));
-  const sourceImages = (pack.images ?? []).filter((image) => selectedQuestionIds.has(image.questionId));
-  if (sourceImages.length !== selectedQuestionIds.size) throw new Error('The saved practice work is missing a question image.');
+  const sourceImages = selectSystemPeerWorkImages({ pack, questionLinks: links });
   const basePath = `users/${reviewer.studentId}/subjects/${reviewer.subjectInstanceId}/exercises/${reviewer.id}/system-generated-peer-work`;
   const images = [];
   for (const [index, image] of sourceImages.entries()) {

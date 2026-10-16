@@ -10,6 +10,7 @@ import {
   systemPeerWorkCohortKey,
   systemPeerWorkTopicSignature,
   canRegenerateSystemPeerWork,
+  peerMarkingLockMatchesAssignment,
   validateSystemPeerWorkSolutionResponse,
   validateSystemPeerWorkSolutions,
 } from './peerMarkingFallbackCore.js';
@@ -61,6 +62,16 @@ test('regeneration is limited to assigned system work that has not been marked',
   assert.equal(canRegenerateSystemPeerWork({ systemGenerated: true, status: 'completed' }), false);
   assert.equal(canRegenerateSystemPeerWork({ systemGenerated: true, status: 'assigned', reviewImageUrl: 'review.png' }), false);
   assert.equal(canRegenerateSystemPeerWork({ systemGenerated: true, status: 'assigned', reviewImages: [{ url: 'review.png' }] }), false);
+});
+
+test('a peer-allocation lock counts as assigned only when its referenced cohort assignment exists', () => {
+  const cohort = { assignmentDate: '2026-10-16', subject: 'Mathematics', grade: 'Grade 10' };
+  const assignmentPath = 'users/reviewee/subjects/math/exercises/day/peerMarkingAssignments/reviewer';
+  const lock = { reviewerId: 'reviewer', assignmentPath, ...cohort };
+  const assignment = { reviewerId: 'reviewer', ...cohort };
+  assert.equal(peerMarkingLockMatchesAssignment({ lock, assignment, assignmentPath, reviewerId: 'reviewer', cohort }), true);
+  assert.equal(peerMarkingLockMatchesAssignment({ lock, assignment: null, assignmentPath, reviewerId: 'reviewer', cohort }), false);
+  assert.equal(peerMarkingLockMatchesAssignment({ lock, assignment: { ...assignment, assignmentDate: '2026-10-15' }, assignmentPath, reviewerId: 'reviewer', cohort }), false);
 });
 
 test('saved work is reusable only for the exact normalized subject and grade', () => {

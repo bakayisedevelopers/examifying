@@ -31,6 +31,19 @@ export const peerMarkingAllocationLockId = ({ assignmentDate, subject, grade, re
   String(reviewerId ?? ''),
 ].join('::'));
 
+export const peerMarkingLockMatchesAssignment = ({ lock, assignment, assignmentPath, reviewerId, cohort } = {}) => Boolean(
+  lock && assignment
+  && String(lock.reviewerId ?? '') === String(reviewerId ?? '')
+  && String(lock.assignmentPath ?? '') === String(assignmentPath ?? '')
+  && String(lock.assignmentDate ?? '') === String(cohort?.assignmentDate ?? '')
+  && String(lock.subject ?? '') === String(cohort?.subject ?? '')
+  && String(lock.grade ?? '') === String(cohort?.grade ?? '')
+  && String(assignment.reviewerId ?? '') === String(reviewerId ?? '')
+  && String(assignment.assignmentDate ?? '') === String(cohort?.assignmentDate ?? '')
+  && String(assignment.subject ?? '') === String(cohort?.subject ?? '')
+  && String(assignment.grade ?? '') === String(cohort?.grade ?? '')
+);
+
 export const systemPeerWorkTopicSignature = (topics = []) => hash(
   uniqueTopics(topics).map(normalizeExerciseTopicKey).sort().join('|'),
 );

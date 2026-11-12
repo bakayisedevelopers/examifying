@@ -1,0 +1,8 @@
+{
+  "name": "Examifying",
+  "description": "CAPS Mathematics tutoring, exercises, assignments, and AI marking platform for students and tutors.",
+  "requestPermissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
